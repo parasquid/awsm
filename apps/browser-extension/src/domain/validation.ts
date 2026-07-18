@@ -10,6 +10,19 @@ export function record(value: unknown, field: string): Record<string, unknown> {
   return Object.fromEntries(Object.entries(value));
 }
 
+export function canonicalRecord(
+  value: unknown,
+  field: string,
+  allowedFields: readonly string[],
+): Record<string, unknown> {
+  const input = record(value, field);
+  const allowed = new Set(allowedFields);
+  if (Object.keys(input).some((candidate) => !allowed.has(candidate))) {
+    throw new DomainValidationError(field, "contains fields outside the canonical schema");
+  }
+  return input;
+}
+
 export function string(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new DomainValidationError(field, "must be a non-empty string");

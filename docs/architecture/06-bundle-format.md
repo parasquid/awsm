@@ -251,7 +251,7 @@ Example:
 ```
 summary-v1.md
 
-summary-v2.md
+summary.md
 ```
 
 ---
@@ -511,15 +511,15 @@ Only then are Artifacts visible.
 
 ---
 
-# Forward Compatibility
+# Unsupported Bundle Content
 
-Unknown optional sections should be ignored.
+Unknown sections should be rejected.
 
-Unknown Artifact kinds and roles should be preserved.
+Unknown Artifact kinds and roles should be rejected.
 
-Unknown metadata fields should remain intact.
+Unknown metadata fields should be rejected unless the canonical specification explicitly permits them.
 
-Clients should never discard unknown Bundle contents.
+Clients should fail closed rather than partially accepting unknown Bundle contents.
 
 ---
 

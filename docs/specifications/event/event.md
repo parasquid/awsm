@@ -26,7 +26,7 @@ Events MUST provide:
 
 - immutability
 - deterministic replay
-- forward compatibility
+- canonical format validation
 - cryptographic integrity
 - transport independence
 - versioning
@@ -180,7 +180,21 @@ DeviceRevoked
 
 VaultKeyRotated
 
+VaultCreated
+
+VaultRenamed
+
 Future versions MAY introduce additional Event Types.
+
+## 11.1 VaultCreated
+
+`VaultCreated` version 1 records the accepted initial normalized name of one newly created Vault. Its payload contains the Vault ID, Device ID, canonical timestamp, protocol version, and name. It MUST be committed atomically with Vault creation and MUST be the first name Event in that Vault.
+
+## 11.2 VaultRenamed
+
+`VaultRenamed` version 1 records a new normalized name for an existing Vault. It contains the Vault ID, Device ID, canonical timestamp, protocol version, and name. Deterministic replay orders name Events by the Vault Event order; the last valid ordered Rename determines the current name.
+
+Vault names are private plaintext and MUST be encrypted before persistence outside trusted Runtime memory or synchronization.
 
 ---
 
@@ -212,11 +226,9 @@ AddTag
 
 # 13. Unknown Events
 
-Readers MUST preserve unknown Event Types.
+Readers MUST reject unknown Event Types.
 
-Unknown Events MUST remain in the Event Log.
-
-Unsupported Events MUST NOT invalidate the Vault.
+Unsupported Events MUST fail replay and prevent unsafe state changes.
 
 ---
 
@@ -299,19 +311,19 @@ History is authoritative.
 
 Replay is deterministic.
 
-Unknown Events are preserved.
+Unknown Events are rejected.
 
 ---
 
-# 21. Future Compatibility
+# 21. Unsupported Event Semantics
 
-Future versions MAY introduce:
+Event semantics outside this specification are unsupported, including:
 
 - new Event Types
 - new Domains
 - new payload fields
 
-Readers SHOULD ignore unsupported optional fields.
+Readers MUST reject unsupported Event Types and fields.
 
 ---
 

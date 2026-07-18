@@ -80,6 +80,7 @@ The Runtime creates a Capture Job.
 
 The Job tracks:
 
+- Vault ID
 - status
 - progress
 - retries
@@ -88,6 +89,8 @@ The Job tracks:
 Jobs are ephemeral.
 
 Jobs are never synchronized.
+
+The Vault ID is fixed when the Capture Command is accepted. Later active-Vault changes MUST NOT reroute an accepted Capture Job. Job persistence, recovery, notices, outcomes, and diagnostics remain scoped to that Vault.
 
 ---
 

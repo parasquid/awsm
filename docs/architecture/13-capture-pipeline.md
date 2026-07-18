@@ -349,7 +349,7 @@ Examples:
 - originating application
 - adapter version
 
-This metadata assists future migration and debugging.
+This metadata supports deterministic debugging of the canonical format.
 
 ---
 

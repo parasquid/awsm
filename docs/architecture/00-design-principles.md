@@ -168,29 +168,27 @@ Non-deterministic behavior must be explicitly justified and documented.
 
 ---
 
-# 15. Version Everything
+# 15. Version Persisted Boundaries
 
-Every externally persisted structure should include an explicit version.
+Self-describing persisted and externally exchanged formats should include an explicit format version when their owning specification requires it.
 
 Examples include:
 
 - bundles
 - events
-- protocol messages
 - cryptographic formats
-- extension APIs
 
-Versioning enables long-term compatibility.
+Transient application state, local Commands, UI models, and in-process interfaces are not versioned speculatively.
 
 ---
 
-# 16. Backwards Compatibility Is a Feature
+# 16. Pre-release Designs Are Replaced
 
-Existing archives should remain readable after software upgrades whenever practical.
+Before the user explicitly declares the first release, the repository contains exactly one canonical current design.
 
-Migration should be additive rather than destructive.
+Discarded pre-release formats, data, readers, upgrade paths, aliases, and documentation are removed rather than preserved.
 
-Breaking compatibility requires explicit architectural justification.
+After the first release, compatibility policy requires an explicit user decision. It is never inferred from pre-release development history.
 
 ---
 

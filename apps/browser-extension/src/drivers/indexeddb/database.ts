@@ -27,16 +27,14 @@ export function openDatabase(name: string): Promise<IDBDatabase> {
       () => {
         const database = request.result;
         for (const storeName of Object.values(STORES)) {
-          if (!database.objectStoreNames.contains(storeName)) {
-            database.createObjectStore(storeName);
-          }
+          database.createObjectStore(storeName);
         }
       },
       { once: true },
     );
     request.addEventListener("success", () => resolve(request.result), { once: true });
     request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("Database upgrade blocked")), {
+    request.addEventListener("blocked", () => reject(new Error("Database opening blocked")), {
       once: true,
     });
   });

@@ -227,9 +227,9 @@ Implement versioned discriminated unions rather than untyped messages.
 - literal command type `CreateVault`;
 - command version `1`;
 - creation timestamp; and
-- optional passphrase supplied only in memory.
+- no persistent local passphrase credential.
 
-`UnlockVaultCommandV1` selects either the device slot or passphrase slot. Passphrases never enter logs, persisted jobs, Runtime Events, or error details.
+`UnlockVaultCommandV1` selects the local device slot. Export passphrases belong only to user-created Vault Packages and never enter logs, persisted Jobs, Runtime Events, or error details.
 
 ## 5.2 Capture result
 
@@ -322,7 +322,7 @@ On first run:
 1. Generate a Vault ID and Device ID with `crypto.randomUUID()`.
 2. Generate 32 random bytes for the Vault Root Key using the Host CSPRNG.
 3. Create the mandatory device key slot.
-4. If the user supplied a passphrase, create the optional passphrase slot.
+4. Create no persistent passphrase or recovery slot.
 5. Atomically store Vault metadata and all created slots.
 6. Import the Vault Root Key into the in-memory key handle required for derivation.
 7. Best-effort overwrite temporary raw key byte arrays.
@@ -339,21 +339,12 @@ The Vault Root Key is never stored unwrapped.
 
 AES-KW has no AAD input. After every device-slot unwrap, derive a `vault:verifier:v1` key and authenticate a fixed Vault verifier whose AAD contains the canonical Vault ID, Device ID, slot ID, algorithm identifier, and slot version. Do not expose the Vault as unlocked until verifier authentication succeeds.
 
-Normal service-worker activation may automatically unlock the Vault through the device slot. A user-requested manual lock persists an operational lock flag; while set, automatic unlock is forbidden until the user explicitly selects device or passphrase unlock.
+Normal service-worker activation may automatically unlock the Vault through the device slot. A user-requested manual lock persists an operational lock flag; while set, automatic unlock is forbidden until the user explicitly selects device unlock.
 
-## 6.3 Passphrase slot
+## 6.3 Local unlock boundary
 
-- Optional during onboarding.
-- Require at least 12 Unicode code points and at most 1,024 UTF-8 bytes.
-- Do not impose composition rules.
-- Generate a random 16-byte salt.
-- Derive a 32-byte key with Argon2id using 64 MiB memory and three iterations.
-- Store the numeric Argon2 parameters with the slot.
-- Wrap the Vault Root Key with XChaCha20-Poly1305 and a random 24-byte nonce.
-- Authenticate slot version, Vault ID, slot ID, KDF parameters, and algorithm identifiers as AAD.
-- Use identifiers `kdf:argon2id:v1` and `wrap:xchacha20poly1305:passphrase:v1`.
-
-Wrong passphrases and corrupted slots return the same public error so the UI does not reveal which validation failed.
+Local Vaults have no persistent passphrase credential. Passphrase-derived wrapping is reserved for
+independent user-created Vault Packages and is specified by the Import and Export Specification.
 
 ## 6.4 Derived keys
 
@@ -544,12 +535,12 @@ No interrupted job may leave a partial Bundle Object or Event.
 
 # 9. IndexedDB Storage
 
-Use one IndexedDB database named `awsm-vault`. IndexedDB's internal schema version owns storage versioning; feature names and schema versions do not belong in the database name. This is the sole canonical pre-release database, and earlier development databases are intentionally abandoned rather than migrated. Encapsulate all access in the IndexedDB Driver.
+Use one IndexedDB database named `awsm-vault`. IndexedDB's internal schema version owns persisted-format identification; feature names and schema versions do not belong in the database name. Encapsulate all access in the IndexedDB Driver.
 
 Required stores:
 
 - `vault_metadata`: Vault identity, versions, manual-lock flag, and non-sensitive operational state.
-- `key_slots`: device and passphrase slot metadata plus wrapped key bytes.
+- `key_slots`: device-slot metadata plus wrapped key bytes.
 - `device_keys`: non-exportable Web Crypto device wrapping keys.
 - `objects`: immutable encrypted authoritative Objects keyed by Object ID.
 - `events`: encrypted Event Objects keyed by Event ID with only required non-sensitive ordering fields outside ciphertext.
@@ -595,8 +586,7 @@ Onboarding:
 Unlock:
 
 - offers one-click device unlock;
-- shows passphrase unlock only when a passphrase slot exists;
-- presents the same failure message for wrong passphrase and corrupt passphrase slot; and
+- provides device unlock without presenting a persistent passphrase credential; and
 - clears form values after submission.
 
 ## 10.2 Popup
@@ -677,7 +667,7 @@ Verify:
 RED:
 
 - Tests reject missing versions, unknown mandatory versions, invalid URLs, malformed identifiers, duplicate Artifact IDs, and unknown error shapes.
-- Tests accept and preserve unknown optional fields where required.
+- Tests reject fields outside each canonical persisted schema.
 
 GREEN:
 
@@ -728,11 +718,11 @@ Verify:
 - vector and mutation suites;
 - confirm no plaintext appears in encoded envelopes.
 
-## Task 5: Vault creation, device slot, and optional passphrase slot
+## Task 5: Vault creation and device slot
 
 RED:
 
-- Tests cover create/unlock/lock, automatic activation unlock, persistent manual lock, wrong passphrase, corrupt slot, tampered device-slot metadata, Vault verifier failure, slot version rejection, and atomic onboarding failure.
+- Tests cover create/unlock/lock, automatic activation unlock, persistent manual lock, corrupt device slots, tampered device-slot metadata, Vault verifier failure, slot version rejection, and atomic onboarding failure.
 
 GREEN:
 
@@ -754,7 +744,7 @@ RED:
 
 GREEN:
 
-- Implement the single canonical version-1 schema, repositories, transaction boundary, and startup reconciliation. Before the first declared release, replace superseded schema drafts directly instead of adding migrations or compatibility paths.
+- Implement the canonical schema, repositories, transaction boundary, and startup reconciliation.
 
 Verify:
 
@@ -863,7 +853,7 @@ Manually inspect IndexedDB and built extension assets to confirm:
 
 The slice is complete only when all are true:
 
-1. A new user can create a Vault with only the device slot or with device plus passphrase slots.
+1. A new user can create a Vault with one non-exportable local device slot.
 2. The Vault Root Key is never stored unwrapped.
 3. A user can capture a local HTTP fixture through the toolbar action.
 4. Valid MHTML is mandatory.
@@ -892,7 +882,7 @@ This plan records the explicit decisions that resolve the first-slice questions 
 - Bundle serialization: deterministic ZIP with canonical CBOR.
 - Browser persistence Driver: IndexedDB for v1.
 - Bundle/Event/Projection keys: HKDF-derived context keys.
-- Vault Root Key storage: mandatory local device slot plus optional passphrase slot.
+- Vault Root Key storage: mandatory local device slot only.
 - Screenshot: best effort.
 - MHTML: mandatory.
 - Interrupted live capture: fail and require manual retry; never auto-recapture.
@@ -969,7 +959,7 @@ Capture detail uses breadcrumb navigation rather than a generic back button: `Li
 
 Each grouped Library card displays the newest capture’s screenshot as a cropped visual thumbnail when the optional screenshot Artifact exists. During the same offscreen stitch operation, the Host derives a bounded lossy 640×360 WebP at quality 0.78 from the full screenshot. The Runtime stores that WebP inside the encrypted Library Projection; it is a rebuildable Materialization, not an authoritative Bundle Artifact. No separate live-page capture, plaintext thumbnail file, Cache Storage entry, or remote asset is permitted.
 
-The original pre-release “Remove from Library” model has been replaced directly. Section 15 is the sole canonical deletion, restoration, Deleted, Vault Generation, and Vault Vacuum design. There is no `LibraryGroupRemoved` Event or compatibility behavior.
+Section 15 is the sole canonical deletion, restoration, Deleted, Vault Generation, and Vault Vacuum design.
 
 ### TDD and verification
 
@@ -996,7 +986,7 @@ When a screenshot Artifact is absent, that capture remains accessible through it
 
 The thumbnails are decrypted only after Vault unlock and remain presentation data. They are bounded to 640×360 before encrypted persistence so listing a collection never decrypts or transports every full-resolution screenshot. They are not new authoritative Artifacts, plaintext persistence, synchronized state, or substitutes for the original screenshot Artifacts.
 
-This is the sole canonical pre-release representation. Existing development Vaults are recreated when this format changes; there is no thumbnail migration, legacy reader, lazy conversion, or compatibility fallback before the user declares the first release.
+This is the sole canonical thumbnail representation.
 
 ### TDD and verification
 
@@ -1013,7 +1003,7 @@ This is the sole canonical pre-release representation. Existing development Vaul
 
 **Added:** 2026-07-17
 
-**Status:** Approved implementation plan. This section supersedes the removal semantics in section 14.3. `LibraryGroupRemoved`, `RemoveLibraryGroup`, removal without restoration, and the statement that permanent deletion is simply deferred are stale pre-release behavior. Replace them directly; do not preserve a compatibility reader or migration. Existing development Vaults may be discarded and recreated.
+**Status:** Approved implementation plan and sole canonical deletion model.
 
 ## 15.1 Goal and canonical terminology
 
@@ -1135,7 +1125,7 @@ For append-only work accepted after a manifest is created, the local active poin
 
 Retained immutable Objects may be referenced unchanged by the successor. An affected Event Log Segment receives a new Object ID. For an Event that references both retained and deleted captures, a registered rewrite handler creates the equivalent retained Event with a new Event ID and integrity data. An Event concerning only deleted captures is omitted. `CapturesDeleted`/`CapturesRestored` Events whose referenced captures are all omitted are also omitted. The successor must replay to the same active logical state as immediately before Vacuum, with Deleted empty.
 
-Every authoritative Object and Event type must register dependency enumeration and rewrite behavior. Encountering an unknown or unsupported type aborts before activation. Never guess that an unknown Object is safe to delete, and never discard unknown fields from a rewritten supported structure.
+Every authoritative Object and Event type must register dependency enumeration and rewrite behavior. Encountering an unknown type or any field outside a canonical supported structure aborts before activation. Never guess that an unknown Object is safe to delete.
 
 ## 15.5 Vault Vacuum Runtime Job
 
@@ -1245,7 +1235,7 @@ Write failing pure/runtime tests proving:
 - predecessor ID metadata does not make predecessor Objects reachable;
 - unaffected Objects retain identifiers and bytes;
 - fully deleted Events disappear;
-- mixed-reference Events are rewritten with new IDs while retaining supported unknown fields;
+- mixed-reference Events are rewritten with new IDs after strict canonical-field validation;
 - an unknown Object/Event type aborts before activation;
 - replayed Active state is equivalent and successor Deleted is empty;
 - shared Objects remain reachable and byte estimates do not double-count them.
@@ -1297,7 +1287,7 @@ Implementation is complete only when:
 
 **Added:** 2026-07-18
 
-**Status:** Approved implementation plan. This section supersedes URL-derived collection identity in section 14.2. Replace the current pre-release model directly; do not add a migration, legacy reader, fallback grouping path, or dual representation. The user has not declared the first release, so existing development Vaults may be discarded and recreated.
+**Status:** Approved implementation plan and sole canonical Collection identity model.
 
 ## 16.1 Goal and user-visible vocabulary
 
@@ -1422,8 +1412,7 @@ type UndoLibraryOperationV1 = {
 Successful Merge, Move, and Extract return:
 
 ```ts
-type LibraryOperationReceiptV1 = {
-  version: 1;
+type LibraryOperationReceipt = {
   operationEventId: string;
   destinationCollectionId: string;
 };
@@ -1527,7 +1516,7 @@ The IndexedDB Driver commits the Event, active-generation append-tail entry, and
 
 Extend storage decoders and canonical CBOR tests for every new persisted field and Event. Because this is pre-release, replace the schema directly and recreate the development Vault. Keep the canonical database name `awsm-vault`; IndexedDB's internal schema version changes, not the database name.
 
-Update the application protocol with typed requests and `LibraryOperationReceiptV1`. The background handler delegates validation and Event preparation to the Runtime and maps `LIBRARY_STATE_CHANGED` without leaking decrypted content into logs or operational rows.
+Update the application protocol with typed requests and `LibraryOperationReceipt`. The background handler delegates validation and Event preparation to the Runtime and maps `LIBRARY_STATE_CHANGED` without leaking decrypted content into logs or operational rows.
 
 ## 16.7 Library interaction design
 
@@ -1721,7 +1710,7 @@ Implementation is complete only when:
 - all management writes are atomic, encrypted, replayable, and compatible with Vault Vacuum;
 - Deleted remains restorable and unmanaged except through Restore/Delete/Vacuum lifecycle actions;
 - arbitrary cross-host merges preserve every exact current address without inferring broad URL rules;
-- no new runtime dependency, migration, legacy reader, dual-write path, or compatibility fallback exists;
+- runtime dependencies remain intentional and the implementation has one canonical representation;
 - glossary and formal specifications are reconciled with the implemented canonical model;
 - the evidence document contains intentional RED and final GREEN records for Section 16; and
 - all discovered verification gates pass from a clean pre-release Vault:

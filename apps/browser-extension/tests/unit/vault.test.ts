@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  type PreparedVault,
   type VaultRecordsV1,
   type VaultRepository,
   VaultService,
@@ -9,31 +10,23 @@ import {
 
 class MemoryVaultRepository implements VaultRepository {
   private records: VaultRecordsV1 | undefined;
-  failCreate = false;
 
-  async create(records: VaultRecordsV1): Promise<void> {
-    if (this.failCreate) {
-      throw new Error("simulated atomic create failure");
-    }
+  store(records: VaultRecordsV1): void {
     this.records = records;
   }
 
-  async load(): Promise<VaultRecordsV1 | undefined> {
-    return this.records;
+  async load(vaultId: string): Promise<VaultRecordsV1 | undefined> {
+    return this.records?.metadata.vaultId === vaultId ? this.records : undefined;
   }
 
-  async setManualLock(manuallyLocked: boolean): Promise<void> {
+  async setManualLock(vaultId: string, manuallyLocked: boolean): Promise<void> {
     const current = this.requireRecords();
-    this.records = {
-      ...current,
-      metadata: { ...current.metadata, manuallyLocked },
-    };
+    if (current.metadata.vaultId !== vaultId) throw new Error("Wrong Vault context.");
+    this.records = { ...current, metadata: { ...current.metadata, manuallyLocked } };
   }
 
   requireRecords(): VaultRecordsV1 {
-    if (this.records === undefined) {
-      throw new Error("Expected Vault records");
-    }
+    if (this.records === undefined) throw new Error("Expected Vault records");
     return this.records;
   }
 
@@ -41,10 +34,7 @@ class MemoryVaultRepository implements VaultRepository {
     const current = this.requireRecords();
     this.records = {
       ...current,
-      deviceSlot: {
-        ...current.deviceSlot,
-        deviceId: crypto.randomUUID(),
-      },
+      deviceSlot: { ...current.deviceSlot, deviceId: crypto.randomUUID() },
     };
   }
 
@@ -63,44 +53,57 @@ class MemoryVaultRepository implements VaultRepository {
       },
     };
   }
+}
 
-  corruptPassphraseSlot(): void {
-    const current = this.requireRecords();
-    const passphraseSlot = current.passphraseSlot;
-    if (passphraseSlot === undefined) {
-      throw new Error("Expected passphrase slot");
-    }
-    this.records = {
-      ...current,
-      passphraseSlot: {
-        ...passphraseSlot,
-        ciphertext: passphraseSlot.ciphertext.map((byte, index) => (index === 0 ? byte ^ 1 : byte)),
-      },
-    };
-  }
+async function preparedVault(
+  repository: MemoryVaultRepository,
+): Promise<{ readonly prepared: PreparedVault; readonly service: VaultService }> {
+  const preparer = new VaultService(repository);
+  const prepared = await preparer.prepareCreate({
+    name: "Amber Archive",
+    createdAt: "2026-07-18T16:00:00.000Z",
+  });
+  repository.store(prepared.records);
+  const service = new VaultService(repository, prepared.records.metadata.vaultId);
+  service.activatePrepared(prepared);
+  return { prepared, service };
 }
 
 describe("Vault lifecycle", () => {
-  it("creates a device-only Vault without persisting an unwrapped Root Key", async () => {
+  it("prepares independent Vault records without persisting and uses one creation timestamp", async () => {
     const repository = new MemoryVaultRepository();
     const service = new VaultService(repository);
+    const createdAt = "2026-07-18T16:00:00.000Z";
+    const prepared = await service.prepareCreate({ name: "Amber Archive", createdAt });
 
-    const created = await service.create({});
+    expect(repository.requireRecords).toThrow();
+    expect(prepared.records.metadata.createdAt).toBe(createdAt);
+    expect(prepared.records.head.vaultId).toBe(prepared.records.metadata.vaultId);
+    expect(prepared.rootKey.extractable).toBe(false);
+    expect(service.isUnlocked()).toBe(false);
+  });
+
+  it("stores the canonical normalized name during preparation", async () => {
+    const repository = new MemoryVaultRepository();
+    const prepared = await new VaultService(repository).prepareCreate({
+      name: "  Amber   Chron\u0069\u0301cle  ",
+      createdAt: "2026-07-18T16:00:00.000Z",
+    });
+
+    expect(prepared.name).toBe("Amber Chronícle");
+  });
+
+  it("prepares a device-only Vault without exposing an unwrapped Root Key in records", async () => {
+    const repository = new MemoryVaultRepository();
+    const { prepared, service } = await preparedVault(repository);
     const records = repository.requireRecords();
 
-    expect(created.vaultId).toBe(records.metadata.vaultId);
     expect(service.isUnlocked()).toBe(true);
     expect(records.deviceKey.extractable).toBe(false);
     expect(records.deviceSlot.wrappedRootKey.byteLength).toBe(40);
-    expect(records.passphraseSlot).toBeUndefined();
+    expect(Object.keys(records)).not.toContain("passphraseSlot");
     expect(records.head).toMatchObject({
-      version: 1,
-      vaultId: created.vaultId,
-      generationNumber: 0,
-    });
-    expect(records.generation).toMatchObject({
-      version: 1,
-      generationId: records.head.generationId,
+      vaultId: prepared.records.metadata.vaultId,
       generationNumber: 0,
     });
     expect(Object.keys(records)).not.toContain("rootKey");
@@ -108,94 +111,37 @@ describe("Vault lifecycle", () => {
 
   it("persists manual lock across service-worker activation", async () => {
     const repository = new MemoryVaultRepository();
-    const first = new VaultService(repository);
-    await first.create({});
-    await first.lock();
+    const { prepared, service } = await preparedVault(repository);
+    await service.lock();
 
-    const restarted = new VaultService(repository);
+    const restarted = new VaultService(repository, prepared.records.metadata.vaultId);
     expect(await restarted.autoUnlock()).toBe(false);
-    expect(restarted.isUnlocked()).toBe(false);
-
     await restarted.unlockWithDevice();
     expect(restarted.isUnlocked()).toBe(true);
     expect(repository.requireRecords().metadata.manuallyLocked).toBe(false);
   });
 
-  it("automatically unlocks through the device slot when not manually locked", async () => {
+  it("automatically unlocks only its scoped Vault when not manually locked", async () => {
     const repository = new MemoryVaultRepository();
-    await new VaultService(repository).create({});
-
-    const restarted = new VaultService(repository);
+    const { prepared } = await preparedVault(repository);
+    const restarted = new VaultService(repository, prepared.records.metadata.vaultId);
     expect(await restarted.autoUnlock()).toBe(true);
     expect(restarted.isUnlocked()).toBe(true);
   });
 
-  it("creates and unlocks an optional passphrase slot", async () => {
-    const repository = new MemoryVaultRepository();
-    const service = new VaultService(repository);
-    await service.create({ passphrase: "correct horse battery staple" });
-    await service.lock();
-
-    await service.unlockWithPassphrase("correct horse battery staple");
-
-    expect(service.isUnlocked()).toBe(true);
-    expect(repository.requireRecords().passphraseSlot).toMatchObject({
-      version: 1,
-      algorithm: "wrap:xchacha20poly1305:passphrase:v1",
-      kdf: "kdf:argon2id:v1",
-      operations: 3,
-      memoryBytes: 64 * 1024 * 1024,
-    });
-  });
-
-  it("returns the same public error for wrong passphrases and corrupt slots", async () => {
-    const repository = new MemoryVaultRepository();
-    const service = new VaultService(repository);
-    await service.create({ passphrase: "correct horse battery staple" });
-    await service.lock();
-
-    await expect(
-      service.unlockWithPassphrase("this is definitely incorrect"),
-    ).rejects.toMatchObject({
-      id: "WRONG_PASSPHRASE",
-    });
-
-    repository.corruptPassphraseSlot();
-    await expect(
-      service.unlockWithPassphrase("correct horse battery staple"),
-    ).rejects.toMatchObject({
-      id: "WRONG_PASSPHRASE",
-    });
-  });
-
   it("rejects tampered device-slot metadata and Vault verifiers", async () => {
     const repository = new MemoryVaultRepository();
-    const service = new VaultService(repository);
-    await service.create({});
+    const { service } = await preparedVault(repository);
     await service.lock();
-
     repository.mutateDeviceIdentity();
     await expect(service.unlockWithDevice()).rejects.toBeInstanceOf(VaultServiceError);
 
     const secondRepository = new MemoryVaultRepository();
-    const second = new VaultService(secondRepository);
-    await second.create({});
+    const { service: second } = await preparedVault(secondRepository);
     await second.lock();
     secondRepository.corruptVerifier();
     await expect(second.unlockWithDevice()).rejects.toMatchObject({
       id: "CRYPTO_AUTHENTICATION_FAILED",
     });
-  });
-
-  it("does not retain an unlocked Vault after atomic onboarding failure", async () => {
-    const repository = new MemoryVaultRepository();
-    repository.failCreate = true;
-    const service = new VaultService(repository);
-
-    await expect(service.create({})).rejects.toMatchObject({
-      id: "STORAGE_TRANSACTION_FAILED",
-    });
-    expect(service.isUnlocked()).toBe(false);
-    expect(await repository.load()).toBeUndefined();
   });
 });

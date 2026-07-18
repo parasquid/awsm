@@ -1,4 +1,4 @@
-import type { AppStateV1, RecentCaptureV1 } from "../app/protocol";
+import type { AppState, RecentCapture } from "../app/protocol";
 import type { RuntimeErrorId } from "../domain/contracts";
 
 export function recentCaptureMatchesActiveUrl(
@@ -19,18 +19,19 @@ export function recentCaptureMatchesActiveUrl(
 
 export type PopupView =
   | { readonly screen: "onboarding" }
-  | { readonly screen: "locked"; readonly passphraseAvailable: boolean }
+  | { readonly screen: "locked" }
   | { readonly screen: "capturing"; readonly stage: string }
   | {
       readonly screen: "ready";
       readonly notice?: "capture-succeeded" | "screenshot-warning" | RuntimeErrorId;
-      readonly recentCapture?: RecentCaptureV1;
+      readonly recentCapture?: RecentCapture;
     };
 
-export function popupView(state: AppStateV1): PopupView {
-  if (!state.vaultExists) return { screen: "onboarding" };
-  if (!state.unlocked) {
-    return { screen: "locked", passphraseAvailable: state.hasPassphraseSlot };
+export function popupView(state: AppState): PopupView {
+  const active = state.workspace.vaults.find((vault) => vault.active);
+  if (active === undefined) return { screen: "onboarding" };
+  if (!active.unlocked) {
+    return { screen: "locked" };
   }
   if (state.latestJob?.state === "Running" || state.latestJob?.state === "Created") {
     return { screen: "capturing", stage: state.latestJob.stage };

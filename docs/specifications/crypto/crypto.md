@@ -59,7 +59,7 @@ The platform SHALL use the following primitives:
 
 - Algorithm: HKDF-SHA256
 
-## 4.4 Password KDF (optional)
+## 4.4 Export Passphrase KDF
 
 - Algorithm: Argon2id
 
@@ -163,13 +163,13 @@ Wrapped keys include:
 - nonce
 - associated metadata
 
-The initial browser implementation SHALL store one mandatory local device slot and MAY store one passphrase slot created during onboarding.
+The initial browser implementation SHALL store one mandatory local device slot and SHALL NOT store a local passphrase slot.
 
 The device slot SHALL use `wrap:aes-kw-256:device:v1`. Because AES-KW does not accept AAD, a client SHALL authenticate the Vault ID, Device ID, slot ID, wrapping algorithm, and slot version through a Vault verifier derived from the unwrapped Vault Root Key before treating the Vault as unlocked.
 
-The passphrase slot SHALL derive a 32-byte wrapping key with Argon2id using a random 16-byte salt, 64 MiB memory, and three iterations, then wrap the Vault Root Key using `wrap:xchacha20poly1305:passphrase:v1` and a random 24-byte nonce.
+Each Vault Package SHALL derive a 32-byte wrapping key from its export passphrase with Argon2id using a random 16-byte salt, 64 MiB memory, and three iterations, then wrap the Vault Root Key using `wrap:xchacha20poly1305:passphrase:v1` and a random 24-byte nonce.
 
-Passphrase slot version, Vault ID, slot ID, algorithm identifiers, and KDF parameters SHALL be authenticated as XChaCha20-Poly1305 AAD.
+The export key-envelope version, package identifier, Vault identifier, algorithm identifiers, KDF parameters, and Manifest hash SHALL be authenticated as XChaCha20-Poly1305 AAD. This envelope SHALL exist only in the Vault Package and SHALL NOT become a local Vault key slot.
 
 ---
 

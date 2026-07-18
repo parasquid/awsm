@@ -89,6 +89,10 @@ The Runtime coordinates:
 - event processing
 - projection rebuilding
 
+Vault management includes Workspace bootstrap, Vault directory enumeration, active-Vault selection, Vault creation, locking, unlocking, and Event-backed naming. The Runtime SHALL hold at most one active Vault Root Key and SHALL discard it after a successful context switch.
+
+Every Vault-scoped request SHALL carry its expected Vault ID. The Runtime MUST validate that context before plaintext access and again inside an authoritative commit transaction. A stale Host MUST NOT cause work intended for one Vault to execute against another.
+
 ---
 
 # 6. Services

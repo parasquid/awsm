@@ -1,15 +1,29 @@
 import { DomainValidationError } from "../../domain/errors";
-import { boolean, bytes, integer, literal, record, timestamp, uuid } from "../../domain/validation";
-import type {
-  DeviceKeySlotV1,
-  PassphraseKeySlotV1,
-  VaultMetadataV1,
-  VaultRecordsV1,
-} from "./contracts";
+import {
+  boolean,
+  bytes,
+  canonicalRecord,
+  integer,
+  literal,
+  timestamp,
+  uuid,
+} from "../../domain/validation";
+import type { DeviceKeySlotV1, VaultMetadataV1, VaultRecordsV1 } from "./contracts";
 
 export function decodeVaultMetadata(value: unknown): VaultMetadataV1 {
-  const input = record(value, "vaultMetadata");
-  const verifier = record(input.verifier, "vaultMetadata.verifier");
+  const input = canonicalRecord(value, "vaultMetadata", [
+    "version",
+    "vaultId",
+    "deviceId",
+    "createdAt",
+    "manuallyLocked",
+    "verifier",
+  ]);
+  const verifier = canonicalRecord(input.verifier, "vaultMetadata.verifier", [
+    "version",
+    "nonce",
+    "ciphertext",
+  ]);
   return {
     version: literal(input.version, 1, "vaultMetadata.version"),
     vaultId: uuid(input.vaultId, "vaultMetadata.vaultId"),
@@ -25,7 +39,14 @@ export function decodeVaultMetadata(value: unknown): VaultMetadataV1 {
 }
 
 export function decodeDeviceSlot(value: unknown): DeviceKeySlotV1 {
-  const input = record(value, "deviceSlot");
+  const input = canonicalRecord(value, "deviceSlot", [
+    "version",
+    "slotId",
+    "vaultId",
+    "deviceId",
+    "algorithm",
+    "wrappedRootKey",
+  ]);
   return {
     version: literal(input.version, 1, "deviceSlot.version"),
     slotId: uuid(input.slotId, "deviceSlot.slotId"),
@@ -36,31 +57,10 @@ export function decodeDeviceSlot(value: unknown): DeviceKeySlotV1 {
   };
 }
 
-export function decodePassphraseSlot(value: unknown): PassphraseKeySlotV1 {
-  const input = record(value, "passphraseSlot");
-  return {
-    version: literal(input.version, 1, "passphraseSlot.version"),
-    slotId: uuid(input.slotId, "passphraseSlot.slotId"),
-    vaultId: uuid(input.vaultId, "passphraseSlot.vaultId"),
-    algorithm: literal(
-      input.algorithm,
-      "wrap:xchacha20poly1305:passphrase:v1",
-      "passphraseSlot.algorithm",
-    ),
-    kdf: literal(input.kdf, "kdf:argon2id:v1", "passphraseSlot.kdf"),
-    operations: literal(input.operations, 3, "passphraseSlot.operations"),
-    memoryBytes: integer(input.memoryBytes, "passphraseSlot.memoryBytes"),
-    salt: bytes(input.salt, 16, "passphraseSlot.salt"),
-    nonce: bytes(input.nonce, 24, "passphraseSlot.nonce"),
-    ciphertext: bytes(input.ciphertext, 48, "passphraseSlot.ciphertext"),
-  };
-}
-
 export function decodeVaultRecords(input: {
   readonly metadata: unknown;
   readonly deviceSlot: unknown;
   readonly deviceKey: unknown;
-  readonly passphraseSlot: unknown;
   readonly generations: unknown;
   readonly head: unknown;
 }): VaultRecordsV1 {
@@ -72,15 +72,17 @@ export function decodeVaultRecords(input: {
   if (metadata.vaultId !== deviceSlot.vaultId || metadata.deviceId !== deviceSlot.deviceId) {
     throw new DomainValidationError("deviceSlot", "does not belong to the active Vault and Device");
   }
-  const passphraseSlot =
-    input.passphraseSlot === undefined ? undefined : decodePassphraseSlot(input.passphraseSlot);
-  if (passphraseSlot !== undefined && passphraseSlot.vaultId !== metadata.vaultId) {
-    throw new DomainValidationError("passphraseSlot", "does not belong to the active Vault");
-  }
   if (!Array.isArray(input.generations)) {
     throw new DomainValidationError("vaultGenerations", "must be an array");
   }
-  const headInput = record(input.head, "vaultHead");
+  const headInput = canonicalRecord(input.head, "vaultHead", [
+    "version",
+    "vaultId",
+    "generationId",
+    "generationNumber",
+    "appendedObjectIds",
+    "appendedEventIds",
+  ]);
   const head = {
     version: literal(headInput.version, 1, "vaultHead.version"),
     vaultId: uuid(headInput.vaultId, "vaultHead.vaultId"),
@@ -93,13 +95,25 @@ export function decodeVaultRecords(input: {
     throw new DomainValidationError("vaultHead", "does not belong to the active Vault");
   }
   const generationValue = input.generations.find((value) => {
-    const candidate = record(value, "vaultGeneration");
+    const candidate = canonicalRecord(value, "vaultGeneration", [
+      "version",
+      "generationId",
+      "generationNumber",
+      "predecessorGenerationId",
+      "envelopeBytes",
+    ]);
     return candidate.generationId === head.generationId;
   });
   if (generationValue === undefined) {
     throw new DomainValidationError("vaultGeneration", "active generation is missing");
   }
-  const generationInput = record(generationValue, "vaultGeneration");
+  const generationInput = canonicalRecord(generationValue, "vaultGeneration", [
+    "version",
+    "generationId",
+    "generationNumber",
+    "predecessorGenerationId",
+    "envelopeBytes",
+  ]);
   const generation = {
     version: literal(generationInput.version, 1, "vaultGeneration.version"),
     generationId: uuid(generationInput.generationId, "vaultGeneration.generationId"),
@@ -121,7 +135,6 @@ export function decodeVaultRecords(input: {
     metadata,
     deviceSlot,
     deviceKey: input.deviceKey,
-    ...(passphraseSlot === undefined ? {} : { passphraseSlot }),
     generation,
     head,
   };

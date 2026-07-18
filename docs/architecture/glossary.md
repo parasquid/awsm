@@ -32,6 +32,20 @@ Implementation-specific terminology SHALL NOT replace architectural terminology.
 
 # 3. Primary Concepts
 
+## Workspace
+
+A management context that enumerates one or more independent Vaults.
+
+A Workspace does not combine Vault ownership, authority, cryptographic material, synchronization state, or storage identity.
+
+The active Vault selection within a Workspace is device-local operational state. It is not authoritative Vault history and is not synchronized.
+
+## Active Vault
+
+The Vault selected on a device as the context for new Commands and user-interface operations.
+
+Changing the Active Vault does not create a Vault Event. A Command accepted in one Vault context MUST NOT be executed in another Vault context.
+
 ## Vault
 
 The complete authoritative archive belonging to a user or shared context.

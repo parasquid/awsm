@@ -17,6 +17,7 @@
     "zip": "wxt zip"
   },
   "dependencies": {
+    "@zip.js/zip.js": "2.8.31",
     "cborg": "5.1.7",
     "fflate": "0.8.3",
     "libsodium-wrappers-sumo": "0.8.4"

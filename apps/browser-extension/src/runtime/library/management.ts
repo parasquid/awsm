@@ -12,7 +12,7 @@ import { DomainValidationError } from "../../domain/errors";
 import { record, string, uuid } from "../../domain/validation";
 import type {
   StoredCollectionProjectionV1,
-  StoredEventV1,
+  StoredEvent,
   StoredProjectionV1,
 } from "../../drivers/indexeddb";
 import {
@@ -20,6 +20,7 @@ import {
   type CollectionTopologyEventV1,
   resolveCollectionId,
 } from "./collections";
+import { assertCanonicalEventFields } from "./vacuum";
 
 export interface CaptureCollectionMoveV1 {
   readonly bundleId: string;
@@ -36,7 +37,7 @@ export interface CapturesMovedFactV1 {
 export type CollectionOperationFactV1 = CollectionTopologyEventV1 | CapturesMovedFactV1;
 
 export interface PreparedCollectionOperationV1 {
-  readonly event: StoredEventV1;
+  readonly event: StoredEvent;
   readonly projections: readonly StoredProjectionV1[];
   readonly collectionProjection?: StoredCollectionProjectionV1;
 }
@@ -225,10 +226,11 @@ export async function prepareCollectionOperation(
               : { revertsEventId: input.fact.revertsEventId }),
           }),
   };
-  const event: StoredEventV1 = {
+  const event: StoredEvent = {
     version: 1,
+    vaultId: input.vaultId,
     eventId: input.eventId,
-    objectId: anchor.bundleObjectId,
+    referencedObjectIds: [anchor.bundleObjectId],
     orderingTimestamp: input.timestamp,
     envelopeBytes: await encryptedBytes(
       input,
@@ -299,7 +301,7 @@ export async function prepareCollectionOperation(
 }
 
 export async function decodeCollectionOperationEvent(
-  event: StoredEventV1,
+  event: StoredEvent,
   rootKey: CryptoKey,
   vaultId: string,
 ): Promise<
@@ -326,6 +328,7 @@ export async function decodeCollectionOperationEvent(
       "collectionEvent",
     );
     const eventType = string(payload.eventType, "collectionEvent.eventType");
+    assertCanonicalEventFields(payload, eventType);
     if (eventType === "CollectionsMerged") {
       if (!Array.isArray(payload.sourceCollectionIds)) {
         throw new DomainValidationError("collectionEvent.sourceCollectionIds", "must be an array");

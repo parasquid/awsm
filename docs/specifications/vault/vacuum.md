@@ -53,6 +53,10 @@ Vacuum SHALL:
 9. atomically activate the successor and remove unreachable local Objects, Events, Projection rows, and obsolete operational outcomes; and
 10. report deleted Capture count and actual reclaimed bytes without plaintext content in diagnostics.
 
+`VaultCreated` and `VaultRenamed` are supported authoritative Events. Vacuum MUST authenticate and retain them byte-for-byte, include them in successor reachability, rebuild the Vault Name Projection, and prove that the final name and source Event remain unchanged before activation.
+
+Every Vacuum lease, estimate, snapshot, reachability query, activation, and collection operation MUST be scoped to one Vault ID and MUST NOT inspect or modify another Vault in the same Workspace.
+
 After successful Vacuum, every pre-Vacuum Active Capture MUST remain Active and authenticatable, Deleted MUST be empty, and no active reference may point to an omitted Object.
 
 Vacuum MUST retain or rewrite `CollectionsMerged`, `CapturesMoved`, and `CollectionMergeReverted` whenever they affect a retained Capture's effective Collection. It MAY omit facts concerning only reclaimed Captures or identities with no retained members. A mixed `CapturesMoved` Event MUST be rewritten under a new Event ID with only retained moves. Verification MUST prove that each retained Capture remains in the same effective Collection.

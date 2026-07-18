@@ -46,7 +46,6 @@ export function collectionLayerBundleIds(group: CaptureGroup): readonly string[]
 export function mergeDropRequest(sourceCollectionId: string, destinationCollectionId: string) {
   if (sourceCollectionId === destinationCollectionId) return undefined;
   return {
-    version: 1 as const,
     type: "MergeCollections" as const,
     destinationCollectionId,
     sourceCollectionIds: [sourceCollectionId],
@@ -60,9 +59,8 @@ export function captureDropRequest(
   const canonicalIds = [...new Set(bundleIds)].toSorted();
   if (canonicalIds.length === 0) return undefined;
   return destinationCollectionId === "new"
-    ? { version: 1 as const, type: "ExtractCaptures" as const, bundleIds: canonicalIds }
+    ? { type: "ExtractCaptures" as const, bundleIds: canonicalIds }
     : {
-        version: 1 as const,
         type: "MoveCaptures" as const,
         bundleIds: canonicalIds,
         destinationCollectionId,

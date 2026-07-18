@@ -33,7 +33,7 @@ Artifacts MUST provide:
 - independent validation
 - explicit semantics
 - format neutrality
-- forward compatibility
+- canonical format validation
 
 ---
 
@@ -92,7 +92,7 @@ USER
 
 Future Kinds MAY be introduced.
 
-Readers MUST ignore unknown Kinds.
+Readers MUST reject unknown Kinds.
 
 ---
 
@@ -252,7 +252,7 @@ Roles SHOULD remain stable across Bundle versions.
 
 # 15. Unknown Artifacts
 
-Readers MUST preserve unknown Artifact Kinds and Roles.
+Readers MUST reject unknown Artifact Kinds and Roles.
 
 Unsupported Artifacts MUST NOT invalidate the Bundle.
 
@@ -290,15 +290,15 @@ Derived Artifacts never replace original Artifacts.
 
 ---
 
-# 18. Future Compatibility
+# 18. Unsupported Artifact Semantics
 
-Future Bundle versions MAY introduce:
+Artifact semantics outside this specification are unsupported, including:
 
 - new Kinds
 - new Roles
 - new MIME Types
 
-Older readers SHOULD preserve unsupported Artifacts.
+Readers MUST reject unsupported Artifact semantics.
 
 ---
 

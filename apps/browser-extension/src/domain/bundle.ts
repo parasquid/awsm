@@ -79,7 +79,6 @@ async function artifactReference(input: ArtifactInput): Promise<ArtifactReferenc
 
 function manifestWireValue(manifest: BundleManifestV1): Readonly<Record<string, unknown>> {
   return {
-    ...manifest.unknownFields,
     manifestVersion: manifest.manifestVersion,
     bundleVersion: manifest.bundleVersion,
     artifactSchemaVersion: manifest.artifactSchemaVersion,
@@ -161,7 +160,6 @@ export async function buildBundle(input: BuildBundleInput): Promise<BuiltBundle>
     bundleSerialization: "bundle:zip:v1",
     manifestSerialization: "cbor:canonical:v1",
     artifacts: await Promise.all(artifactInputs.map(artifactReference)),
-    unknownFields: {},
   };
   decodeBundleManifest(manifestWireValue(manifest));
 

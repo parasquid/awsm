@@ -33,7 +33,7 @@ The cryptographic architecture must provide:
 
 - zero-knowledge storage
 - authenticated encryption
-- forward migration
+- explicit canonical algorithms
 - key rotation
 - device enrollment
 - algorithm agility
@@ -176,7 +176,7 @@ Encrypt for Device C
 
 The Coordination Server stores wrapped keys only.
 
-The initial Chrome Host uses a non-exportable Web Crypto device key to wrap the Vault Root Key locally. It may also create a passphrase-derived wrapper during onboarding. These are multiple wrappers for the same Vault Root Key.
+The initial browser Host uses a non-exportable device key to wrap the Vault Root Key locally. Local-only Vaults do not persist a passphrase wrapper. A passphrase-derived wrapper exists only inside a user-created Vault Package and is independent of local unlock state.
 
 Bundle, Event, and Projection keys are context-derived and are not stored as individually wrapped keys in the initial implementation.
 
@@ -283,7 +283,7 @@ Encrypted objects should record:
 - key version
 - object format version
 
-This enables future migration without ambiguity.
+Before the first release, these identifiers describe only the canonical current formats and do not authorize alternate readers.
 
 ---
 
@@ -304,7 +304,7 @@ Examples:
 - Windows DPAPI / Credential Manager
 - Linux Secret Service
 
-Fallback storage should be clearly identified.
+An adapter that cannot meet the secure-storage contract must report the capability as unavailable rather than weakening storage.
 
 ---
 
@@ -329,7 +329,7 @@ Every encrypted object records:
 - key version
 - algorithm version
 
-Older objects remain readable while migration is in progress.
+Only objects using the canonical current cryptographic formats are readable before the first release.
 
 ---
 
@@ -337,7 +337,7 @@ Older objects remain readable while migration is in progress.
 
 The architecture should support:
 
-- post-quantum migration
+- post-quantum cryptography after an explicit future design decision
 - hardware-backed keys
 - threshold recovery
 - shared Vaults
@@ -380,7 +380,7 @@ Should Metadata Keys be derived directly from the Vault Root Key or through an i
 
 Should Vault Root Key rotation be automatic after device revocation?
 
-How should long-running migrations be coordinated across multiple devices?
+What explicit release policy should govern any future cryptographic format change?
 
 How should shared Vaults derive participant-specific keys?
 

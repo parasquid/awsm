@@ -8,10 +8,11 @@ import {
 import { deriveContextKeyFromCryptoKey } from "../../src/crypto/hkdf";
 import { decodeCanonicalCbor, encodeCanonicalCbor } from "../../src/domain/cbor";
 import type { LibraryItemV1 } from "../../src/domain/contracts";
-import type { StoredEventV1, StoredObjectV1, StoredVaultHeadV1 } from "../../src/drivers/indexeddb";
+import type { StoredEvent, StoredObjectV1, StoredVaultHeadV1 } from "../../src/drivers/indexeddb";
 import type { LibraryService } from "../../src/runtime/library/service";
 import { type VacuumRepository, VaultVacuumService } from "../../src/runtime/library/vacuum";
 import { prepareVaultGeneration } from "../../src/runtime/vault/generation";
+import { prepareVaultNameChange } from "../../src/runtime/vault/name-crypto";
 
 const id = (suffix: number): string =>
   `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
@@ -62,7 +63,7 @@ async function storedEvent(
   eventId: string,
   objectId: string,
   payload: Record<string, unknown>,
-): Promise<StoredEventV1> {
+): Promise<StoredEvent> {
   const eventKey = await deriveContextKeyFromCryptoKey(key, {
     vaultId,
     domain: "vault:event:v1",
@@ -71,8 +72,9 @@ async function storedEvent(
   });
   return {
     version: 1,
+    vaultId,
     eventId,
-    objectId,
+    referencedObjectIds: [objectId],
     orderingTimestamp: "2026-07-17T00:00:00.000Z",
     envelopeBytes: encodeEncryptedEnvelope(
       await encryptEnvelope({
@@ -87,7 +89,7 @@ async function storedEvent(
 
 async function decryptedStoredEvent(
   key: CryptoKey,
-  event: StoredEventV1,
+  event: StoredEvent,
 ): Promise<Record<string, unknown>> {
   const eventKey = await deriveContextKeyFromCryptoKey(key, {
     vaultId,
@@ -127,6 +129,7 @@ describe("Vault Vacuum", () => {
     const repository: VacuumRepository = {
       listStoredObjects: async () => [],
       listStoredEvents: async () => [event],
+      getVaultNameProjection: async () => undefined,
       acquireVacuum: async () => headWith([], [event.eventId]),
       updateVacuumStage: async () => {},
       getVaultGeneration: async () => sourceGeneration,
@@ -162,6 +165,7 @@ describe("Vault Vacuum", () => {
         } as unknown as StoredObjectV1,
       ],
       listStoredEvents: async () => [],
+      getVaultNameProjection: async () => undefined,
       acquireVacuum: async () => headWith([deleted.bundleObjectId], []),
       updateVacuumStage: async () => {},
       getVaultGeneration: async () => sourceGeneration,
@@ -189,7 +193,7 @@ describe("Vault Vacuum", () => {
       objectType: "Bundle",
       envelopeBytes: new Uint8Array([1, 2, 3]),
     }));
-    const events = await Promise.all(
+    const captureEvents = await Promise.all(
       [active, deleted].map((capture, index) =>
         storedEvent(key, id(50 + index), capture.bundleObjectId, {
           eventType: "BundleRegistered",
@@ -197,10 +201,22 @@ describe("Vault Vacuum", () => {
         }),
       ),
     );
+    const nameChange = await prepareVaultNameChange({
+      rootKey: key,
+      eventType: "VaultCreated",
+      vaultId,
+      deviceId,
+      eventId: id(52),
+      timestamp: "2026-07-17T00:00:00.000Z",
+      name: "Amber Archive",
+    });
+    const nameEvent = nameChange.event;
+    const events = [...captureEvents, nameEvent];
     let committed: Parameters<VacuumRepository["commitVacuum"]>[0] | undefined;
     const repository: VacuumRepository = {
       listStoredObjects: async () => objects,
       listStoredEvents: async () => events,
+      getVaultNameProjection: async () => nameChange.projection,
       acquireVacuum: async (): Promise<StoredVaultHeadV1> =>
         headWith(
           objects.map((object) => object.objectId),
@@ -222,6 +238,7 @@ describe("Vault Vacuum", () => {
     ).resolves.toMatchObject({ deletedCaptureCount: 1 });
     if (committed === undefined) throw new Error("Vacuum did not commit");
     expect(committed.objectIds).toEqual([deleted.bundleObjectId]);
+    expect(committed.eventIds).not.toContain(nameEvent.eventId);
     expect(committed.head).toMatchObject({ vaultId, generationNumber: 1 });
     expect(committed.expectedGenerationId).toBe(initialHead.generationId);
     const generationKey = await deriveContextKeyFromCryptoKey(key, {
@@ -241,6 +258,7 @@ describe("Vault Vacuum", () => {
       generationNumber: 1,
       predecessorGenerationId: initialHead.generationId,
       retainedObjectIds: [active.bundleObjectId],
+      retainedEventIds: [captureEvents[0]?.eventId, nameEvent.eventId].toSorted(),
       reason: "Vacuum",
       integrity: { algorithm: "hash:sha256:v1" },
     });
@@ -274,6 +292,7 @@ describe("Vault Vacuum", () => {
           bundleId: deleted.bundleId,
         }),
       ],
+      getVaultNameProjection: async () => undefined,
       acquireVacuum: async () =>
         headWith([active.bundleObjectId, deleted.bundleObjectId], [id(60)]),
       updateVacuumStage: async () => {},
@@ -297,7 +316,7 @@ describe("Vault Vacuum", () => {
     expect(released).toBe(true);
   });
 
-  it("rewrites mixed lifecycle Events under new IDs while preserving supported unknown fields", async () => {
+  it("rejects lifecycle Events with fields outside the canonical schema", async () => {
     const key = await rootKey();
     const sourceGeneration = await initialGeneration(key);
     const active = item("Active", 20);
@@ -330,6 +349,7 @@ describe("Vault Vacuum", () => {
     const repository: VacuumRepository = {
       listStoredObjects: async () => objects,
       listStoredEvents: async () => events,
+      getVaultNameProjection: async () => undefined,
       acquireVacuum: async () =>
         headWith(
           objects.map((object) => object.objectId),
@@ -347,25 +367,10 @@ describe("Vault Vacuum", () => {
       detail: async () => ({ item: active, metadata: {}, mhtml: new Uint8Array([1]) }),
     } as unknown as LibraryService;
 
-    await new VaultVacuumService(repository, library, key, vaultId, deviceId).execute();
-    if (committed === undefined) throw new Error("Vacuum did not commit");
-    expect(committed.eventIds).toEqual([
-      registrations[1]?.eventId,
-      deletedEvent.eventId,
-      restoredEvent.eventId,
-    ]);
-    expect(committed.eventsToAdd).toHaveLength(2);
-    expect(committed.eventsToAdd.map((event) => event.eventId)).not.toContain(deletedEvent.eventId);
-    const rewrittenDelete = await decryptedStoredEvent(
-      key,
-      committed.eventsToAdd[0] as StoredEventV1,
-    );
-    expect(rewrittenDelete).toMatchObject({
-      eventType: "CapturesDeleted",
-      bundleIds: [active.bundleId],
-      futureOptional: { preserve: true },
-      rewrite: { version: 1, sourceEventId: deletedEvent.eventId },
-    });
+    await expect(
+      new VaultVacuumService(repository, library, key, vaultId, deviceId).execute(),
+    ).rejects.toThrow(/canonical Event schema/u);
+    expect(committed).toBeUndefined();
   });
 
   it("retains Collection topology and rewrites mixed capture moves", async () => {
@@ -395,7 +400,16 @@ describe("Vault Vacuum", () => {
       destinationCollectionId: id(99),
       sourceCollectionIds: [active.assignedCollectionId],
     });
-    const events = [...registrations, moveEvent, mergeEvent];
+    const nameChange = await prepareVaultNameChange({
+      rootKey: key,
+      eventType: "VaultCreated",
+      vaultId,
+      deviceId,
+      eventId: id(84),
+      timestamp: "2026-07-17T00:00:00.000Z",
+      name: "Amber Archive",
+    });
+    const events = [...registrations, moveEvent, mergeEvent, nameChange.event];
     const objects: StoredObjectV1[] = [active, deleted].map((capture) => ({
       version: 1,
       objectId: capture.bundleObjectId,
@@ -406,6 +420,7 @@ describe("Vault Vacuum", () => {
     const repository: VacuumRepository = {
       listStoredObjects: async () => objects,
       listStoredEvents: async () => events,
+      getVaultNameProjection: async () => nameChange.projection,
       acquireVacuum: async () =>
         headWith(
           objects.map((object) => object.objectId),
@@ -427,10 +442,7 @@ describe("Vault Vacuum", () => {
     if (committed === undefined) throw new Error("Vacuum did not commit");
     expect(committed.eventIds).toContain(moveEvent.eventId);
     expect(committed.eventIds).not.toContain(mergeEvent.eventId);
-    const rewrittenMove = await decryptedStoredEvent(
-      key,
-      committed.eventsToAdd[0] as StoredEventV1,
-    );
+    const rewrittenMove = await decryptedStoredEvent(key, committed.eventsToAdd[0] as StoredEvent);
     expect(rewrittenMove).toMatchObject({
       eventType: "CapturesMoved",
       moves: [expect.objectContaining({ bundleId: active.bundleId })],

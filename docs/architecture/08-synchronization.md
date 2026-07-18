@@ -494,7 +494,7 @@ Content changes should not require metadata duplication.
 
 ## Why Replay?
 
-Replay enables deterministic reconstruction and future migrations.
+Replay enables deterministic reconstruction.
 
 ---
 

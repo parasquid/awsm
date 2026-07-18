@@ -1,9 +1,8 @@
 import { deriveContextKey, deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
-import { derivePassphraseKey } from "../../crypto/passphrase";
 import { wipe } from "../../crypto/sodium";
 import { xchachaDecrypt, xchachaEncrypt } from "../../crypto/xchacha";
 import { encodeCanonicalCbor } from "../../domain/cbor";
-import type { DeviceKeySlotV1, PassphraseKeySlotV1, VaultVerifierV1 } from "./contracts";
+import type { DeviceKeySlotV1, VaultVerifierV1 } from "./contracts";
 
 const VERIFIER_PLAINTEXT = new TextEncoder().encode("AWSM-VAULT-VERIFIER-V1");
 
@@ -18,19 +17,6 @@ export function deviceSlotAad(slot: DeviceKeySlotV1): Uint8Array {
     slot.deviceId,
     slot.slotId,
     slot.algorithm,
-  ]);
-}
-
-function passphraseSlotAad(slot: PassphraseKeySlotV1): Uint8Array {
-  return encodeCanonicalCbor([
-    slot.version,
-    slot.vaultId,
-    slot.slotId,
-    slot.algorithm,
-    slot.kdf,
-    slot.operations,
-    slot.memoryBytes,
-    slot.salt,
   ]);
 }
 
@@ -72,67 +58,6 @@ export async function unwrapDeviceSlot(
     ["sign"],
   );
   return new Uint8Array(await crypto.subtle.exportKey("raw", rootCarrier));
-}
-
-export async function createPassphraseSlot(
-  rawRootKey: Uint8Array,
-  vaultId: string,
-  passphrase: string,
-): Promise<PassphraseKeySlotV1> {
-  const base = {
-    version: 1,
-    slotId: crypto.randomUUID(),
-    vaultId,
-    algorithm: "wrap:xchacha20poly1305:passphrase:v1",
-    kdf: "kdf:argon2id:v1",
-    operations: 3,
-    memoryBytes: 64 * 1024 * 1024,
-    salt: randomBytes(16),
-    nonce: randomBytes(24),
-  } as const;
-  const placeholder: PassphraseKeySlotV1 = {
-    ...base,
-    ciphertext: new Uint8Array(rawRootKey.byteLength + 16),
-  };
-  const key = await derivePassphraseKey({
-    passphrase,
-    salt: base.salt,
-    operations: base.operations,
-    memoryBytes: base.memoryBytes,
-  });
-  try {
-    const ciphertext = await xchachaEncrypt({
-      plaintext: rawRootKey,
-      aad: passphraseSlotAad(placeholder),
-      nonce: base.nonce,
-      key,
-    });
-    return { ...base, ciphertext };
-  } finally {
-    await wipe(key);
-  }
-}
-
-export async function unwrapPassphraseSlot(
-  slot: PassphraseKeySlotV1,
-  passphrase: string,
-): Promise<Uint8Array> {
-  const key = await derivePassphraseKey({
-    passphrase,
-    salt: slot.salt,
-    operations: slot.operations,
-    memoryBytes: slot.memoryBytes,
-  });
-  try {
-    return await xchachaDecrypt({
-      ciphertext: slot.ciphertext,
-      aad: passphraseSlotAad(slot),
-      nonce: slot.nonce,
-      key,
-    });
-  } finally {
-    await wipe(key);
-  }
 }
 
 async function verifierKey(rootKey: CryptoKey, slot: DeviceKeySlotV1): Promise<Uint8Array> {

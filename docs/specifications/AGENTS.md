@@ -37,7 +37,7 @@ These Draft v1.0 documents define the platform's versioned formats, protocol mes
 - Use MUST/SHALL for requirements, SHOULD for recommendations, and MAY for supported options; avoid casual uppercase normative terms.
 - Put encoding layouts, validation, invariants, unknown-version behavior, and error conditions in the owning specification.
 - Define persisted/wire structures independently of a language, framework, database, browser, or transport.
-- Preserve unknown optional fields and unsupported content when forward-compatibility rules require it; reject unsupported mandatory semantics explicitly.
+- Before the user declares the first release and explicitly authorizes compatibility, specify and implement only the one canonical current format. Do not preserve or reinterpret unsupported fields or content from discarded drafts. Reject anything outside the canonical specification.
 - Require deterministic serialization, stable identifiers, idempotent retries, and integrity verification at trust/storage boundaries.
 
 ## DEPENDENCY ORDER

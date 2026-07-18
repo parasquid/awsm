@@ -67,8 +67,9 @@ function registration(): AtomicRegistrationV1 {
     },
     event: {
       version: 1,
+      vaultId: fixedId(10),
       eventId: result.eventId,
-      objectId: result.bundleObjectId,
+      referencedObjectIds: [result.bundleObjectId],
       orderingTimestamp: timestamp,
       envelopeBytes: new Uint8Array([2]),
     },

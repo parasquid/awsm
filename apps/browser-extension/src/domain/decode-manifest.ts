@@ -67,10 +67,9 @@ export function decodeBundleManifest(value: unknown): BundleManifestV1 {
     throw new DomainValidationError("manifest.artifacts", "contains duplicate identifiers");
   }
 
-  const unknownFields: Record<string, unknown> = {};
-  for (const [key, fieldValue] of Object.entries(input)) {
+  for (const key of Object.keys(input)) {
     if (!MANIFEST_KEYS.has(key)) {
-      unknownFields[key] = fieldValue;
+      throw new DomainValidationError(`manifest.${key}`, "is not part of the canonical Manifest");
     }
   }
 
@@ -106,6 +105,5 @@ export function decodeBundleManifest(value: unknown): BundleManifestV1 {
       "manifest.manifestSerialization",
     ),
     artifacts,
-    unknownFields,
   };
 }

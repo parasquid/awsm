@@ -33,11 +33,11 @@ The framework must provide:
 
 - isolation
 - stability
-- version compatibility
+- one canonical extension API
 - capability-based security
 - deterministic behavior
 - offline operation
-- forward compatibility
+- strict API validation
 
 ---
 
@@ -375,7 +375,7 @@ Explicit capabilities reduce the impact of faulty or malicious extensions.
 
 ## Why Stable APIs?
 
-Extensions should continue working across runtime upgrades whenever compatibility permits.
+Before the first release, extensions target only the canonical current Runtime API.
 
 ---
 

@@ -7,16 +7,28 @@ import { DomainValidationError } from "../../domain/errors";
 import {
   boolean,
   bytes,
+  canonicalRecord,
   httpUrl,
   literal,
-  record,
   string,
   timestamp,
   uuid,
 } from "../../domain/validation";
 
 export function decodeLibraryItem(value: unknown): LibraryItemV1 {
-  const input = record(value, "libraryItem");
+  const input = canonicalRecord(value, "libraryItem", [
+    "version",
+    "bundleId",
+    "bundleObjectId",
+    "assignedCollectionId",
+    "title",
+    "originalUrl",
+    "capturedAt",
+    "screenshotPresent",
+    "status",
+    "thumbnailWebp",
+    "warnings",
+  ]);
   if (!Array.isArray(input.warnings)) {
     throw new DomainValidationError("libraryItem.warnings", "must be an array");
   }

@@ -53,6 +53,23 @@ The first Chrome extension slice follows the task-level TDD gates in `docs/plans
 
 # Architectural Invariants
 
+Workspace and multiple-Vault tests MUST prove:
+
+- every Object, Event, Projection, Capture Job, outcome, generation, head, and Vacuum lease is
+  isolated by an explicit Vault ID even when two Vaults use colliding local entity IDs;
+- every Vault-scoped request rejects a stale expected Vault ID before plaintext work and again at
+  its authoritative transaction boundary;
+- Create, Select, and Rename expose either the complete predecessor state or the complete successor
+  state and never a partial Workspace/Vault combination;
+- switching locks both contexts, releases the previous Root Key only after commit, and never retains
+  an inactive Root Key;
+- Capture Jobs remain pinned to their accepted Vault and management is rejected while Capture or
+  Vacuum is active;
+- encrypted Vault names replay deterministically, remain visible from the encrypted Workspace cache
+  while locked, rebuild after unlock, and survive Vacuum unchanged; and
+- popup and Library observe the same global Active Vault while cross-Vault deep links require an
+  explicit switch.
+
 The following invariants are fundamental.
 
 ## Immutability
@@ -96,11 +113,10 @@ The following invariants are fundamental.
 
 ---
 
-## Compatibility
+## Canonical Input Handling
 
-- Older clients ignore unknown Event fields safely.
-- Unknown Event types are preserved.
-- Protocol negotiation is explicit.
+- Inputs outside the current canonical Event and protocol specifications are rejected safely.
+- Tests do not retain fixtures or expectations from discarded pre-release designs.
 
 ---
 
@@ -193,21 +209,27 @@ Vault Vacuum tests MUST cover delete/restore replay, retained offline Bundle aut
 
 Collection-management tests MUST begin with failing tests and cover exact fragmentless URL routing, query-sensitive automatic grouping, deterministic tie-breaking, merge redirects and cycles, Move/Extract assignment, compensating Undo, stale-state rejection, atomic Event/Projection commits, Projection rebuild, and Vacuum preservation. Packaged-browser tests MUST exercise accessible controls and native drag and drop, including Deleted-member behavior, known URLs, tail visit-original routing, and the ten-second single-operation Undo presentation.
 
+Multiple-Vault tests MUST begin with failing tests and cover independent Root Keys, Vault-prefixed storage isolation, stale-context rejection, atomic Create/Select/Rename, manual locking on selection, Vault-scoped Capture Jobs and recovery, encrypted locked-name caches, deterministic name replay, duplicate-name disambiguation, Projection rebuild, Vacuum isolation, and packaged-browser keyboard workflows across popup and Library.
+
+Long-lived UI tests MUST keep multiple surfaces open and prove that successful mutations reconcile
+every affected surface without reload. Coverage MUST include lock/unlock, active Vault and name
+changes, long-running busy/completion state, and content changes. Reconciliation tests MUST prove
+that invalidation is payload-free, canonical state is refetched, bursts cannot render stale responses,
+and context-bound plaintext is discarded before a potentially locking change is resolved.
+
 ↓
 
 Verify identical state
 
 ---
 
-# Cross-Version Tests
+# Client-Service Contract Tests
 
-Every release should verify compatibility between versions.
+Before the first release, tests verify the one canonical client and Service contract.
 
 Examples:
 
-Old Client ↔ New Server
-
-New Client ↔ Old Server
+Current Client ↔ Current Service
 
 Mixed Event Versions
 
@@ -329,15 +351,17 @@ Tests should account for browser-specific API differences.
 
 ---
 
-# Compatibility Matrix
+# Canonical Format Coverage
 
-The project should maintain a compatibility matrix covering:
+Before the first release, tests cover only the current canonical:
 
-- protocol versions
-- bundle versions
-- event versions
-- extension API versions
-- cryptographic versions
+- protocol
+- Bundle format
+- Event format
+- extension API
+- cryptographic formats
+
+Tests and fixtures for discarded pre-release representations must be removed.
 
 ---
 
@@ -352,7 +376,7 @@ Every change should execute:
 - integration tests
 - system tests
 
-Long-running compatibility and performance suites may execute separately.
+Long-running performance suites may execute separately.
 
 ---
 
@@ -370,9 +394,9 @@ Many synchronization and replay bugs are exposed more effectively by generated i
 
 ---
 
-## Why Cross-Version Testing?
+## Why Contract Testing?
 
-Independent client and server evolution requires explicit compatibility verification.
+Contract tests prove that the current client and Service implement the same canonical protocol.
 
 ---
 

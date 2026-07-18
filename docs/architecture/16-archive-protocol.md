@@ -35,8 +35,8 @@ The protocol must provide:
 - transport independence
 - resumable synchronization
 - idempotent operations
-- zero-knowledge compatibility
-- version negotiation
+- zero-knowledge coordination
+- one canonical protocol
 - extensibility
 
 ---
@@ -159,17 +159,15 @@ Vault decryption remains a client concern.
 
 ---
 
-# Version Negotiation
+# Protocol Contract
 
-Every request includes:
-
-Protocol Version
+Every request conforms to the one protocol contract, including its required:
 
 Client Version
 
 Capability Set
 
-The server may reject unsupported protocol versions.
+The server rejects requests outside the canonical contract.
 
 ---
 
@@ -343,9 +341,7 @@ Streaming should not alter protocol semantics.
 
 Unknown protocol operations should be rejected gracefully.
 
-Unknown fields should be preserved where possible.
-
-The protocol is designed for forward compatibility.
+Unknown fields and operations are rejected unless the canonical specification explicitly defines them.
 
 ---
 
@@ -381,9 +377,9 @@ The server provides durable coordination only.
 
 ---
 
-## Why Version Negotiation?
+## Why One Protocol Contract?
 
-Independent evolution of clients and servers requires explicit compatibility management.
+Before the first release, one contract prevents discarded development formats from becoming product behavior.
 
 ---
 

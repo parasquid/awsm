@@ -54,7 +54,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     });
     const popup = await extensionPopup(context, extensionId);
     await popup.locator("body").press("Tab");
-    await expect(popup.getByRole("checkbox", { name: /Add a passphrase/u })).toBeFocused();
+    await expect(popup.getByRole("textbox", { name: "Vault name" })).toBeFocused();
+    await popup.keyboard.press("Tab");
+    await expect(popup.getByRole("button", { name: "Generate another name" })).toBeFocused();
     await popup.keyboard.press("Tab");
     await expect(popup.getByRole("button", { name: "Create Vault" })).toBeFocused();
     await popup.keyboard.press("Enter");
@@ -78,7 +80,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       });
       try {
         return await extensionApi.runtime.sendMessage({
-          type: "awsm:stitch-screenshot:v1",
+          type: "awsm:stitch-screenshot",
           plan: { outputWidth: 1, outputHeight: 1, tiles: [] },
           tiles: [],
         });
@@ -95,7 +97,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
               query(value: unknown): Promise<readonly { id?: number; url?: string }[]>;
               update(id: number, value: unknown): Promise<unknown>;
             };
-            runtime: { sendMessage(value: unknown, callback: () => void): void };
+            runtime: { sendMessage(value: unknown, callback: (response: unknown) => void): void };
           };
         }
       ).chrome;
@@ -105,14 +107,24 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       );
       if (fixtureTab?.id === undefined) throw new Error("The fixture tab is unavailable.");
       await extensionApi.tabs.update(fixtureTab.id, { active: true });
+      const state = await new Promise<{ workspace: { activeVaultId?: string } }>((resolve) =>
+        extensionApi.runtime.sendMessage({ type: "GetState" }, (response) => {
+          const result = response as { value: { workspace: { activeVaultId?: string } } };
+          resolve(result.value);
+        }),
+      );
+      if (state.workspace.activeVaultId === undefined) throw new Error("No active Vault.");
       extensionApi.runtime.sendMessage(
-        { version: 1, type: "CaptureActivePage", tabId: fixtureTab.id },
+        {
+          type: "CaptureActivePage",
+          expectedVaultId: state.workspace.activeVaultId,
+          tabId: fixtureTab.id,
+        },
         () => undefined,
       );
       await new Promise((resolve) => setTimeout(resolve, 100));
     });
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 10_000));
-    await popup.reload();
     const completedPopup = popup;
     await expect(completedPopup.getByText("Archived: AWSM tall fixture")).toBeVisible({
       timeout: 30_000,
@@ -123,7 +135,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     const capturePreview = completedPopup.getByRole("link", {
       name: "Open archived capture: AWSM tall fixture",
     });
-    await expect(capturePreview).toHaveAttribute("href", /library\.html\?bundleId=/u);
+    await expect(capturePreview).toHaveAttribute("href", /library\.html\?vaultId=[^&]+&bundleId=/u);
     const captureHref = await capturePreview.getAttribute("href");
     if (captureHref === null) throw new Error("The recent Capture link is unavailable.");
     const dismissRecent = completedPopup.getByRole("button", {
@@ -166,7 +178,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
               query(value: unknown): Promise<readonly { id?: number; url?: string }[]>;
               update(id: number, value: unknown): Promise<unknown>;
             };
-            runtime: { sendMessage(value: unknown, callback: () => void): void };
+            runtime: { sendMessage(value: unknown, callback: (response: unknown) => void): void };
           };
         }
       ).chrome;
@@ -176,8 +188,19 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       );
       if (fixtureTab?.id === undefined) throw new Error("The fixture tab is unavailable.");
       await extensionApi.tabs.update(fixtureTab.id, { active: true });
+      const state = await new Promise<{ workspace: { activeVaultId?: string } }>((resolve) =>
+        extensionApi.runtime.sendMessage({ type: "GetState" }, (response) => {
+          const result = response as { value: { workspace: { activeVaultId?: string } } };
+          resolve(result.value);
+        }),
+      );
+      if (state.workspace.activeVaultId === undefined) throw new Error("No active Vault.");
       extensionApi.runtime.sendMessage(
-        { version: 1, type: "CaptureActivePage", tabId: fixtureTab.id },
+        {
+          type: "CaptureActivePage",
+          expectedVaultId: state.workspace.activeVaultId,
+          tabId: fixtureTab.id,
+        },
         () => undefined,
       );
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
@@ -340,6 +363,37 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     expect(storageAudit.localStorageEntries).toBe(0);
     expect(storageAudit.cacheEntries).toBe(0);
 
+    await library.getByRole("button", { name: "Export Vault" }).click();
+    const exportDialog = library.getByRole("dialog", { name: "Export encrypted Vault" });
+    await expect(exportDialog).toBeVisible();
+    await expect(
+      exportDialog.getByText(/not saved and does not unlock the local Vault/u),
+    ).toBeVisible();
+    await library.screenshot({ path: testInfo.outputPath("export-dialog-wide.png") });
+    await library.setViewportSize({ width: 720, height: 900 });
+    await library.screenshot({ path: testInfo.outputPath("export-dialog-narrow.png") });
+    await expect(exportDialog.getByLabel("Export passphrase", { exact: true })).toBeVisible();
+    await expect(exportDialog.getByLabel("Confirm export passphrase")).toBeVisible();
+    await exportDialog.getByLabel("Export passphrase", { exact: true }).fill("too short");
+    await exportDialog.getByLabel("Confirm export passphrase").fill("too short");
+    await exportDialog.getByRole("button", { name: "Export Vault" }).click();
+    await expect(
+      exportDialog.getByText("Use at least 12 characters and no more than 1,024 UTF-8 bytes."),
+    ).toBeVisible();
+    await expect(exportDialog.getByLabel("Export passphrase", { exact: true })).toBeFocused();
+    await exportDialog
+      .getByLabel("Export passphrase", { exact: true })
+      .fill("correct horse battery staple");
+    await exportDialog
+      .getByLabel("Confirm export passphrase")
+      .fill("correct horse battery stapler");
+    await exportDialog.getByRole("button", { name: "Export Vault" }).click();
+    await expect(exportDialog.getByText("The passphrases do not match.")).toBeVisible();
+    await expect(exportDialog.getByLabel("Confirm export passphrase")).toBeFocused();
+    await exportDialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(exportDialog).not.toBeVisible();
+    await library.setViewportSize({ width: 1280, height: 720 });
+
     await expect(library.locator("iframe, object, embed")).toHaveCount(0);
     await expect(library.locator("body")).not.toHaveAttribute(
       "data-live-fixture",
@@ -461,8 +515,8 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
         "readonly",
       );
       const head = await new Promise<Record<string, unknown>>((resolveHead, reject) => {
-        const request = generationTransaction.objectStore("vault_head").get("active");
-        request.addEventListener("success", () => resolveHead(request.result), { once: true });
+        const request = generationTransaction.objectStore("vault_head").getAll();
+        request.addEventListener("success", () => resolveHead(request.result[0]), { once: true });
         request.addEventListener("error", () => reject(request.error), { once: true });
       });
       const generationCount = await new Promise<number>((resolveCount, reject) => {
@@ -477,6 +531,238 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     expect(vacuumStorage.generationCount).toBe(1);
     expect(vacuumStorage.head).toMatchObject({ version: 1, generationNumber: 1 });
     expect(consoleErrors).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("creates, captures, switches, locks, renames, and deep-links across isolated Vaults", async ({
+  browserName,
+}, testInfo) => {
+  expect(browserName).toBe("chromium");
+  const extensionPath = testInfo.outputPath("extension");
+  await cp(resolve(".output/chrome-mv3"), extensionPath, { recursive: true });
+  const manifestPath = resolve(extensionPath, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+  manifest.host_permissions = ["<all_urls>"];
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const context = await chromium.launchPersistentContext(testInfo.outputPath("chrome-profile"), {
+    channel: "chromium",
+    headless: true,
+    args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
+  });
+  try {
+    const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+    const extensionId = new URL(worker.url()).host;
+    await Promise.all(context.pages().map((page) => page.close()));
+    const fixture = await context.newPage();
+    await fixture.goto("http://127.0.0.1:4174/fixture");
+    const popup = await extensionPopup(context, extensionId);
+    const activateFixture = async (): Promise<void> => {
+      await popup.evaluate(async () => {
+        const extensionApi = (
+          globalThis as unknown as {
+            chrome: {
+              tabs: {
+                query(value: unknown): Promise<readonly { id?: number; url?: string }[]>;
+                update(id: number, value: unknown): Promise<unknown>;
+              };
+            };
+          }
+        ).chrome;
+        const tabs = await extensionApi.tabs.query({ currentWindow: true });
+        const target = tabs.find((tab) => tab.url === "http://127.0.0.1:4174/fixture");
+        if (target?.id === undefined) throw new Error("Fixture tab is unavailable.");
+        await extensionApi.tabs.update(target.id, { active: true });
+      });
+    };
+    const name = popup.getByRole("textbox", { name: "Vault name" });
+    await expect(name).toBeVisible();
+    await name.fill("Vault A");
+    await popup.getByRole("button", { name: "Create Vault" }).click();
+    await expect(popup.getByText(/Vault · Vault A · Unlocked/u)).toBeVisible();
+
+    await activateFixture();
+    await popup.getByRole("button", { name: "Archive this page" }).click();
+    await expect(popup.getByRole("button", { name: "Switch Vault" })).toBeDisabled();
+    await expect(popup.getByRole("link", { name: /Open archived capture/u })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    await popup.getByRole("button", { name: "Switch Vault" }).click();
+    await popup.getByRole("button", { name: "Create another Vault" }).click();
+    const createDialog = popup.getByRole("dialog", { name: "Create another Vault" });
+    await expect(createDialog).toBeVisible();
+    await createDialog.getByRole("textbox", { name: "Vault name" }).fill("Vault B");
+    await createDialog.getByRole("button", { name: "Create Vault" }).click();
+    await expect(popup.getByText(/Vault · Vault B · Unlocked/u)).toBeVisible();
+    const liveLibraryB = await context.newPage();
+    await liveLibraryB.goto(`chrome-extension://${extensionId}/library.html`);
+    await expect(liveLibraryB.getByRole("heading", { name: "Vault B" })).toBeVisible();
+
+    await activateFixture();
+    await popup.getByRole("button", { name: "Archive this page" }).click();
+    await expect(liveLibraryB.getByRole("button", { name: "Switch Vault" })).toBeDisabled();
+    await expect(popup.getByRole("link", { name: /Open archived capture/u })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(liveLibraryB.getByText("AWSM tall fixture", { exact: true })).toBeVisible();
+    await liveLibraryB.close();
+
+    const state = await popup.evaluate(async () => {
+      const extensionApi = (
+        globalThis as unknown as {
+          chrome: { runtime: { sendMessage(message: unknown): Promise<unknown> } };
+        }
+      ).chrome;
+      const response = (await extensionApi.runtime.sendMessage({ type: "GetState" })) as {
+        value: {
+          workspace: {
+            activeVaultId: string;
+            vaults: readonly { vaultId: string; name: string }[];
+          };
+        };
+      };
+      return response.value.workspace;
+    });
+    const vaultA = state.vaults.find((vault) => vault.name === "Vault A");
+    const vaultB = state.vaults.find((vault) => vault.name === "Vault B");
+    if (vaultA === undefined || vaultB === undefined) throw new Error("Expected both Vaults.");
+    expect(state.activeVaultId).toBe(vaultB.vaultId);
+
+    const scopedObjectCounts = await popup.evaluate(async () => {
+      const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
+        const request = indexedDB.open("awsm-vault");
+        request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      });
+      const transaction = database.transaction("objects", "readonly");
+      const keys = await new Promise<IDBValidKey[]>((resolveKeys, reject) => {
+        const request = transaction.objectStore("objects").getAllKeys();
+        request.addEventListener("success", () => resolveKeys(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      });
+      database.close();
+      return keys.reduce<Record<string, number>>((counts, key) => {
+        if (Array.isArray(key) && typeof key[0] === "string") {
+          counts[key[0]] = (counts[key[0]] ?? 0) + 1;
+        }
+        return counts;
+      }, {});
+    });
+    expect(scopedObjectCounts).toMatchObject({ [vaultA.vaultId]: 1, [vaultB.vaultId]: 1 });
+
+    await popup.getByRole("button", { name: "Switch Vault" }).click();
+    const switchDialog = popup.getByRole("dialog", { name: "Switch Vault" });
+    await switchDialog.getByRole("radio", { name: /Vault A/u }).check();
+    await switchDialog.getByRole("button", { name: "Switch", exact: true }).click();
+    await expect(popup.getByText(/Vault · Vault A · Locked/u)).toBeVisible();
+    const libraryA = await context.newPage();
+    await libraryA.goto(`chrome-extension://${extensionId}/library.html`);
+    await expect(libraryA.getByRole("heading", { name: "Vault A" })).toBeVisible();
+    await expect(libraryA.getByRole("button", { name: "Rename Vault A" })).toHaveCount(0);
+    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-locked-desktop.png") });
+    await popup.getByRole("button", { name: "Unlock on this device" }).click();
+    await expect(popup.getByText(/Vault · Vault A · Unlocked/u)).toBeVisible();
+
+    await expect(popup.getByRole("button", { name: /^Rename/u })).toHaveCount(0);
+    await expect(libraryA.getByRole("button", { name: "Rename Vault A" })).toBeVisible();
+    await popup.getByRole("button", { name: "Lock Vault" }).click();
+    await expect(libraryA.getByRole("heading", { name: "Vault A" })).toBeVisible();
+    await expect(libraryA.getByRole("button", { name: "Rename Vault A" })).toHaveCount(0);
+    await expect(libraryA.getByRole("heading", { name: "Unlock your Vault" })).toBeVisible();
+    await popup.getByRole("button", { name: "Unlock on this device" }).click();
+    await expect(libraryA.getByRole("button", { name: "Rename Vault A" })).toBeVisible();
+    const restingGeometry = await libraryA.evaluate(() => {
+      const header = document.querySelector("header")?.getBoundingClientRect();
+      const management = document.querySelector(".vault-control")?.getBoundingClientRect();
+      const main = document.querySelector("main")?.getBoundingClientRect();
+      if (header === undefined || management === undefined || main === undefined) {
+        throw new Error("Library layout is incomplete.");
+      }
+      return {
+        headerBottom: header.bottom,
+        mainTop: main.top,
+        leftEdges: [header.left, management.left, main.left],
+      };
+    });
+    expect(
+      Math.max(...restingGeometry.leftEdges) - Math.min(...restingGeometry.leftEdges),
+    ).toBeLessThan(1);
+    await libraryA.evaluate(() => window.scrollTo(0, 0));
+    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-resting-desktop.png") });
+    await libraryA.getByRole("button", { name: "Rename Vault A" }).click();
+    const selectedInput = libraryA.getByRole("textbox", { name: "Vault name" });
+    await expect(selectedInput).toBeVisible();
+    await expect(selectedInput).toHaveCount(1);
+    await expect(selectedInput).toHaveJSProperty("selectionStart", 0);
+    await expect(selectedInput).toHaveJSProperty("selectionEnd", "Vault A".length);
+    const editingGeometry = await libraryA.evaluate(() => ({
+      headerBottom: document.querySelector("header")?.getBoundingClientRect().bottom,
+      mainTop: document.querySelector("main")?.getBoundingClientRect().top,
+    }));
+    expect(editingGeometry).toEqual({
+      headerBottom: restingGeometry.headerBottom,
+      mainTop: restingGeometry.mainTop,
+    });
+    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-selected-desktop.png") });
+    await selectedInput.pressSequentially("Discarded draft");
+    await expect(selectedInput).toHaveValue("Discarded draft");
+    await libraryA.locator(".eyebrow").click();
+    await expect(libraryA.getByRole("heading", { name: "Vault A" })).toBeVisible();
+    await expect(libraryA.getByRole("textbox", { name: "Vault name" })).toHaveCount(0);
+    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-restored-desktop.png") });
+    await libraryA.getByRole("button", { name: "Rename Vault A" }).click();
+    await expect(libraryA.getByRole("button", { name: "Cancel" })).toHaveCount(0);
+    await libraryA.getByRole("textbox", { name: "Vault name" }).fill(" ");
+    await libraryA.getByRole("button", { name: "Rename", exact: true }).click();
+    await expect(libraryA.getByText(/Use a Vault name between 1 and 64/u)).toBeVisible();
+    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-error-desktop.png") });
+    await libraryA.getByRole("textbox", { name: "Vault name" }).press("Escape");
+    await expect(libraryA.getByRole("heading", { name: "Vault A" })).toBeVisible();
+    await libraryA.getByRole("button", { name: "Rename Vault A" }).click();
+    await libraryA.getByRole("textbox", { name: "Vault name" }).fill("Escaped draft");
+    await libraryA.getByRole("textbox", { name: "Vault name" }).press("Escape");
+    await expect(libraryA.getByRole("heading", { name: "Vault A" })).toBeVisible();
+    await libraryA.getByRole("button", { name: "Rename Vault A" }).click();
+    const renameInput = libraryA.getByRole("textbox", { name: "Vault name" });
+    await renameInput.fill("Vault A Renamed");
+    await libraryA.getByRole("button", { name: "Rename", exact: true }).click();
+    await expect(libraryA.getByRole("heading", { name: "Vault A Renamed" })).toBeVisible();
+    await expect(popup.getByText(/Vault · Vault A Renamed · Unlocked/u)).toBeVisible();
+    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-success-desktop.png") });
+    await libraryA.setViewportSize({ width: 390, height: 844 });
+    await libraryA.getByRole("button", { name: "Rename Vault A Renamed" }).click();
+    await expect(libraryA.getByRole("textbox", { name: "Vault name" })).toBeVisible();
+    const narrowLayout = await libraryA.evaluate(() => {
+      const header = document.querySelector("header")?.getBoundingClientRect();
+      const management = document.querySelector(".vault-control")?.getBoundingClientRect();
+      const main = document.querySelector("main")?.getBoundingClientRect();
+      if (header === undefined || management === undefined || main === undefined) {
+        throw new Error("Library layout is incomplete.");
+      }
+      return {
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        leftEdges: [header.left, management.left, main.left],
+      };
+    });
+    expect(narrowLayout.overflow).toBeLessThanOrEqual(0);
+    expect(Math.max(...narrowLayout.leftEdges) - Math.min(...narrowLayout.leftEdges)).toBeLessThan(
+      1,
+    );
+    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-selected-narrow.png") });
+    await libraryA.getByRole("textbox", { name: "Vault name" }).press("Escape");
+
+    const deepLinkLibrary = await context.newPage();
+    await deepLinkLibrary.goto(
+      `chrome-extension://${extensionId}/library.html?vaultId=${encodeURIComponent(vaultB.vaultId)}&bundleId=00000000-0000-4000-8000-000000000999`,
+    );
+    await expect(
+      deepLinkLibrary.getByRole("heading", { name: /Switch to Vault B/u }),
+    ).toBeVisible();
+    await expect(
+      deepLinkLibrary.getByRole("button", { name: "Switch to this Vault" }),
+    ).toBeVisible();
   } finally {
     await context.close();
   }
@@ -523,7 +809,7 @@ test("worker termination during acquisition leaves no partial authoritative capt
               query(value: unknown): Promise<readonly { id?: number; url?: string }[]>;
               update(id: number, value: unknown): Promise<unknown>;
             };
-            runtime: { sendMessage(value: unknown, callback: () => void): void };
+            runtime: { sendMessage(value: unknown, callback: (response: unknown) => void): void };
           };
         }
       ).chrome;
@@ -533,8 +819,19 @@ test("worker termination during acquisition leaves no partial authoritative capt
       );
       if (fixtureTab?.id === undefined) throw new Error("The fixture tab is unavailable.");
       await extensionApi.tabs.update(fixtureTab.id, { active: true });
+      const state = await new Promise<{ workspace: { activeVaultId?: string } }>((resolve) =>
+        extensionApi.runtime.sendMessage({ type: "GetState" }, (response) => {
+          const result = response as { value: { workspace: { activeVaultId?: string } } };
+          resolve(result.value);
+        }),
+      );
+      if (state.workspace.activeVaultId === undefined) throw new Error("No active Vault.");
       extensionApi.runtime.sendMessage(
-        { version: 1, type: "CaptureActivePage", tabId: fixtureTab.id },
+        {
+          type: "CaptureActivePage",
+          expectedVaultId: state.workspace.activeVaultId,
+          tabId: fixtureTab.id,
+        },
         () => undefined,
       );
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
@@ -587,7 +884,7 @@ test("worker termination during acquisition leaves no partial authoritative capt
       database.close();
       return values;
     });
-    expect(counts).toEqual([0, 0, 0, 0]);
+    expect(counts).toEqual([0, 1, 0, 0]);
   } finally {
     await context.close();
   }

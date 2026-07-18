@@ -253,14 +253,15 @@ No application redesign should be required.
 
 ---
 
-# Upgrades
+# Deployment Changes
 
-Upgrades should support:
+Before the first release, deployments use:
 
-- rolling deployments
-- zero-downtime database migrations where practical
-- protocol version compatibility
-- mixed-version client populations
+- one canonical Service schema
+- one canonical protocol
+- one current client population
+
+Post-release rollout and data-change policy requires an explicit user decision.
 
 ---
 

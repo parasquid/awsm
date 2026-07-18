@@ -1,7 +1,7 @@
 import type { CaptureMetadataV1 } from "../../domain/bundle";
 import type {
+  CaptureJob,
   CaptureJobStage,
-  CaptureJobV1,
   CapturePageCommandV1,
   CaptureWarningId,
   LibraryItemV1,
@@ -31,7 +31,7 @@ export interface CaptureRuntimePorts {
   isVaultUnlocked(): boolean;
   rootKey(): CryptoKey;
   findOutcome(commandId: string): Promise<CommandOutcomeV1 | undefined>;
-  saveJob(job: CaptureJobV1): Promise<void>;
+  saveJob(job: CaptureJob): Promise<void>;
   commitRegistration(input: AtomicRegistrationV1): Promise<CommandOutcomeV1>;
   preflight(command: CapturePageCommandV1): Promise<CapturePreflight>;
   acquireMhtml(tabId: number): Promise<Uint8Array>;
@@ -49,11 +49,11 @@ export interface CaptureRuntimePorts {
   now(): string;
 }
 
-function errorId(error: unknown, fallback: RuntimeErrorId): RuntimeErrorId {
+function errorId(error: unknown, defaultId: RuntimeErrorId): RuntimeErrorId {
   if (error instanceof Error && "id" in error && typeof error.id === "string") {
     return error.id as RuntimeErrorId;
   }
-  return fallback;
+  return defaultId;
 }
 
 export class CaptureRuntime {
@@ -74,8 +74,9 @@ export class CaptureRuntime {
     const preflight = await this.ports.preflight(command);
     const createdAt = this.ports.now();
     const jobId = this.ports.uuid();
-    let job: CaptureJobV1 = {
+    let job: CaptureJob = {
       version: 1,
+      vaultId: this.ports.vaultId,
       jobId,
       commandId: command.commandId,
       tabId: preflight.tabId,
@@ -131,8 +132,8 @@ export class CaptureRuntime {
         clientVersion: this.ports.clientVersion,
       });
     } catch (error) {
-      const fallback = job.stage === "MHTML" ? "MHTML_CAPTURE_FAILED" : "BUNDLE_INVALID";
-      const id = errorId(error, fallback);
+      const defaultId = job.stage === "MHTML" ? "MHTML_CAPTURE_FAILED" : "BUNDLE_INVALID";
+      const id = errorId(error, defaultId);
       await fail(id);
       throw error instanceof CaptureRuntimeError
         ? error

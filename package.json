@@ -11,5 +11,8 @@
     "test:e2e:chrome": "corepack pnpm --filter @awsm/browser-extension test:e2e:chrome",
     "typecheck": "corepack pnpm --filter @awsm/browser-extension typecheck",
     "zip": "corepack pnpm --filter @awsm/browser-extension zip"
+  },
+  "devDependencies": {
+    "prettier": "3.9.5"
   }
 }

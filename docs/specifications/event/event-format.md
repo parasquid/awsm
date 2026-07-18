@@ -38,7 +38,7 @@ The serialization format MUST provide:
 - deterministic encoding
 - compact representation
 - binary safety
-- forward compatibility
+- canonical format validation
 - cryptographic stability
 
 ---
@@ -95,9 +95,7 @@ Field ordering SHALL be deterministic.
 
 Payload fields SHALL follow the schema associated with the Event Type.
 
-Unknown fields MUST be preserved.
-
-Unknown fields MUST NOT invalidate decoding.
+Unknown fields MUST invalidate decoding.
 
 ---
 
@@ -123,9 +121,9 @@ Equivalent Events MUST serialize identically.
 
 # 9. Unknown Fields
 
-Readers SHALL preserve unknown fields.
+Readers SHALL reject unknown fields.
 
-Unknown fields SHALL survive serialization and deserialization.
+Writers SHALL emit only fields defined by the canonical Event schema.
 
 ---
 
@@ -159,7 +157,36 @@ Serialization is valid if:
 
 ---
 
-# 13. Invariants
+# 13. Stored Event Dependency Metadata
+
+Local encrypted Event storage SHALL pair the canonical encrypted Event envelope with:
+
+- canonical storage-format version;
+- Vault ID;
+- Event ID;
+- canonical ordering timestamp; and
+- `referencedObjectIds`, encoded as a lexically sorted list of unique Object IDs.
+
+`referencedObjectIds` declares every immutable Object dependency required to authenticate and replay
+the Event. An Event with no Object dependency, including `VaultCreated` and `VaultRenamed`, uses an
+empty list. The stored Vault ID, Event ID, and ordering timestamp MUST equal the authenticated values
+inside the decrypted Event. A mismatched identity, missing dependency, duplicate dependency,
+unsorted list, unknown field, or cross-Vault reference invalidates the stored Event.
+
+Example conceptual wrapper:
+
+```text
+version: 1
+vaultId: 018f…
+eventId: 0190…
+referencedObjectIds: []
+orderingTimestamp: 2026-07-18T12:00:00.000Z
+envelopeBytes: <canonical encrypted Event envelope>
+```
+
+---
+
+# 14. Invariants
 
 Equivalent Events serialize identically.
 

@@ -1,8 +1,8 @@
 import {
   CAPTURE_WARNINGS,
+  type CaptureJob,
   type CaptureJobStage,
   type CaptureJobState,
-  type CaptureJobV1,
   type CaptureWarningId,
   type EncryptedEnvelopeV1,
   type LibraryItemV1,
@@ -14,10 +14,10 @@ import { DomainValidationError } from "./errors";
 import {
   boolean,
   bytes,
+  canonicalRecord,
   httpUrl,
   integer,
   literal,
-  record,
   string,
   timestamp,
   uuid,
@@ -69,7 +69,15 @@ function envelopeType(value: unknown): EncryptedEnvelopeV1["objectType"] {
 }
 
 export function decodeEncryptedEnvelope(value: unknown): EncryptedEnvelopeV1 {
-  const input = record(value, "envelope");
+  const input = canonicalRecord(value, "envelope", [
+    "formatVersion",
+    "objectType",
+    "algorithm",
+    "objectId",
+    "payloadLength",
+    "nonce",
+    "ciphertext",
+  ]);
   const payloadLength = integer(input.payloadLength, "envelope.payloadLength");
   const ciphertext = bytes(input.ciphertext, undefined, "envelope.ciphertext");
   if (ciphertext.byteLength !== payloadLength + 16) {
@@ -90,7 +98,18 @@ export function decodeEncryptedEnvelope(value: unknown): EncryptedEnvelopeV1 {
 }
 
 export function decodeLibraryItem(value: unknown): LibraryItemV1 {
-  const input = record(value, "libraryItem");
+  const input = canonicalRecord(value, "libraryItem", [
+    "version",
+    "bundleId",
+    "bundleObjectId",
+    "assignedCollectionId",
+    "title",
+    "originalUrl",
+    "capturedAt",
+    "screenshotPresent",
+    "status",
+    "warnings",
+  ]);
   if (!Array.isArray(input.warnings)) {
     throw new DomainValidationError("libraryItem.warnings", "must be an array");
   }
@@ -113,12 +132,24 @@ export function decodeLibraryItem(value: unknown): LibraryItemV1 {
   };
 }
 
-export function decodeCaptureJob(value: unknown): CaptureJobV1 {
-  const input = record(value, "job");
+export function decodeCaptureJob(value: unknown): CaptureJob {
+  const input = canonicalRecord(value, "job", [
+    "version",
+    "vaultId",
+    "jobId",
+    "commandId",
+    "tabId",
+    "state",
+    "stage",
+    "createdAt",
+    "updatedAt",
+    "errorId",
+  ]);
   const errorId =
     input.errorId === undefined ? undefined : runtimeErrorId(input.errorId, "job.errorId");
   return {
     version: literal(input.version, 1, "job.version"),
+    vaultId: uuid(input.vaultId, "job.vaultId"),
     jobId: uuid(input.jobId, "job.jobId"),
     commandId: uuid(input.commandId, "job.commandId"),
     tabId: integer(input.tabId, "job.tabId"),
@@ -131,7 +162,7 @@ export function decodeCaptureJob(value: unknown): CaptureJobV1 {
 }
 
 export function decodeRuntimeError(value: unknown): RuntimeErrorV1 {
-  const input = record(value, "error");
+  const input = canonicalRecord(value, "error", ["id", "message"]);
   return {
     id: runtimeErrorId(input.id, "error.id"),
     message: string(input.message, "error.message"),

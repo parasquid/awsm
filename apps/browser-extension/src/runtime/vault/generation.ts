@@ -8,7 +8,15 @@ import { deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
 import { wipe } from "../../crypto/sodium";
 import { decodeCanonicalCbor, encodeCanonicalCbor } from "../../domain/cbor";
 import { bytesEqual, sha256 } from "../../domain/hash";
-import { bytes, integer, literal, record, string, uuid } from "../../domain/validation";
+import {
+  bytes,
+  canonicalRecord,
+  integer,
+  literal,
+  string,
+  timestamp,
+  uuid,
+} from "../../domain/validation";
 import type { StoredVaultGenerationV1, StoredVaultHeadV1 } from "../../drivers/indexeddb/schema";
 
 export interface PrepareVaultGenerationInput {
@@ -106,9 +114,22 @@ export async function verifyVaultGeneration(
     if (envelope.objectType !== "VaultGeneration" || envelope.objectId !== stored.generationId) {
       throw new Error("Vault Generation envelope mismatch");
     }
-    const manifest = record(
+    const manifest = canonicalRecord(
       decodeCanonicalCbor(await decryptEnvelope(envelope, key)),
       "generation",
+      [
+        "version",
+        "vaultId",
+        "generationId",
+        "generationNumber",
+        "predecessorGenerationId",
+        "createdAt",
+        "initiatingDeviceId",
+        "reason",
+        "retainedObjectIds",
+        "retainedEventIds",
+        "integrity",
+      ],
     );
     literal(manifest.version, 1, "generation.version");
     if (uuid(manifest.vaultId, "generation.vaultId") !== vaultId)
@@ -119,9 +140,24 @@ export async function verifyVaultGeneration(
       integer(manifest.generationNumber, "generation.generationNumber") !== stored.generationNumber
     )
       throw new Error("Vault Generation number mismatch");
+    const predecessorGenerationId =
+      manifest.predecessorGenerationId === undefined
+        ? undefined
+        : uuid(manifest.predecessorGenerationId, "generation.predecessorGenerationId");
+    if (predecessorGenerationId !== stored.predecessorGenerationId) {
+      throw new Error("Vault Generation predecessor mismatch");
+    }
+    timestamp(manifest.createdAt, "generation.createdAt");
+    uuid(manifest.initiatingDeviceId, "generation.initiatingDeviceId");
+    if (manifest.reason !== "Initial" && manifest.reason !== "Vacuum") {
+      throw new Error("Vault Generation reason is invalid");
+    }
     const objectIds = stringArray(manifest.retainedObjectIds, "generation.retainedObjectIds");
     const eventIds = stringArray(manifest.retainedEventIds, "generation.retainedEventIds");
-    const integrity = record(manifest.integrity, "generation.integrity");
+    const integrity = canonicalRecord(manifest.integrity, "generation.integrity", [
+      "algorithm",
+      "checksum",
+    ]);
     literal(integrity.algorithm, "hash:sha256:v1", "generation.integrity.algorithm");
     const expected = await sha256(
       encodeCanonicalCbor({ retainedObjectIds: objectIds, retainedEventIds: eventIds }),

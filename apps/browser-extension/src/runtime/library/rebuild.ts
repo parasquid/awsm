@@ -12,17 +12,22 @@ import { DomainValidationError } from "../../domain/errors";
 import { boolean, httpUrl, record, string, timestamp, uuid } from "../../domain/validation";
 import type {
   StoredCollectionProjectionV1,
-  StoredEventV1,
+  StoredEvent,
   StoredProjectionV1,
+  StoredVaultNameProjectionV1,
 } from "../../drivers/indexeddb";
+import { decodeVaultNameEvent, encryptVaultNameProjection } from "../vault/name-crypto";
+import { reduceVaultNameProjection, type VaultNameEventV1 } from "../vault/name-projection";
 import type { CollectionTopologyEventV1 } from "./collections";
 import { type LibraryProjectionEventV1, reduceLibraryProjection } from "./projection";
+import { assertCanonicalEventFields } from "./vacuum";
 
 export interface LibraryProjectionRebuildRepository {
-  listStoredEvents(): Promise<readonly StoredEventV1[]>;
+  listStoredEvents(): Promise<readonly StoredEvent[]>;
   replaceLibraryProjections(
     itemProjections: readonly StoredProjectionV1[],
     collectionProjection: StoredCollectionProjectionV1,
+    vaultNameProjection: StoredVaultNameProjectionV1,
   ): Promise<void>;
 }
 
@@ -37,7 +42,7 @@ function warnings(value: unknown): readonly CaptureWarningId[] {
 }
 
 async function decryptEvent(
-  event: StoredEventV1,
+  event: StoredEvent,
   rootKey: CryptoKey,
   vaultId: string,
 ): Promise<Record<string, unknown>> {
@@ -100,9 +105,15 @@ export class LibraryProjectionRebuilder {
     );
     const itemEvents: LibraryProjectionEventV1[] = [];
     const topologyEvents: CollectionTopologyEventV1[] = [];
+    const vaultNameEvents: VaultNameEventV1[] = [];
     for (const event of events) {
       const payload = await decryptEvent(event, this.rootKey, this.vaultId);
       const eventType = string(payload.eventType, "event.eventType");
+      assertCanonicalEventFields(payload, eventType);
+      if (eventType === "VaultCreated" || eventType === "VaultRenamed") {
+        vaultNameEvents.push(await decodeVaultNameEvent(this.rootKey, event));
+        continue;
+      }
       if (eventType === "BundleRegistered") {
         const metadata = record(payload.captureMetadata, "event.captureMetadata");
         itemEvents.push({
@@ -179,7 +190,9 @@ export class LibraryProjectionRebuilder {
           eventType,
           mergeEventId: uuid(payload.mergeEventId, "event.mergeEventId"),
         });
+        continue;
       }
+      throw new Error(`Unsupported Event type during Projection rebuild: ${eventType}`);
     }
 
     const items = reduceLibraryProjection(itemEvents);
@@ -209,6 +222,14 @@ export class LibraryProjectionRebuilder {
         this.vaultId,
       ),
     };
-    await this.repository.replaceLibraryProjections(itemProjections, collectionProjection);
+    const vaultNameProjection = await encryptVaultNameProjection(
+      this.rootKey,
+      reduceVaultNameProjection(vaultNameEvents),
+    );
+    await this.repository.replaceLibraryProjections(
+      itemProjections,
+      collectionProjection,
+      vaultNameProjection,
+    );
   }
 }

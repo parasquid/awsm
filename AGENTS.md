@@ -40,11 +40,16 @@ Explicitly approved plans supersede stale Draft documentation; reconcile every a
 
 ## PRE-RELEASE FORMAT POLICY
 
-- The user will explicitly declare the first release. Until then, treat all persisted formats, schemas, and contracts as pre-release drafts.
-- Replace superseded pre-release designs directly. Do not add migrations, legacy readers, compatibility fallbacks, dual-write paths, or preservation code for earlier local development data.
-- Keep exactly one canonical current format in code, tests, and documentation. Remove obsolete format branches and stale descriptions rather than retaining traces of prior drafts.
-- Existing local development data may be discarded and recreated when the canonical pre-release format changes.
-- After the first release is declared, do not infer a compatibility policy: ask the user before introducing migration or backward-compatibility behavior.
+- The user will explicitly declare the first release. Until that declaration, nothing in the repository is a released contract and no earlier pre-release design has compatibility standing.
+- Until the user explicitly authorizes compatibility, backwards compatibility is prohibited. Never add or retain migrations, legacy readers, compatibility aliases, deprecated entry points, old request handlers, version negotiation, dual reads, dual writes, preservation branches, schema upgrades from superseded drafts, or compatibility fallbacks.
+- Replace superseded pre-release designs in place everywhere. Code, tests, fixtures, documentation, examples, generated artifacts, and persisted development data must expose exactly one canonical current design.
+- Erase superseded pre-release history from the product surface. Do not leave comments, names, documentation, branches, error messages, type aliases, or version numbers that imply the canonical design is a successor to an earlier unpublished design. For example, do not introduce `AppStateV2`, a version-1 fallback, or “legacy” terminology merely because a discarded draft once existed.
+- A canonical persisted format may contain an explicit format version only when the current architecture requires self-describing persisted or externally exchanged bytes. When a superseded pre-release format is replaced, reset the sole canonical initial format to its appropriate first-release numbering and remove every reader and description of the discarded format.
+- Transient in-process state, UI view models, Commands, and local request/response types must not gain version fields or versioned names merely for hypothetical future compatibility. Version them only after the user explicitly approves a concrete boundary and reason.
+- Do not preserve existing local development data when the canonical pre-release design changes. Delete and recreate it; never build a migration or fallback for it.
+- “Be conservative,” “support existing data,” “avoid breaking changes,” framework conventions, test fixtures, previously approved plans, and implementation convenience do not override this policy. If any source asks for compatibility before user authorization, stop and ask the user instead of implementing it.
+- Fail-safe handling for corruption, unavailable optional data, or security errors is not compatibility and may exist only when the current canonical requirements explicitly define it. It must never read or reinterpret a superseded format.
+- After the first release is declared, do not infer a compatibility policy. Ask the user before introducing any migration, fallback, deprecated path, or backward-compatible behavior.
 
 ## CORE MODEL
 
@@ -64,7 +69,7 @@ Explicitly approved plans supersede stale Draft documentation; reconcile every a
 
 - Preserve exact canonical capitalization from the glossary: Vault, Bundle, Object, Manifest, Runtime, Host, Service, Projection, Materialization.
 - Keep architecture technology-independent. Chrome, Firefox, OPFS, IndexedDB, SQLite, Rails, and provider names are implementations or adapters, not architectural abstractions.
-- Add explicit versions to externally persisted structures, while keeping only the current canonical pre-release format until the user declares the first release.
+- Add explicit format versions only to self-describing persisted or externally exchanged structures whose owning specification requires them. Do not version transient state or use successor numbering that exposes discarded pre-release designs.
 - Use Commands for requested actions and Events for accepted facts. Commands are local and never synchronized.
 - Put platform-specific behavior behind Hosts or Drivers; Runtime Services communicate through defined Commands, Events, and interfaces.
 - When changing a foundational term or contract, follow dependencies outward and update architecture, specifications, testing implications, and operations together.
@@ -74,6 +79,27 @@ Explicitly approved plans supersede stale Draft documentation; reconcile every a
 - Ask the user for clarification before implementing when the requested intent is uncertain or admits materially different interpretations.
 - For visual and interaction feedback, identify the exact element, state, and timing being changed. Do not assume which element the user means when terms such as “card,” “preview,” “item,” or “dragged element” could refer to multiple parts of the interface.
 - Keep clarification questions narrow and concrete. Continue without asking only when the intended behavior is unambiguous or the choice is safely reversible and cannot materially diverge from the request.
+
+## VISUAL CHANGE POLICY
+
+- Every user-visible change requires a rendered visual inspection before completion. Behavioral tests and DOM assertions alone are not proof that an interface is visible, usable, or visually correct.
+- Inspect every affected state needed to understand the interaction, including its resting state and relevant focus, editing, loading, disabled, error, and success states. Check both the primary viewport and any materially different supported narrow layout.
+- Compare affected states for alignment, padding, margins, spacing cadence, typography, wrapping, clipping, overflow, control prominence, and unintended layout movement. Replacement states such as inline editing should preserve the surrounding visual hierarchy and position unless a change is intentional.
+- Confirm that visible interactive controls have meaningful rendered dimensions, clear focus treatment, readable content, and an accessible name. Assistive-only content must not accidentally hide, collapse, or constrain visible controls.
+- Use scoped component styles when a control has a specialized visual role. Do not assume generic form, input, button, or container styles will preserve the intended composition.
+- For interactions that transform content in place, verify the complete gesture visually and behaviorally: entry feedback, current-value treatment, typing, commit, cancellation or dismissal, validation failure, and restoration of the resting state.
+- Automated UI tests for visible behavior must assert visibility, not only existence or element count. Add layout or dimension assertions when geometry is part of the requirement.
+- Capture and inspect screenshots with the available image-inspection tooling. If the changed states have not actually been viewed, the visual task is incomplete and must not be reported as finished.
+
+## LIVE UI STATE POLICY
+
+- Every long-lived UI surface must remain a live Projection of authoritative Runtime state. Treat initial render data as a snapshot that can become stale immediately; never require a reload, reopen, or navigation to observe a successful state change.
+- Every successful mutation that can affect an open surface must publish one canonical unversioned invalidation notification after the authoritative commit. Long-running operations must also invalidate when their visible busy, progress, completion, or failure state changes.
+- Invalidation notifications are wake-up signals, not trusted state transfer. Receivers must refetch canonical state through the Runtime, validate the active Vault context, and render only the newest completed reconciliation.
+- Subscribe before the initial fetch. Serialize or generation-guard reconciliation so an older response cannot overwrite newer state. Coalesce bursts without dropping the final invalidation.
+- Reconcile again when a long-lived surface becomes visible or regains focus so service-worker suspension, missed delivery, or background lifecycle changes cannot leave it stale.
+- Immediately discard decrypted or context-bound UI when an invalidation may represent locking, active-Vault replacement, or lost authorization. Stale drafts, details, Object URLs, selections, and cached plaintext must not survive a context change.
+- Tests must keep at least two surfaces open, mutate state through one, and prove the other updates without reload. Cover lock, unlock, active Vault, name, busy operation, and content changes relevant to the feature.
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
@@ -90,12 +116,15 @@ Explicitly approved plans supersede stale Draft documentation; reconcile every a
 
 Discover current build, test, lint, and development commands from repository manifests rather than assuming them.
 
+Invoke the repository-pinned pnpm through Corepack: use `corepack pnpm`, not a bare `pnpm` command. The development environment provides Node and Corepack but may not install a standalone pnpm shim on `PATH`.
+
 Useful documentation checks:
 
 ```bash
 rg --files -g '*.md'
 rg -n '^\*\*(Document|Version|Status|Owner|Depends On):' docs
 rg -n '\b(MUST|SHALL|SHOULD|MAY)\b' docs/specifications
+corepack pnpm exec prettier --check <paths...>
 ```
 
 ## GIT COMMITS

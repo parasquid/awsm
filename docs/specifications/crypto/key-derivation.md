@@ -192,7 +192,7 @@ The Coordination Server stores wrapped keys only.
 
 Key rotation increments the relevant key version.
 
-Old versions MUST remain usable for decrypting existing data until migration or retention policy removes that data.
+Only the canonical current pre-release derivation format is implemented. Any post-release retention or format-evolution policy requires an explicit user decision.
 
 Rotation of one domain SHOULD NOT require immediate re-encryption of unrelated domains.
 

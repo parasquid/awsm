@@ -1,12 +1,48 @@
 export type {
-  CreatedVault,
-  CreateVaultInput,
   DeviceKeySlotV1,
-  PassphraseKeySlotV1,
+  PreparedVault,
+  PrepareVaultInput,
   VaultMetadataV1,
   VaultRecordsV1,
   VaultRepository,
   VaultVerifierV1,
 } from "./contracts";
 export { VaultServiceError, type VaultServiceErrorId } from "./errors";
+export {
+  InvalidVaultNameError,
+  normalizeVaultName,
+  suggestVaultName,
+  vaultNameComparisonKey,
+} from "./name";
+export {
+  decodeVaultNameEvent,
+  decryptVaultNameProjection,
+  type PrepareVaultNameChangeInput,
+  prepareVaultNameChange,
+} from "./name-crypto";
+export {
+  reduceVaultNameProjection,
+  type VaultNameEventV1,
+  type VaultNameProjectionV1,
+} from "./name-projection";
 export { VaultService } from "./service";
+export {
+  type ActiveVaultContext,
+  type WorkspaceContextDependencies,
+  WorkspaceContextManager,
+} from "./workspace-context";
+export {
+  createWorkspaceNameCacheKey,
+  decryptWorkspaceVaultName,
+  encryptWorkspaceVaultName,
+  type WorkspaceVaultNameCacheV1,
+} from "./workspace-name-cache";
+export {
+  type VaultBusyState,
+  type VaultDirectoryEntryV1,
+  type VaultSummary,
+  WorkspaceService,
+  type WorkspaceServiceRepository,
+  type WorkspaceState,
+  type WorkspaceVaultStatus,
+} from "./workspace-service";

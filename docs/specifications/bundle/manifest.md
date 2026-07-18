@@ -28,7 +28,7 @@ The Manifest does not contain preserved content.
 The Manifest MUST provide:
 
 - deterministic structure
-- forward compatibility
+- canonical format validation
 - artifact discovery
 - integrity verification
 - version identification
@@ -171,9 +171,9 @@ The exact algorithms are defined by the Cryptography Specification.
 
 # 11. Unknown Fields
 
-Readers MUST ignore unknown fields.
+Readers MUST reject unknown fields.
 
-Readers SHOULD preserve unknown fields when reserializing the Manifest.
+Readers MUST serialize only fields defined by this specification.
 
 ---
 
@@ -217,15 +217,15 @@ Implementations MUST reject invalid Manifests.
 
 ---
 
-# 15. Future Compatibility
+# 15. Unsupported Manifest Semantics
 
-Future Manifest versions MAY introduce:
+Manifest semantics outside this specification are unsupported, including:
 
 - additional Artifact roles
 - additional processing records
 - additional validation metadata
 
-Readers SHOULD ignore unknown optional sections.
+Readers MUST reject unknown sections.
 
 ---
 

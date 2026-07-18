@@ -130,8 +130,9 @@ export async function prepareCaptureRegistration(
     },
     event: {
       version: 1,
+      vaultId: input.vaultId,
       eventId: input.eventId,
-      objectId: input.bundleObjectId,
+      referencedObjectIds: [input.bundleObjectId],
       orderingTimestamp: input.capturedAt,
       envelopeBytes: eventEnvelopeBytes,
     },

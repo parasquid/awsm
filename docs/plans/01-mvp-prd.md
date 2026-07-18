@@ -578,7 +578,7 @@ Subject cryptographic design to external review before production.
 
 How should encrypted sharing be implemented?
 
-How should Workspaces expose multiple Vaults?
+Workspaces expose one device-local active Vault plus an accessible Vault picker in Capture and Library surfaces. Selection is global on the device, persists until changed, locks the previous Vault, and sets the destination for subsequent Captures. Vault names are encrypted Event-derived state with a rebuildable local encrypted cache for locked display.
 
 How should large media files be archived?
 

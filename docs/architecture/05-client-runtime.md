@@ -289,7 +289,10 @@ Caches
 Pending Jobs
 ```
 
-All persistent state belongs to the active Vault.
+Authoritative and Vault-derived persistent state belongs to exactly one named Vault. Workspace
+metadata and the Active Vault selection are device-local operational state outside every Vault.
+The Runtime constructs one scoped context for the Active Vault and never retains a Root Key for an
+inactive Vault.
 
 ---
 
@@ -513,8 +516,6 @@ Should the runtime expose a public plugin API?
 Should AI providers execute in isolated workers?
 
 Should search indexing be incremental or batch-based?
-
-Should multiple Vaults remain unlocked simultaneously?
 
 These questions are deferred to future design documents.
 

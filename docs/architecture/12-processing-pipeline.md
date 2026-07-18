@@ -293,7 +293,7 @@ Summary v1
 
 ↓
 
-Summary v2
+Summary
 ```
 
 Both remain immutable.

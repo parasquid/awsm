@@ -213,7 +213,7 @@ export class ChromeScreenshotHost implements ScreenshotHost {
     }
     try {
       const response: unknown = await browser.runtime.sendMessage({
-        type: "awsm:stitch-screenshot:v1",
+        type: "awsm:stitch-screenshot",
         plan,
         tiles: tiles.map((tile) => ({
           geometry: tile.geometry,

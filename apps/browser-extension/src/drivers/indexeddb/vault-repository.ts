@@ -1,7 +1,9 @@
 import type { VaultRecordsV1, VaultRepository } from "../../runtime/vault/contracts";
 import { decodeVaultRecords } from "../../runtime/vault/decode";
 import { deleteDatabase, openDatabase, requestValue, transactionDone } from "./database";
+import { decodeExportJob } from "./decode";
 import { storageError } from "./errors";
+import { vaultKeyRange, vaultSingletonKey } from "./keys";
 import { STORES } from "./schema";
 
 export class IndexedDbVaultRepository implements VaultRepository {
@@ -13,36 +15,7 @@ export class IndexedDbVaultRepository implements VaultRepository {
     this.databasePromise = openDatabase(databaseName);
   }
 
-  async create(records: VaultRecordsV1): Promise<void> {
-    const database = await this.databasePromise;
-    const transaction = database.transaction(
-      [
-        STORES.vaultMetadata,
-        STORES.keySlots,
-        STORES.deviceKeys,
-        STORES.vaultGenerations,
-        STORES.vaultHead,
-      ],
-      "readwrite",
-    );
-    try {
-      transaction.objectStore(STORES.vaultMetadata).add(records.metadata, "active");
-      transaction.objectStore(STORES.keySlots).add(records.deviceSlot, "device");
-      if (records.passphraseSlot !== undefined) {
-        transaction.objectStore(STORES.keySlots).add(records.passphraseSlot, "passphrase");
-      }
-      transaction.objectStore(STORES.deviceKeys).add(records.deviceKey, "device");
-      transaction
-        .objectStore(STORES.vaultGenerations)
-        .add(records.generation, records.generation.generationId);
-      transaction.objectStore(STORES.vaultHead).add(records.head, "active");
-      await transactionDone(transaction);
-    } catch (error) {
-      throw storageError(error);
-    }
-  }
-
-  async load(): Promise<VaultRecordsV1 | undefined> {
+  async load(vaultId: string): Promise<VaultRecordsV1 | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(
       [
@@ -57,31 +30,26 @@ export class IndexedDbVaultRepository implements VaultRepository {
     try {
       const metadataRequest: IDBRequest<unknown> = transaction
         .objectStore(STORES.vaultMetadata)
-        .get("active");
+        .get(vaultSingletonKey(vaultId, "metadata"));
       const deviceSlotRequest: IDBRequest<unknown> = transaction
         .objectStore(STORES.keySlots)
-        .get("device");
-      const passphraseSlotRequest: IDBRequest<unknown> = transaction
-        .objectStore(STORES.keySlots)
-        .get("passphrase");
+        .get(vaultSingletonKey(vaultId, "device"));
       const deviceKeyRequest: IDBRequest<unknown> = transaction
         .objectStore(STORES.deviceKeys)
-        .get("device");
+        .get(vaultSingletonKey(vaultId, "device"));
       const generationsRequest: IDBRequest<unknown[]> = transaction
         .objectStore(STORES.vaultGenerations)
-        .getAll();
+        .getAll(vaultKeyRange(vaultId));
       const headRequest: IDBRequest<unknown> = transaction
         .objectStore(STORES.vaultHead)
-        .get("active");
-      const [metadata, deviceSlot, passphraseSlot, deviceKey, generations, head] =
-        await Promise.all([
-          requestValue(metadataRequest),
-          requestValue(deviceSlotRequest),
-          requestValue(passphraseSlotRequest),
-          requestValue(deviceKeyRequest),
-          requestValue(generationsRequest),
-          requestValue(headRequest),
-        ]);
+        .get(vaultSingletonKey(vaultId, "active"));
+      const [metadata, deviceSlot, deviceKey, generations, head] = await Promise.all([
+        requestValue(metadataRequest),
+        requestValue(deviceSlotRequest),
+        requestValue(deviceKeyRequest),
+        requestValue(generationsRequest),
+        requestValue(headRequest),
+      ]);
       await transactionDone(transaction);
       if (metadata === undefined) {
         return undefined;
@@ -89,7 +57,6 @@ export class IndexedDbVaultRepository implements VaultRepository {
       return decodeVaultRecords({
         metadata,
         deviceSlot,
-        passphraseSlot,
         deviceKey,
         generations,
         head,
@@ -99,16 +66,28 @@ export class IndexedDbVaultRepository implements VaultRepository {
     }
   }
 
-  async setManualLock(manuallyLocked: boolean): Promise<void> {
-    const records = await this.load();
-    if (records === undefined) {
-      throw storageError(new Error("No active Vault"));
-    }
+  async setManualLock(vaultId: string, manuallyLocked: boolean): Promise<void> {
+    const records = await this.load(vaultId);
+    if (records === undefined) throw storageError(new Error("The scoped Vault does not exist"));
     const database = await this.databasePromise;
-    const transaction = database.transaction(STORES.vaultMetadata, "readwrite");
+    const transaction = database.transaction(
+      [STORES.vaultMetadata, STORES.exportJobs],
+      "readwrite",
+    );
+    const exportValues = await requestValue(
+      transaction.objectStore(STORES.exportJobs).getAll(vaultKeyRange(vaultId)),
+    );
+    if (
+      exportValues
+        .map(decodeExportJob)
+        .some((job) => job.state === "Created" || job.state === "Running")
+    ) {
+      transaction.abort();
+      throw Object.assign(new Error("Vault Export is in progress."), { id: "VAULT_BUSY" });
+    }
     transaction
       .objectStore(STORES.vaultMetadata)
-      .put({ ...records.metadata, manuallyLocked }, "active");
+      .put({ ...records.metadata, manuallyLocked }, vaultSingletonKey(vaultId, "metadata"));
     try {
       await transactionDone(transaction);
     } catch (error) {
@@ -118,5 +97,9 @@ export class IndexedDbVaultRepository implements VaultRepository {
 
   async deleteDatabase(): Promise<void> {
     await deleteDatabase(this.databaseName, await this.databasePromise);
+  }
+
+  async close(): Promise<void> {
+    (await this.databasePromise).close();
   }
 }

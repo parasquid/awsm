@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest";
-import type { AppStateV1 } from "../../src/app/protocol";
+import type { AppState } from "../../src/app/protocol";
 import { popupView, recentCaptureMatchesActiveUrl } from "../../src/ui/popup-view";
 
-const base: AppStateV1 = {
-  version: 1,
-  vaultExists: true,
-  unlocked: true,
-  hasPassphraseSlot: false,
+const vaultId = "00000000-0000-4000-8000-000000000000";
+
+const base: AppState = {
+  workspace: {
+    workspaceId: vaultId,
+    activeVaultId: vaultId,
+    vaults: [
+      {
+        vaultId,
+        name: "Amber Archive",
+        createdAt: "2026-07-18T12:00:00.000Z",
+        active: true,
+        unlocked: true,
+        manuallyLocked: false,
+      },
+    ],
+  },
 };
 
 describe("popup state model", () => {
@@ -27,15 +39,25 @@ describe("popup state model", () => {
   });
 
   it("shows onboarding before a Vault exists", () => {
-    expect(popupView({ ...base, vaultExists: false, unlocked: false })).toEqual({
+    const { activeVaultId: _activeVaultId, ...workspace } = base.workspace;
+    expect(popupView({ ...base, workspace: { ...workspace, vaults: [] } })).toEqual({
       screen: "onboarding",
     });
   });
 
-  it("shows both available unlock methods", () => {
-    expect(popupView({ ...base, unlocked: false, hasPassphraseSlot: true })).toEqual({
+  it("shows device-only unlock while the Vault is locked", () => {
+    const active = base.workspace.vaults[0];
+    if (active === undefined) throw new Error("Expected active Vault fixture.");
+    expect(
+      popupView({
+        ...base,
+        workspace: {
+          ...base.workspace,
+          vaults: [{ ...active, unlocked: false }],
+        },
+      }),
+    ).toEqual({
       screen: "locked",
-      passphraseAvailable: true,
     });
   });
 
@@ -45,6 +67,7 @@ describe("popup state model", () => {
         ...base,
         latestJob: {
           version: 1,
+          vaultId,
           jobId: "00000000-0000-4000-8000-000000000001",
           commandId: "00000000-0000-4000-8000-000000000002",
           tabId: 7,
@@ -63,6 +86,7 @@ describe("popup state model", () => {
         ...base,
         latestJob: {
           version: 1,
+          vaultId,
           jobId: "00000000-0000-4000-8000-000000000001",
           commandId: "00000000-0000-4000-8000-000000000002",
           tabId: 7,
@@ -78,6 +102,7 @@ describe("popup state model", () => {
         ...base,
         latestJob: {
           version: 1,
+          vaultId,
           jobId: "00000000-0000-4000-8000-000000000001",
           commandId: "00000000-0000-4000-8000-000000000002",
           tabId: 7,
@@ -98,6 +123,7 @@ describe("popup state model", () => {
         latestWarnings: ["SCREENSHOT_CAPTURE_FAILED"],
         latestJob: {
           version: 1,
+          vaultId,
           jobId: "00000000-0000-4000-8000-000000000001",
           commandId: "00000000-0000-4000-8000-000000000002",
           tabId: 7,
@@ -114,13 +140,14 @@ describe("popup state model", () => {
     const state = {
       ...base,
       recentCapture: {
+        vaultId,
         jobId: "00000000-0000-4000-8000-000000000001",
         bundleId: "00000000-0000-4000-8000-000000000002",
         title: "A page worth keeping",
         screenshotBase64: "iVBORw0KGgo=",
         warnings: [],
       },
-    } as AppStateV1;
+    } as AppState;
 
     expect(popupView(state)).toEqual({
       screen: "ready",
@@ -134,6 +161,7 @@ describe("popup state model", () => {
         ...base,
         latestJob: {
           version: 1,
+          vaultId,
           jobId: "00000000-0000-4000-8000-000000000001",
           commandId: "00000000-0000-4000-8000-000000000002",
           tabId: 7,

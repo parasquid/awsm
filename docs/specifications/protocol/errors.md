@@ -29,7 +29,7 @@ The outcome model MUST provide:
 
 - deterministic client behavior
 - retry guidance
-- forward compatibility
+- canonical error validation
 - machine-readable responses
 - human-readable diagnostics
 

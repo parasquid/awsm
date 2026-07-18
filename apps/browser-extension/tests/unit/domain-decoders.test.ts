@@ -9,6 +9,10 @@ import {
   decodeRuntimeError,
 } from "../../src/domain/decode";
 import { DomainValidationError } from "../../src/domain/errors";
+import {
+  decodeCaptureJob as decodePersistedCaptureJob,
+  decodeStoredEvent,
+} from "../../src/drivers/indexeddb/decode";
 
 const IDS = {
   artifact: "A000001",
@@ -61,6 +65,33 @@ function validManifest(): Record<string, unknown> {
 }
 
 describe("domain boundary decoders", () => {
+  it("rejects fields outside canonical persisted Event and Capture Job schemas", () => {
+    expect(() =>
+      decodeStoredEvent({
+        version: 1,
+        vaultId: "00000000-0000-4000-8000-000000000001",
+        eventId: "00000000-0000-4000-8000-000000000002",
+        referencedObjectIds: [],
+        orderingTimestamp: "2026-07-18T12:00:00.000Z",
+        envelopeBytes: new Uint8Array([1]),
+        discardedDraftField: true,
+      }),
+    ).toThrow(/canonical schema/u);
+    expect(() =>
+      decodePersistedCaptureJob({
+        version: 1,
+        vaultId: "00000000-0000-4000-8000-000000000001",
+        jobId: "00000000-0000-4000-8000-000000000002",
+        commandId: "00000000-0000-4000-8000-000000000003",
+        tabId: 1,
+        state: "Created",
+        stage: "Preflight",
+        createdAt: "2026-07-18T12:00:00.000Z",
+        updatedAt: "2026-07-18T12:00:00.000Z",
+        discardedDraftField: true,
+      }),
+    ).toThrow(/canonical schema/u);
+  });
   it("accepts a valid CapturePage command", () => {
     expect(decodeCapturePageCommand(validCommand())).toMatchObject({
       commandId: IDS.command,
@@ -94,15 +125,13 @@ describe("domain boundary decoders", () => {
     expect(() => decodeBundleManifest(manifest)).toThrow(DomainValidationError);
   });
 
-  it("preserves unknown optional Manifest fields", () => {
-    const decoded = decodeBundleManifest({
-      ...validManifest(),
-      futureField: { enabled: true },
-    });
-
-    expect(decoded.unknownFields).toEqual({
-      futureField: { enabled: true },
-    });
+  it("rejects fields outside the canonical Manifest", () => {
+    expect(() =>
+      decodeBundleManifest({
+        ...validManifest(),
+        unsupportedField: { enabled: true },
+      }),
+    ).toThrow(DomainValidationError);
   });
 
   it("accepts the canonical Bundle-local Artifact identifier", () => {
@@ -112,7 +141,7 @@ describe("domain boundary decoders", () => {
   it("rejects an unsupported encrypted-envelope version", () => {
     expect(() =>
       decodeEncryptedEnvelope({
-        formatVersion: 2,
+        formatVersion: 99,
         objectType: "Bundle",
         algorithm: "enc:xchacha20poly1305:v1",
         objectId: IDS.object,
@@ -141,7 +170,7 @@ describe("domain boundary decoders", () => {
 
     expect(() =>
       decodeCaptureJob({
-        version: 2,
+        version: 1,
         jobId: IDS.command,
         commandId: IDS.command,
         tabId: 42,
@@ -161,4 +190,11 @@ describe("domain boundary decoders", () => {
       }),
     ).toThrow(DomainValidationError);
   });
+
+  it.each(["INVALID_VAULT_NAME", "VAULT_NOT_FOUND", "VAULT_CONTEXT_CHANGED", "VAULT_BUSY"])(
+    "accepts the multiple-Vault Runtime error %s",
+    (id) => {
+      expect(decodeRuntimeError({ id, message: "safe" })).toEqual({ id, message: "safe" });
+    },
+  );
 });

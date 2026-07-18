@@ -1,22 +1,27 @@
-import type { CaptureJobV1 } from "../../domain/contracts";
+import type { CaptureJob } from "../../domain/contracts";
 import { bytesEqual } from "../../domain/hash";
+import { decodeVaultMetadata } from "../../runtime/vault/decode";
 import { deleteDatabase, openDatabase, requestValue, transactionDone } from "./database";
 import {
   decodeCaptureJob,
   decodeCommandOutcome,
+  decodeExportJob,
   decodeStoredCollectionProjection,
   decodeStoredEvent,
   decodeStoredObject,
   decodeStoredProjection,
   decodeStoredVaultGeneration,
+  decodeStoredVaultHead,
+  decodeStoredVaultNameProjection,
 } from "./decode";
 import { StorageDriverError, storageError } from "./errors";
+import { vaultKey, vaultKeyRange, vaultSingletonKey } from "./keys";
 import {
   type AtomicRegistrationV1,
   type CommandOutcomeV1,
   STORES,
   type StoreCounts,
-  type StoredEventV1,
+  type StoredEvent,
   type StoredObjectV1,
 } from "./schema";
 
@@ -28,24 +33,51 @@ function abortTransaction(transaction: IDBTransaction): void {
   }
 }
 
+async function assertNoActiveExport(transaction: IDBTransaction, vaultId: string): Promise<void> {
+  const values = await requestValue(
+    transaction.objectStore(STORES.exportJobs).getAll(vaultKeyRange(vaultId)),
+  );
+  if (
+    values.map(decodeExportJob).some((job) => job.state === "Created" || job.state === "Running")
+  ) {
+    throw Object.assign(new Error("Vault Export is in progress."), { id: "VAULT_BUSY" });
+  }
+}
+
 export class IndexedDbDriver {
   private readonly databasePromise: Promise<IDBDatabase>;
   readonly databaseName: string;
+  readonly vaultId: string;
 
-  constructor(databaseName = "awsm-vault") {
+  constructor(databaseName: string, vaultId: string) {
     this.databaseName = databaseName;
+    this.vaultId = vaultId;
     this.databasePromise = openDatabase(databaseName);
+  }
+
+  private assertEventVault(event: StoredEvent): void {
+    if (event.vaultId !== this.vaultId) {
+      throw new Error("The Event does not belong to the scoped Vault.");
+    }
+  }
+
+  private decodeScopedCaptureJob(value: unknown): CaptureJob {
+    const job = decodeCaptureJob(value);
+    if (job.vaultId !== this.vaultId) {
+      throw storageError(new Error("The Capture Job does not belong to the scoped Vault."));
+    }
+    return job;
   }
 
   async putImmutableObject(record: StoredObjectV1): Promise<void> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.objects, "readwrite");
     const store = transaction.objectStore(STORES.objects);
-    const request: IDBRequest<unknown> = store.get(record.objectId);
+    const request: IDBRequest<unknown> = store.get(vaultKey(this.vaultId, record.objectId));
     try {
       const existingValue = await requestValue(request);
       if (existingValue === undefined) {
-        store.add(record, record.objectId);
+        store.add(record, vaultKey(this.vaultId, record.objectId));
         await transactionDone(transaction);
         return;
       }
@@ -74,39 +106,52 @@ export class IndexedDbDriver {
         STORES.libraryProjection,
         STORES.commandOutcomes,
         STORES.vacuumJobs,
+        STORES.exportJobs,
         STORES.vaultHead,
       ],
       "readwrite",
     );
     const outcomes = transaction.objectStore(STORES.commandOutcomes);
     try {
-      if ((await requestValue(transaction.objectStore(STORES.vacuumJobs).count())) !== 0) {
+      this.assertEventVault(input.event);
+      await assertNoActiveExport(transaction, this.vaultId);
+      if (
+        (await requestValue(
+          transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(this.vaultId)),
+        )) !== 0
+      ) {
         throw new Error("Vault Vacuum is in progress. Retry the capture.");
       }
       const headStore = transaction.objectStore(STORES.vaultHead);
-      const head = (await requestValue(headStore.get("active"))) as
+      const head = (await requestValue(headStore.get(vaultSingletonKey(this.vaultId, "active")))) as
         | import("./schema").StoredVaultHeadV1
         | undefined;
       if (head === undefined) throw new Error("The active Vault Generation is missing.");
-      const existingRequest: IDBRequest<unknown> = outcomes.get(input.outcome.commandId);
+      const existingRequest: IDBRequest<unknown> = outcomes.get(
+        vaultKey(this.vaultId, input.outcome.commandId),
+      );
       const existing = await requestValue(existingRequest);
       if (existing !== undefined) {
         await transactionDone(transaction);
         return decodeCommandOutcome(existing);
       }
-      transaction.objectStore(STORES.objects).add(input.object, input.object.objectId);
-      transaction.objectStore(STORES.events).add(input.event, input.event.eventId);
+      transaction
+        .objectStore(STORES.objects)
+        .add(input.object, vaultKey(this.vaultId, input.object.objectId));
+      transaction
+        .objectStore(STORES.events)
+        .add(input.event, vaultKey(this.vaultId, input.event.eventId));
       transaction
         .objectStore(STORES.libraryProjection)
-        .add(input.projection, input.projection.bundleId);
-      outcomes.add(input.outcome, input.outcome.commandId);
+        .add(input.projection, vaultKey(this.vaultId, input.projection.bundleId));
+      outcomes.add(input.outcome, vaultKey(this.vaultId, input.outcome.commandId));
       headStore.put(
         {
           ...head,
           appendedObjectIds: [...head.appendedObjectIds, input.object.objectId].toSorted(),
           appendedEventIds: [...head.appendedEventIds, input.event.eventId].toSorted(),
         },
-        "active",
+        vaultSingletonKey(this.vaultId, "active"),
       );
       await transactionDone(transaction);
       return input.outcome;
@@ -119,7 +164,7 @@ export class IndexedDbDriver {
   async hasObject(objectId: string): Promise<boolean> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.objects, "readonly");
-    const request = transaction.objectStore(STORES.objects).count(objectId);
+    const request = transaction.objectStore(STORES.objects).count(vaultKey(this.vaultId, objectId));
     const count = await requestValue(request);
     await transactionDone(transaction);
     return count === 1;
@@ -131,8 +176,8 @@ export class IndexedDbDriver {
       [STORES.libraryProjection, STORES.collectionProjection],
       "readwrite",
     );
-    transaction.objectStore(STORES.libraryProjection).clear();
-    transaction.objectStore(STORES.collectionProjection).clear();
+    transaction.objectStore(STORES.libraryProjection).delete(vaultKeyRange(this.vaultId));
+    transaction.objectStore(STORES.collectionProjection).delete(vaultKeyRange(this.vaultId));
     try {
       await transactionDone(transaction);
     } catch (error) {
@@ -143,22 +188,39 @@ export class IndexedDbDriver {
   async replaceLibraryProjections(
     projections: readonly import("./schema").StoredProjectionV1[],
     collectionProjection: import("./schema").StoredCollectionProjectionV1,
+    vaultNameProjection: import("./schema").StoredVaultNameProjectionV1,
   ): Promise<void> {
     const database = await this.databasePromise;
     const transaction = database.transaction(
-      [STORES.libraryProjection, STORES.collectionProjection, STORES.vacuumJobs],
+      [
+        STORES.libraryProjection,
+        STORES.collectionProjection,
+        STORES.vaultNameProjection,
+        STORES.vacuumJobs,
+      ],
       "readwrite",
     );
     try {
-      if ((await requestValue(transaction.objectStore(STORES.vacuumJobs).count())) !== 0) {
+      if (
+        (await requestValue(
+          transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(this.vaultId)),
+        )) !== 0
+      ) {
         throw new Error("Vault Vacuum is in progress. Retry the Projection rebuild.");
       }
       const itemStore = transaction.objectStore(STORES.libraryProjection);
-      itemStore.clear();
-      for (const projection of projections) itemStore.add(projection, projection.bundleId);
+      itemStore.delete(vaultKeyRange(this.vaultId));
+      for (const projection of projections)
+        itemStore.add(projection, vaultKey(this.vaultId, projection.bundleId));
       const collectionStore = transaction.objectStore(STORES.collectionProjection);
-      collectionStore.clear();
-      collectionStore.add(collectionProjection, "active");
+      collectionStore.delete(vaultKeyRange(this.vaultId));
+      collectionStore.add(collectionProjection, vaultSingletonKey(this.vaultId, "active"));
+      if (vaultNameProjection.vaultId !== this.vaultId) {
+        throw new Error("Vault Name Projection belongs to another Vault.");
+      }
+      transaction
+        .objectStore(STORES.vaultNameProjection)
+        .put(vaultNameProjection, vaultSingletonKey(this.vaultId, "active"));
       await transactionDone(transaction);
     } catch (error) {
       abortTransaction(transaction);
@@ -167,29 +229,42 @@ export class IndexedDbDriver {
   }
 
   async commitLibraryState(
-    event: StoredEventV1,
+    event: StoredEvent,
     projections: readonly import("./schema").StoredProjectionV1[],
   ): Promise<void> {
     const database = await this.databasePromise;
     const transaction = database.transaction(
-      [STORES.events, STORES.libraryProjection, STORES.vacuumJobs, STORES.vaultHead],
+      [
+        STORES.events,
+        STORES.libraryProjection,
+        STORES.vacuumJobs,
+        STORES.exportJobs,
+        STORES.vaultHead,
+      ],
       "readwrite",
     );
     try {
-      if ((await requestValue(transaction.objectStore(STORES.vacuumJobs).count())) !== 0) {
+      this.assertEventVault(event);
+      await assertNoActiveExport(transaction, this.vaultId);
+      if (
+        (await requestValue(
+          transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(this.vaultId)),
+        )) !== 0
+      ) {
         throw new Error("Vault Vacuum is in progress. Retry the Library change.");
       }
       const headStore = transaction.objectStore(STORES.vaultHead);
-      const head = (await requestValue(headStore.get("active"))) as
+      const head = (await requestValue(headStore.get(vaultSingletonKey(this.vaultId, "active")))) as
         | import("./schema").StoredVaultHeadV1
         | undefined;
       if (head === undefined) throw new Error("The active Vault Generation is missing.");
-      transaction.objectStore(STORES.events).add(event, event.eventId);
+      transaction.objectStore(STORES.events).add(event, vaultKey(this.vaultId, event.eventId));
       const projectionStore = transaction.objectStore(STORES.libraryProjection);
-      for (const projection of projections) projectionStore.put(projection, projection.bundleId);
+      for (const projection of projections)
+        projectionStore.put(projection, vaultKey(this.vaultId, projection.bundleId));
       headStore.put(
         { ...head, appendedEventIds: [...head.appendedEventIds, event.eventId].toSorted() },
-        "active",
+        vaultSingletonKey(this.vaultId, "active"),
       );
       await transactionDone(transaction);
     } catch (error) {
@@ -199,7 +274,7 @@ export class IndexedDbDriver {
   }
 
   async commitCollectionOperation(input: {
-    readonly event: import("./schema").StoredEventV1;
+    readonly event: import("./schema").StoredEvent;
     readonly projections: readonly import("./schema").StoredProjectionV1[];
     readonly collectionProjection?: import("./schema").StoredCollectionProjectionV1;
   }): Promise<void> {
@@ -210,33 +285,43 @@ export class IndexedDbDriver {
         STORES.libraryProjection,
         STORES.collectionProjection,
         STORES.vacuumJobs,
+        STORES.exportJobs,
         STORES.vaultHead,
       ],
       "readwrite",
     );
     try {
-      if ((await requestValue(transaction.objectStore(STORES.vacuumJobs).count())) !== 0) {
+      this.assertEventVault(input.event);
+      await assertNoActiveExport(transaction, this.vaultId);
+      if (
+        (await requestValue(
+          transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(this.vaultId)),
+        )) !== 0
+      ) {
         throw new Error("Vault Vacuum is in progress. Retry the Collection change.");
       }
       const headStore = transaction.objectStore(STORES.vaultHead);
-      const head = (await requestValue(headStore.get("active"))) as
+      const head = (await requestValue(headStore.get(vaultSingletonKey(this.vaultId, "active")))) as
         | import("./schema").StoredVaultHeadV1
         | undefined;
       if (head === undefined) throw new Error("The active Vault Generation is missing.");
-      transaction.objectStore(STORES.events).add(input.event, input.event.eventId);
+      transaction
+        .objectStore(STORES.events)
+        .add(input.event, vaultKey(this.vaultId, input.event.eventId));
       const itemStore = transaction.objectStore(STORES.libraryProjection);
-      for (const projection of input.projections) itemStore.put(projection, projection.bundleId);
+      for (const projection of input.projections)
+        itemStore.put(projection, vaultKey(this.vaultId, projection.bundleId));
       if (input.collectionProjection !== undefined) {
         transaction
           .objectStore(STORES.collectionProjection)
-          .put(input.collectionProjection, "active");
+          .put(input.collectionProjection, vaultSingletonKey(this.vaultId, "active"));
       }
       headStore.put(
         {
           ...head,
           appendedEventIds: [...head.appendedEventIds, input.event.eventId].toSorted(),
         },
-        "active",
+        vaultSingletonKey(this.vaultId, "active"),
       );
       await transactionDone(transaction);
     } catch (error) {
@@ -245,12 +330,15 @@ export class IndexedDbDriver {
     }
   }
 
-  async saveCaptureJob(value: CaptureJobV1): Promise<void> {
-    const job = decodeCaptureJob(value);
+  async saveCaptureJob(value: CaptureJob): Promise<void> {
+    const job = this.decodeScopedCaptureJob(value);
     const database = await this.databasePromise;
-    const transaction = database.transaction(STORES.captureJobs, "readwrite");
+    const transaction = database.transaction([STORES.captureJobs, STORES.exportJobs], "readwrite");
     const done = transactionDone(transaction);
-    transaction.objectStore(STORES.captureJobs).put(job, job.jobId);
+    if (job.state === "Created" || job.state === "Running") {
+      await assertNoActiveExport(transaction, this.vaultId);
+    }
+    transaction.objectStore(STORES.captureJobs).put(job, vaultKey(this.vaultId, job.jobId));
     try {
       await done;
     } catch (error) {
@@ -258,23 +346,27 @@ export class IndexedDbDriver {
     }
   }
 
-  async getCaptureJob(jobId: string): Promise<CaptureJobV1 | undefined> {
+  async getCaptureJob(jobId: string): Promise<CaptureJob | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.captureJobs, "readonly");
     const done = transactionDone(transaction);
-    const value = await requestValue(transaction.objectStore(STORES.captureJobs).get(jobId));
+    const value = await requestValue(
+      transaction.objectStore(STORES.captureJobs).get(vaultKey(this.vaultId, jobId)),
+    );
     await done;
-    return value === undefined ? undefined : decodeCaptureJob(value);
+    return value === undefined ? undefined : this.decodeScopedCaptureJob(value);
   }
 
-  async latestCaptureJob(): Promise<CaptureJobV1 | undefined> {
+  async latestCaptureJob(): Promise<CaptureJob | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.captureJobs, "readonly");
     const done = transactionDone(transaction);
-    const values = await requestValue(transaction.objectStore(STORES.captureJobs).getAll());
+    const values = await requestValue(
+      transaction.objectStore(STORES.captureJobs).getAll(vaultKeyRange(this.vaultId)),
+    );
     await done;
     return values
-      .map(decodeCaptureJob)
+      .map((value) => this.decodeScopedCaptureJob(value))
       .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
   }
 
@@ -284,12 +376,12 @@ export class IndexedDbDriver {
     const done = transactionDone(transaction);
     const store = transaction.objectStore(STORES.captureJobs);
     try {
-      const value = await requestValue(store.get(jobId));
+      const value = await requestValue(store.get(vaultKey(this.vaultId, jobId)));
       if (value === undefined) throw new Error("Capture job does not exist");
-      const job = decodeCaptureJob(value);
+      const job = this.decodeScopedCaptureJob(value);
       if (job.state !== "Succeeded")
         throw new Error("Only completed capture notices can be dismissed");
-      store.put({ ...job, noticeDismissed: true }, job.jobId);
+      store.put({ ...job, noticeDismissed: true }, vaultKey(this.vaultId, job.jobId));
       await done;
     } catch (error) {
       abortTransaction(transaction);
@@ -302,7 +394,7 @@ export class IndexedDbDriver {
     const transaction = database.transaction(STORES.commandOutcomes, "readonly");
     const done = transactionDone(transaction);
     const value = await requestValue(
-      transaction.objectStore(STORES.commandOutcomes).get(commandId),
+      transaction.objectStore(STORES.commandOutcomes).get(vaultKey(this.vaultId, commandId)),
     );
     await done;
     return value === undefined ? undefined : decodeCommandOutcome(value);
@@ -312,7 +404,9 @@ export class IndexedDbDriver {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.libraryProjection, "readonly");
     const done = transactionDone(transaction);
-    const values = await requestValue(transaction.objectStore(STORES.libraryProjection).getAll());
+    const values = await requestValue(
+      transaction.objectStore(STORES.libraryProjection).getAll(vaultKeyRange(this.vaultId)),
+    );
     await done;
     return values.map(decodeStoredProjection);
   }
@@ -323,7 +417,9 @@ export class IndexedDbDriver {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.collectionProjection, "readonly");
     const value = await requestValue(
-      transaction.objectStore(STORES.collectionProjection).get("active"),
+      transaction
+        .objectStore(STORES.collectionProjection)
+        .get(vaultSingletonKey(this.vaultId, "active")),
     );
     await transactionDone(transaction);
     return value === undefined ? undefined : decodeStoredCollectionProjection(value);
@@ -333,7 +429,9 @@ export class IndexedDbDriver {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.objects, "readonly");
     const done = transactionDone(transaction);
-    const value = await requestValue(transaction.objectStore(STORES.objects).get(objectId));
+    const value = await requestValue(
+      transaction.objectStore(STORES.objects).get(vaultKey(this.vaultId, objectId)),
+    );
     await done;
     return value === undefined ? undefined : decodeStoredObject(value);
   }
@@ -342,33 +440,74 @@ export class IndexedDbDriver {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.objects, "readonly");
     const done = transactionDone(transaction);
-    const values = await requestValue(transaction.objectStore(STORES.objects).getAll());
+    const values = await requestValue(
+      transaction.objectStore(STORES.objects).getAll(vaultKeyRange(this.vaultId)),
+    );
     await done;
     return values.map(decodeStoredObject);
   }
 
-  async listStoredEvents(): Promise<readonly StoredEventV1[]> {
+  async listStoredEvents(): Promise<readonly StoredEvent[]> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.events, "readonly");
     const done = transactionDone(transaction);
-    const values = await requestValue(transaction.objectStore(STORES.events).getAll());
+    const values = await requestValue(
+      transaction.objectStore(STORES.events).getAll(vaultKeyRange(this.vaultId)),
+    );
     await done;
-    return values.map(decodeStoredEvent);
+    return values.map((value) => {
+      const event = decodeStoredEvent(value);
+      this.assertEventVault(event);
+      return event;
+    });
   }
 
-  async getStoredEvent(eventId: string): Promise<StoredEventV1 | undefined> {
+  async getStoredEvent(eventId: string): Promise<StoredEvent | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.events, "readonly");
-    const value = await requestValue(transaction.objectStore(STORES.events).get(eventId));
+    const value = await requestValue(
+      transaction.objectStore(STORES.events).get(vaultKey(this.vaultId, eventId)),
+    );
     await transactionDone(transaction);
-    return value === undefined ? undefined : decodeStoredEvent(value);
+    if (value === undefined) return undefined;
+    const event = decodeStoredEvent(value);
+    this.assertEventVault(event);
+    return event;
+  }
+
+  async listAuthoritativeIds(): Promise<{
+    readonly objectIds: readonly string[];
+    readonly eventIds: readonly string[];
+  }> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction([STORES.objects, STORES.events], "readonly");
+    const [objectKeys, eventKeys] = await Promise.all([
+      requestValue(transaction.objectStore(STORES.objects).getAllKeys(vaultKeyRange(this.vaultId))),
+      requestValue(transaction.objectStore(STORES.events).getAllKeys(vaultKeyRange(this.vaultId))),
+    ]);
+    await transactionDone(transaction);
+    const scopedId = (key: IDBValidKey): string => {
+      if (
+        !Array.isArray(key) ||
+        key.length !== 2 ||
+        key[0] !== this.vaultId ||
+        typeof key[1] !== "string"
+      ) {
+        throw storageError(new Error("Authoritative key is outside the scoped Vault."));
+      }
+      return key[1];
+    };
+    return {
+      objectIds: objectKeys.map(scopedId).toSorted(),
+      eventIds: eventKeys.map(scopedId).toSorted(),
+    };
   }
 
   async commitVacuum(input: {
     readonly jobId: string;
     readonly objectIds: readonly string[];
     readonly eventIds: readonly string[];
-    readonly eventsToAdd: readonly StoredEventV1[];
+    readonly eventsToAdd: readonly StoredEvent[];
     readonly bundleIds: readonly string[];
     readonly expectedGenerationId?: string;
     readonly generation: import("./schema").StoredVaultGenerationV1;
@@ -388,38 +527,41 @@ export class IndexedDbDriver {
       "readwrite",
     );
     try {
+      for (const event of input.eventsToAdd) this.assertEventVault(event);
       const vacuumJobs = transaction.objectStore(STORES.vacuumJobs);
-      const job = (await requestValue(vacuumJobs.get(input.jobId))) as
+      const job = (await requestValue(vacuumJobs.get(vaultKey(this.vaultId, input.jobId)))) as
         | import("./schema").StoredVacuumJobV1
         | undefined;
       if (job === undefined || job.sourceGenerationId !== input.expectedGenerationId) {
         throw new Error("The Vault Vacuum lease is missing or invalid.");
       }
       const headStore = transaction.objectStore(STORES.vaultHead);
-      const currentHead = (await requestValue(headStore.get("active"))) as
-        | import("./schema").StoredVaultHeadV1
-        | undefined;
+      const currentHead = (await requestValue(
+        headStore.get(vaultSingletonKey(this.vaultId, "active")),
+      )) as import("./schema").StoredVaultHeadV1 | undefined;
       if (currentHead?.generationId !== input.expectedGenerationId) {
         throw new Error("The active Vault Generation changed during Vacuum.");
       }
       const objects = transaction.objectStore(STORES.objects);
-      for (const objectId of input.objectIds) objects.delete(objectId);
+      for (const objectId of input.objectIds) objects.delete(vaultKey(this.vaultId, objectId));
       const events = transaction.objectStore(STORES.events);
-      for (const eventId of input.eventIds) events.delete(eventId);
-      for (const event of input.eventsToAdd) events.add(event, event.eventId);
+      for (const eventId of input.eventIds) events.delete(vaultKey(this.vaultId, eventId));
+      for (const event of input.eventsToAdd)
+        events.add(event, vaultKey(this.vaultId, event.eventId));
       const projections = transaction.objectStore(STORES.libraryProjection);
-      for (const bundleId of input.bundleIds) projections.delete(bundleId);
+      for (const bundleId of input.bundleIds) projections.delete(vaultKey(this.vaultId, bundleId));
       const outcomes = transaction.objectStore(STORES.commandOutcomes);
-      const outcomeValues = await requestValue(outcomes.getAll());
+      const outcomeValues = await requestValue(outcomes.getAll(vaultKeyRange(this.vaultId)));
       for (const value of outcomeValues) {
         const outcome = decodeCommandOutcome(value);
-        if (input.bundleIds.includes(outcome.bundleId)) outcomes.delete(outcome.commandId);
+        if (input.bundleIds.includes(outcome.bundleId))
+          outcomes.delete(vaultKey(this.vaultId, outcome.commandId));
       }
       const generations = transaction.objectStore(STORES.vaultGenerations);
-      generations.clear();
-      generations.add(input.generation, input.generation.generationId);
-      headStore.put(input.head, "active");
-      vacuumJobs.delete(input.jobId);
+      generations.delete(vaultKeyRange(this.vaultId));
+      generations.add(input.generation, vaultKey(this.vaultId, input.generation.generationId));
+      headStore.put(input.head, vaultSingletonKey(this.vaultId, "active"));
+      vacuumJobs.delete(vaultKey(this.vaultId, input.jobId));
       await transactionDone(transaction);
     } catch (error) {
       abortTransaction(transaction);
@@ -432,18 +574,42 @@ export class IndexedDbDriver {
     createdAt: string,
   ): Promise<import("./schema").StoredVaultHeadV1> {
     const database = await this.databasePromise;
-    const transaction = database.transaction([STORES.vaultHead, STORES.vacuumJobs], "readwrite");
+    const transaction = database.transaction(
+      [STORES.vaultHead, STORES.vacuumJobs, STORES.captureJobs, STORES.exportJobs],
+      "readwrite",
+    );
     try {
       const jobs = transaction.objectStore(STORES.vacuumJobs);
-      if ((await requestValue(jobs.count())) !== 0)
+      if ((await requestValue(jobs.count(vaultKeyRange(this.vaultId)))) !== 0)
         throw new Error("Vault Vacuum is already in progress.");
-      const head = (await requestValue(transaction.objectStore(STORES.vaultHead).get("active"))) as
-        | import("./schema").StoredVaultHeadV1
-        | undefined;
+      const captureJobs = await requestValue(
+        transaction.objectStore(STORES.captureJobs).getAll(vaultKeyRange(this.vaultId)),
+      );
+      if (
+        captureJobs.some((value) => {
+          const job = this.decodeScopedCaptureJob(value);
+          return job.state === "Created" || job.state === "Running";
+        })
+      ) {
+        throw Object.assign(new Error("Capture is in progress."), { id: "VAULT_BUSY" });
+      }
+      const exportJobs = await requestValue(
+        transaction.objectStore(STORES.exportJobs).getAll(vaultKeyRange(this.vaultId)),
+      );
+      if (
+        exportJobs
+          .map(decodeExportJob)
+          .some((job) => job.state === "Created" || job.state === "Running")
+      ) {
+        throw Object.assign(new Error("Export is in progress."), { id: "VAULT_BUSY" });
+      }
+      const head = (await requestValue(
+        transaction.objectStore(STORES.vaultHead).get(vaultSingletonKey(this.vaultId, "active")),
+      )) as import("./schema").StoredVaultHeadV1 | undefined;
       if (head === undefined) throw new Error("The active Vault Generation is missing.");
       jobs.add(
         { version: 1, jobId, sourceGenerationId: head.generationId, stage: "Preflight", createdAt },
-        jobId,
+        vaultKey(this.vaultId, jobId),
       );
       await transactionDone(transaction);
       return head;
@@ -456,7 +622,7 @@ export class IndexedDbDriver {
   async releaseVacuum(jobId: string): Promise<void> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.vacuumJobs, "readwrite");
-    transaction.objectStore(STORES.vacuumJobs).delete(jobId);
+    transaction.objectStore(STORES.vacuumJobs).delete(vaultKey(this.vaultId, jobId));
     await transactionDone(transaction);
   }
 
@@ -467,14 +633,14 @@ export class IndexedDbDriver {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.vacuumJobs, "readwrite");
     const store = transaction.objectStore(STORES.vacuumJobs);
-    const value = (await requestValue(store.get(jobId))) as
+    const value = (await requestValue(store.get(vaultKey(this.vaultId, jobId)))) as
       | import("./schema").StoredVacuumJobV1
       | undefined;
     if (value === undefined) {
       abortTransaction(transaction);
       throw storageError(new Error("Vault Vacuum lease is missing."));
     }
-    store.put({ ...value, stage }, jobId);
+    store.put({ ...value, stage }, vaultKey(this.vaultId, jobId));
     await transactionDone(transaction);
   }
 
@@ -484,7 +650,7 @@ export class IndexedDbDriver {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.vaultGenerations, "readonly");
     const value = await requestValue(
-      transaction.objectStore(STORES.vaultGenerations).get(generationId),
+      transaction.objectStore(STORES.vaultGenerations).get(vaultKey(this.vaultId, generationId)),
     );
     await transactionDone(transaction);
     return value === undefined ? undefined : decodeStoredVaultGeneration(value);
@@ -493,19 +659,225 @@ export class IndexedDbDriver {
   async reconcileInterruptedVacuum(): Promise<void> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.vacuumJobs, "readwrite");
-    transaction.objectStore(STORES.vacuumJobs).clear();
+    transaction.objectStore(STORES.vacuumJobs).delete(vaultKeyRange(this.vaultId));
     await transactionDone(transaction);
+  }
+
+  async acquireExport(
+    job: import("./schema").ExportJobV1,
+  ): Promise<import("./schema").StoredVaultHeadV1> {
+    if (job.vaultId !== this.vaultId || job.state !== "Created") {
+      throw storageError(new Error("Invalid Export Job context."));
+    }
+    const database = await this.databasePromise;
+    const transaction = database.transaction(
+      [
+        STORES.workspaceMetadata,
+        STORES.vaultMetadata,
+        STORES.exportJobs,
+        STORES.captureJobs,
+        STORES.vacuumJobs,
+        STORES.vaultHead,
+      ],
+      "readwrite",
+    );
+    try {
+      const [workspaceValue, metadataValue, exports, captures, vacuumCount, head] =
+        await Promise.all([
+          requestValue(transaction.objectStore(STORES.workspaceMetadata).get("local")),
+          requestValue(
+            transaction
+              .objectStore(STORES.vaultMetadata)
+              .get(vaultSingletonKey(this.vaultId, "metadata")),
+          ),
+          requestValue(
+            transaction.objectStore(STORES.exportJobs).getAll(vaultKeyRange(this.vaultId)),
+          ),
+          requestValue(
+            transaction.objectStore(STORES.captureJobs).getAll(vaultKeyRange(this.vaultId)),
+          ),
+          requestValue(
+            transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(this.vaultId)),
+          ),
+          requestValue(
+            transaction
+              .objectStore(STORES.vaultHead)
+              .get(vaultSingletonKey(this.vaultId, "active")),
+          ),
+        ]);
+      if (
+        typeof workspaceValue !== "object" ||
+        workspaceValue === null ||
+        !("activeVaultId" in workspaceValue) ||
+        workspaceValue.activeVaultId !== this.vaultId
+      ) {
+        throw Object.assign(new Error("The active Vault changed."), {
+          id: "VAULT_CONTEXT_CHANGED",
+        });
+      }
+      if (metadataValue === undefined || decodeVaultMetadata(metadataValue).manuallyLocked) {
+        throw Object.assign(new Error("Vault is locked."), { id: "VAULT_LOCKED" });
+      }
+      if (
+        vacuumCount !== 0 ||
+        captures
+          .map((value) => this.decodeScopedCaptureJob(value))
+          .some((candidate) => candidate.state === "Created" || candidate.state === "Running") ||
+        exports
+          .map(decodeExportJob)
+          .some((candidate) => candidate.state === "Created" || candidate.state === "Running")
+      )
+        throw Object.assign(new Error("Vault is busy."), { id: "VAULT_BUSY" });
+      if (head === undefined) throw new Error("Active Vault head is missing.");
+      const scopedHead = decodeStoredVaultHead(head);
+      if (scopedHead.vaultId !== this.vaultId) throw new Error("Active Vault head is cross-Vault.");
+      transaction.objectStore(STORES.exportJobs).add(job, vaultKey(this.vaultId, job.jobId));
+      await transactionDone(transaction);
+      return scopedHead;
+    } catch (error) {
+      abortTransaction(transaction);
+      throw storageError(error);
+    }
+  }
+
+  async updateExportJob(job: import("./schema").ExportJobV1): Promise<void> {
+    const decoded = decodeExportJob(job);
+    if (decoded.vaultId !== this.vaultId)
+      throw storageError(new Error("Export Job is cross-Vault."));
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.exportJobs, "readwrite");
+    const store = transaction.objectStore(STORES.exportJobs);
+    try {
+      const currentValue = await requestValue(store.get(vaultKey(this.vaultId, decoded.jobId)));
+      if (currentValue === undefined) throw new Error("Export Job is missing.");
+      const current = decodeExportJob(currentValue);
+      if (
+        current.state === "Succeeded" ||
+        current.state === "Failed" ||
+        current.state === "Cancelled"
+      ) {
+        throw new Error("Export Job is already terminal.");
+      }
+      store.put(decoded, vaultKey(this.vaultId, decoded.jobId));
+      await transactionDone(transaction);
+    } catch (error) {
+      abortTransaction(transaction);
+      throw storageError(error);
+    }
+  }
+
+  async latestExportJob(): Promise<import("./schema").ExportJobV1 | undefined> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.exportJobs, "readonly");
+    const values = await requestValue(
+      transaction.objectStore(STORES.exportJobs).getAll(vaultKeyRange(this.vaultId)),
+    );
+    await transactionDone(transaction);
+    return values
+      .map(decodeExportJob)
+      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  }
+
+  async requestExportCancellation(
+    jobId: string,
+    updatedAt: string,
+  ): Promise<import("./schema").ExportJobV1> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.exportJobs, "readwrite");
+    const store = transaction.objectStore(STORES.exportJobs);
+    try {
+      const value = await requestValue(store.get(vaultKey(this.vaultId, jobId)));
+      if (value === undefined) throw new Error("Export Job is missing.");
+      const job = decodeExportJob(value);
+      if (job.state !== "Created" && job.state !== "Running")
+        throw new Error("Export Job is terminal.");
+      const next = { ...job, cancellationRequested: true, updatedAt };
+      store.put(next, vaultKey(this.vaultId, jobId));
+      await transactionDone(transaction);
+      return next;
+    } catch (error) {
+      abortTransaction(transaction);
+      throw storageError(error);
+    }
+  }
+
+  async reconcileInterruptedExports(updatedAt: string): Promise<boolean> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.exportJobs, "readwrite");
+    const store = transaction.objectStore(STORES.exportJobs);
+    const values = await requestValue(store.getAll(vaultKeyRange(this.vaultId)));
+    let changed = false;
+    for (const value of values) {
+      const job = decodeExportJob(value);
+      if (job.state !== "Created" && job.state !== "Running") continue;
+      store.put(
+        { ...job, state: "Failed", updatedAt, errorId: "EXPORT_INTERRUPTED" },
+        vaultKey(this.vaultId, job.jobId),
+      );
+      changed = true;
+    }
+    await transactionDone(transaction);
+    return changed;
+  }
+
+  async managementBusy(): Promise<"Capture" | "Vacuum" | "Export" | undefined> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(
+      [STORES.captureJobs, STORES.vacuumJobs, STORES.exportJobs],
+      "readonly",
+    );
+    const [captureValues, vacuumCount, exportValues] = await Promise.all([
+      requestValue(transaction.objectStore(STORES.captureJobs).getAll(vaultKeyRange(this.vaultId))),
+      requestValue(transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(this.vaultId))),
+      requestValue(transaction.objectStore(STORES.exportJobs).getAll(vaultKeyRange(this.vaultId))),
+    ]);
+    await transactionDone(transaction);
+    if (vacuumCount !== 0) return "Vacuum";
+    if (
+      exportValues
+        .map(decodeExportJob)
+        .some((job) => job.state === "Created" || job.state === "Running")
+    )
+      return "Export";
+    return captureValues.some((value) => {
+      const job = this.decodeScopedCaptureJob(value);
+      return job.state === "Created" || job.state === "Running";
+    })
+      ? "Capture"
+      : undefined;
   }
 
   async getVaultHead(): Promise<import("./schema").StoredVaultHeadV1 | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.vaultHead, "readonly");
     const done = transactionDone(transaction);
-    const value = (await requestValue(transaction.objectStore(STORES.vaultHead).get("active"))) as
-      | import("./schema").StoredVaultHeadV1
-      | undefined;
+    const value = (await requestValue(
+      transaction.objectStore(STORES.vaultHead).get(vaultSingletonKey(this.vaultId, "active")),
+    )) as import("./schema").StoredVaultHeadV1 | undefined;
     await done;
-    return value;
+    if (value === undefined) return undefined;
+    const head = decodeStoredVaultHead(value);
+    if (head.vaultId !== this.vaultId) throw storageError(new Error("Vault head is cross-Vault."));
+    return head;
+  }
+
+  async getVaultNameProjection(): Promise<
+    import("./schema").StoredVaultNameProjectionV1 | undefined
+  > {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.vaultNameProjection, "readonly");
+    const value = await requestValue(
+      transaction
+        .objectStore(STORES.vaultNameProjection)
+        .get(vaultSingletonKey(this.vaultId, "active")),
+    );
+    await transactionDone(transaction);
+    if (value === undefined) return undefined;
+    const projection = decodeStoredVaultNameProjection(value);
+    if (projection.vaultId !== this.vaultId) {
+      throw storageError(new Error("Vault Name Projection belongs to another Vault."));
+    }
+    return projection;
   }
 
   async reconcileInterruptedJobs(updatedAt: string): Promise<void> {
@@ -518,16 +890,18 @@ export class IndexedDbDriver {
     const jobsStore = transaction.objectStore(STORES.captureJobs);
     const outcomesStore = transaction.objectStore(STORES.commandOutcomes);
     try {
-      const values = await requestValue(jobsStore.getAll());
+      const values = await requestValue(jobsStore.getAll(vaultKeyRange(this.vaultId)));
       for (const value of values) {
-        const job = decodeCaptureJob(value);
+        const job = this.decodeScopedCaptureJob(value);
         if (job.state !== "Running") continue;
-        const outcome = await requestValue(outcomesStore.get(job.commandId));
-        const reconciled: CaptureJobV1 =
+        const outcome = await requestValue(
+          outcomesStore.get(vaultKey(this.vaultId, job.commandId)),
+        );
+        const reconciled: CaptureJob =
           outcome === undefined
             ? { ...job, state: "Failed", updatedAt, errorId: "CAPTURE_INTERRUPTED" }
             : { ...job, state: "Succeeded", stage: "Commit", updatedAt };
-        jobsStore.put(reconciled, reconciled.jobId);
+        jobsStore.put(reconciled, vaultKey(this.vaultId, reconciled.jobId));
       }
       await done;
     } catch (error) {
@@ -543,10 +917,14 @@ export class IndexedDbDriver {
       "readonly",
     );
     const [objects, events, projections, outcomes] = await Promise.all([
-      requestValue(transaction.objectStore(STORES.objects).count()),
-      requestValue(transaction.objectStore(STORES.events).count()),
-      requestValue(transaction.objectStore(STORES.libraryProjection).count()),
-      requestValue(transaction.objectStore(STORES.commandOutcomes).count()),
+      requestValue(transaction.objectStore(STORES.objects).count(vaultKeyRange(this.vaultId))),
+      requestValue(transaction.objectStore(STORES.events).count(vaultKeyRange(this.vaultId))),
+      requestValue(
+        transaction.objectStore(STORES.libraryProjection).count(vaultKeyRange(this.vaultId)),
+      ),
+      requestValue(
+        transaction.objectStore(STORES.commandOutcomes).count(vaultKeyRange(this.vaultId)),
+      ),
     ]);
     await transactionDone(transaction);
     return { objects, events, projections, outcomes };
@@ -554,5 +932,9 @@ export class IndexedDbDriver {
 
   async deleteDatabase(): Promise<void> {
     await deleteDatabase(this.databaseName, await this.databasePromise);
+  }
+
+  async close(): Promise<void> {
+    (await this.databasePromise).close();
   }
 }

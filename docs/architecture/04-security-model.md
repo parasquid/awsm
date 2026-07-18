@@ -246,9 +246,9 @@ The coordination server relays encrypted messages but cannot read them.
 
 ## Initial Local Browser Slot
 
-Before multi-device enrollment exists, the Chrome Host stores one mandatory local device wrapper for the Vault Root Key using a non-exportable Web Crypto key.
+Before multi-device enrollment exists, the browser Host stores one mandatory local device wrapper for the Vault Root Key using a non-exportable device key. Local onboarding does not create or retain a passphrase wrapper.
 
-Onboarding may add one passphrase wrapper for the same Vault Root Key. The passphrase wrapper is not a recovery system and the first slice does not support changing passphrases or managing slots after onboarding.
+Export passphrases protect individual Vault Packages. They are not local unlock credentials, recovery settings, or persistent Vault state.
 
 ---
 

@@ -1,6 +1,6 @@
 import type { LibraryItemV1 } from "../../domain/contracts";
 import { DomainValidationError } from "../../domain/errors";
-import { literal, record, uuid } from "../../domain/validation";
+import { canonicalRecord, literal, record, uuid } from "../../domain/validation";
 
 export interface CollectionsMergedTopologyEventV1 {
   readonly eventId: string;
@@ -25,7 +25,7 @@ export interface LibraryCollectionStateV1 {
 }
 
 export function decodeLibraryCollectionState(value: unknown): LibraryCollectionStateV1 {
-  const input = record(value, "libraryCollectionState");
+  const input = canonicalRecord(value, "libraryCollectionState", ["version", "topologyEvents"]);
   if (!Array.isArray(input.topologyEvents)) {
     throw new DomainValidationError("libraryCollectionState.topologyEvents", "must be an array");
   }
@@ -33,6 +33,12 @@ export function decodeLibraryCollectionState(value: unknown): LibraryCollectionS
     const event = record(value, `libraryCollectionState.topologyEvents.${String(index)}`);
     const eventId = uuid(event.eventId, `topologyEvent.${String(index)}.eventId`);
     if (event.eventType === "CollectionsMerged") {
+      canonicalRecord(value, `libraryCollectionState.topologyEvents.${String(index)}`, [
+        "eventId",
+        "eventType",
+        "destinationCollectionId",
+        "sourceCollectionIds",
+      ]);
       if (!Array.isArray(event.sourceCollectionIds)) {
         throw new DomainValidationError(
           `topologyEvent.${String(index)}.sourceCollectionIds`,
@@ -52,6 +58,11 @@ export function decodeLibraryCollectionState(value: unknown): LibraryCollectionS
       };
     }
     if (event.eventType === "CollectionMergeReverted") {
+      canonicalRecord(value, `libraryCollectionState.topologyEvents.${String(index)}`, [
+        "eventId",
+        "eventType",
+        "mergeEventId",
+      ]);
       return {
         eventId,
         eventType: "CollectionMergeReverted",

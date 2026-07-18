@@ -1,6 +1,11 @@
 export const DATABASE_VERSION = 1;
 
 export const STORES = {
+  workspaceMetadata: "workspace_metadata",
+  workspaceKeys: "workspace_keys",
+  vaultDirectory: "vault_directory",
+  vaultNameCache: "vault_name_cache",
+  vaultNameProjection: "vault_name_projection",
   vaultMetadata: "vault_metadata",
   keySlots: "key_slots",
   deviceKeys: "device_keys",
@@ -13,7 +18,26 @@ export const STORES = {
   vaultGenerations: "vault_generations",
   vaultHead: "vault_head",
   vacuumJobs: "vacuum_jobs",
+  exportJobs: "export_jobs",
 } as const;
+
+export interface WorkspaceMetadataV1 {
+  readonly version: 1;
+  readonly workspaceId: string;
+  readonly createdAt: string;
+  readonly activeVaultId?: string;
+}
+
+export interface WorkspaceRecordsV1 {
+  readonly metadata: WorkspaceMetadataV1;
+  readonly nameCacheKey: CryptoKey;
+}
+
+export interface VaultDirectoryEntryV1 {
+  readonly version: 1;
+  readonly vaultId: string;
+  readonly createdAt: string;
+}
 
 export type StoredObjectType = "Bundle" | "Event";
 
@@ -24,10 +48,11 @@ export interface StoredObjectV1 {
   readonly envelopeBytes: Uint8Array;
 }
 
-export interface StoredEventV1 {
+export interface StoredEvent {
   readonly version: 1;
+  readonly vaultId: string;
   readonly eventId: string;
-  readonly objectId: string;
+  readonly referencedObjectIds: readonly string[];
   readonly orderingTimestamp: string;
   readonly envelopeBytes: Uint8Array;
 }
@@ -44,6 +69,13 @@ export interface StoredCollectionProjectionV1 {
   readonly envelopeBytes: Uint8Array;
 }
 
+export interface StoredVaultNameProjectionV1 {
+  readonly version: 1;
+  readonly vaultId: string;
+  readonly sourceEventId: string;
+  readonly envelopeBytes: Uint8Array;
+}
+
 export interface CommandOutcomeV1 {
   readonly version: 1;
   readonly commandId: string;
@@ -55,7 +87,7 @@ export interface CommandOutcomeV1 {
 
 export interface AtomicRegistrationV1 {
   readonly object: StoredObjectV1;
-  readonly event: StoredEventV1;
+  readonly event: StoredEvent;
   readonly projection: StoredProjectionV1;
   readonly outcome: CommandOutcomeV1;
 }
@@ -90,4 +122,24 @@ export interface StoredVacuumJobV1 {
   readonly sourceGenerationId: string;
   readonly stage: "Preflight" | "Analyze" | "Rewrite" | "Verify";
   readonly createdAt: string;
+}
+
+export type ExportJobState = "Created" | "Running" | "Succeeded" | "Failed" | "Cancelled";
+export type ExportJobStage = "Preflight" | "Snapshot" | "Verify" | "Package" | "Download";
+
+export interface ExportJobV1 {
+  readonly version: 1;
+  readonly vaultId: string;
+  readonly jobId: string;
+  readonly packageId: string;
+  readonly state: ExportJobState;
+  readonly stage: ExportJobStage;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly completedEntries: number;
+  readonly totalEntries: number;
+  readonly processedBytes: number;
+  readonly totalBytes: number;
+  readonly cancellationRequested: boolean;
+  readonly errorId?: import("../../domain/contracts").RuntimeErrorId;
 }

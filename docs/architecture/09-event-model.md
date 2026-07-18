@@ -241,7 +241,7 @@ new name
 
 Every Event Type has its own schema version.
 
-Older clients ignore unknown fields.
+Clients reject fields outside the canonical Event specification.
 
 Unknown Event Types must be preserved.
 
@@ -410,7 +410,7 @@ Commands separate user intent from recorded history.
 
 ## Why Replay?
 
-Replay enables migration, debugging, auditing, and deterministic reconstruction.
+Replay enables debugging, auditing, and deterministic reconstruction.
 
 ---
 
@@ -437,7 +437,7 @@ Future Event Types may support:
 - AI workflows
 - plugins
 
-Existing clients should safely ignore unknown Events.
+Clients should safely reject unknown Events.
 
 ---
 

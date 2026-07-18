@@ -3,7 +3,7 @@ import { deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
 import { wipe } from "../../crypto/sodium";
 import { encodeCanonicalCbor } from "../../domain/cbor";
 import type { LibraryItemV1 } from "../../domain/contracts";
-import type { StoredEventV1, StoredProjectionV1 } from "../../drivers/indexeddb/schema";
+import type { StoredEvent, StoredProjectionV1 } from "../../drivers/indexeddb/schema";
 
 export interface PrepareLibraryStateChangeInput {
   readonly rootKey: CryptoKey;
@@ -16,7 +16,7 @@ export interface PrepareLibraryStateChangeInput {
 }
 
 export interface PreparedLibraryStateChange {
-  readonly event: StoredEventV1;
+  readonly event: StoredEvent;
   readonly projections: readonly StoredProjectionV1[];
 }
 
@@ -109,8 +109,9 @@ export async function prepareLibraryStateChange(
   return {
     event: {
       version: 1,
+      vaultId: input.vaultId,
       eventId: input.eventId,
-      objectId,
+      referencedObjectIds: items.map((item) => item.bundleObjectId).toSorted(),
       orderingTimestamp: input.timestamp,
       envelopeBytes: eventEnvelopeBytes,
     },

@@ -64,7 +64,6 @@ describe("Library collection navigation", () => {
 
   it("uses the collection drop target as the merge destination", () => {
     expect(mergeDropRequest("source-id", "destination-id")).toEqual({
-      version: 1,
       type: "MergeCollections",
       destinationCollectionId: "destination-id",
       sourceCollectionIds: ["source-id"],
@@ -74,13 +73,11 @@ describe("Library collection navigation", () => {
 
   it("maps selected capture drops to Move or Extract requests", () => {
     expect(captureDropRequest(["b", "a"], "destination-id")).toEqual({
-      version: 1,
       type: "MoveCaptures",
       bundleIds: ["a", "b"],
       destinationCollectionId: "destination-id",
     });
     expect(captureDropRequest(["b", "a"], "new")).toEqual({
-      version: 1,
       type: "ExtractCaptures",
       bundleIds: ["a", "b"],
     });

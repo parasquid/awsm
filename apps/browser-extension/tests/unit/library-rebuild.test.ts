@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { CaptureMetadataV1 } from "../../src/domain/bundle";
 import type {
   StoredCollectionProjectionV1,
-  StoredEventV1,
+  StoredEvent,
   StoredProjectionV1,
+  StoredVaultNameProjectionV1,
 } from "../../src/drivers/indexeddb";
 import { prepareCaptureRegistration } from "../../src/runtime/capture/registration";
 import {
@@ -12,6 +13,10 @@ import {
 } from "../../src/runtime/library/management";
 import { LibraryProjectionRebuilder } from "../../src/runtime/library/rebuild";
 import { LibraryService } from "../../src/runtime/library/service";
+import {
+  decryptVaultNameProjection,
+  prepareVaultNameChange,
+} from "../../src/runtime/vault/name-crypto";
 
 const id = (suffix: number): string =>
   `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
@@ -94,15 +99,35 @@ describe("Library Projection rebuild", () => {
       topology: [],
       fact: merge,
     });
-    const events: StoredEventV1[] = [first.event, second.event, preparedMerge.event];
+    const nameChange = await prepareVaultNameChange({
+      rootKey,
+      eventType: "VaultCreated",
+      vaultId,
+      deviceId: id(2),
+      eventId: id(41),
+      timestamp: "2026-07-18T09:00:00.000Z",
+      name: "Amber Archive",
+    });
+    const events: StoredEvent[] = [
+      nameChange.event,
+      first.event,
+      second.event,
+      preparedMerge.event,
+    ];
     let rebuiltItems: readonly StoredProjectionV1[] = [];
     let rebuiltCollections: StoredCollectionProjectionV1 | undefined;
+    let rebuiltName: StoredVaultNameProjectionV1 | undefined;
     await new LibraryProjectionRebuilder(
       {
         listStoredEvents: async () => events,
-        replaceLibraryProjections: async (itemProjections, collectionProjection) => {
+        replaceLibraryProjections: async (
+          itemProjections,
+          collectionProjection,
+          nameProjection,
+        ) => {
           rebuiltItems = itemProjections;
           rebuiltCollections = collectionProjection;
+          rebuiltName = nameProjection;
         },
       },
       rootKey,
@@ -119,6 +144,11 @@ describe("Library Projection rebuild", () => {
       vaultId,
     );
     await expect(rebuilt.list()).resolves.toHaveLength(2);
+    if (rebuiltName === undefined) throw new Error("Vault Name Projection was not rebuilt.");
+    await expect(decryptVaultNameProjection(rootKey, rebuiltName)).resolves.toMatchObject({
+      name: "Amber Archive",
+      sourceEventId: nameChange.event.eventId,
+    });
     await expect(rebuilt.groups()).resolves.toEqual([
       expect.objectContaining({
         collectionId: id(30),

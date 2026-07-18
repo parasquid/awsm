@@ -1,6 +1,6 @@
 import { browser } from "wxt/browser";
 import type { RuntimeErrorId } from "../domain/contracts";
-import type { AppRequestV1, AppResponseV1 } from "./protocol";
+import type { AppRequest, AppResponse } from "./protocol";
 
 export class AppClientError extends Error {
   readonly id: RuntimeErrorId;
@@ -12,8 +12,8 @@ export class AppClientError extends Error {
   }
 }
 
-export async function sendRequest<T>(request: AppRequestV1): Promise<T> {
-  const response: AppResponseV1 = await browser.runtime.sendMessage(request);
+export async function sendRequest<T>(request: AppRequest): Promise<T> {
+  const response: AppResponse = await browser.runtime.sendMessage(request);
   if (!response.ok) throw new AppClientError(response.error.id, response.error.message);
   return response.value as T;
 }

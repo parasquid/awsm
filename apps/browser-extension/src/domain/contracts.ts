@@ -19,8 +19,16 @@ export const RUNTIME_ERROR_IDS = [
   "CRYPTO_AUTHENTICATION_FAILED",
   "UNSUPPORTED_FORMAT_VERSION",
   "STORAGE_TRANSACTION_FAILED",
-  "WRONG_PASSPHRASE",
   "LIBRARY_STATE_CHANGED",
+  "INVALID_VAULT_NAME",
+  "VAULT_NOT_FOUND",
+  "VAULT_CONTEXT_CHANGED",
+  "VAULT_BUSY",
+  "INVALID_EXPORT_PASSPHRASE",
+  "EXPORT_AUTHENTICATION_FAILED",
+  "EXPORT_PACKAGE_INVALID",
+  "EXPORT_INTERRUPTED",
+  "EXPORT_DOWNLOAD_FAILED",
 ] as const;
 
 export type RuntimeErrorId = (typeof RUNTIME_ERROR_IDS)[number];
@@ -69,7 +77,6 @@ export interface BundleManifestV1 {
   readonly bundleSerialization: "bundle:zip:v1";
   readonly manifestSerialization: "cbor:canonical:v1";
   readonly artifacts: readonly ArtifactReferenceV1[];
-  readonly unknownFields: Readonly<Record<string, unknown>>;
 }
 
 export interface EncryptedEnvelopeV1 {
@@ -99,8 +106,9 @@ export interface LibraryItemV1 {
 export type CaptureJobState = "Created" | "Running" | "Succeeded" | "Failed";
 export type CaptureJobStage = "Preflight" | "MHTML" | "Screenshot" | "Commit";
 
-export interface CaptureJobV1 {
+export interface CaptureJob {
   readonly version: 1;
+  readonly vaultId: string;
   readonly jobId: string;
   readonly commandId: string;
   readonly tabId: number;

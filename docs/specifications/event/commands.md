@@ -195,6 +195,12 @@ This list is informative rather than exhaustive.
 
 `VacuumVault` is a local destructive Runtime Job request. It never synchronizes as a Command and processes the Deleted snapshot established after acquiring the active-generation fence.
 
+`CreateVault` creates a new cryptographically independent Vault and accepts its initial normalized name plus independent local key-slot choices. Accepted creation produces `VaultCreated` atomically with the new Vault.
+
+`RenameVault` requires the named Vault to be active and unlocked. It accepts one normalized name and produces `VaultRenamed`. Repeating the current canonical name is a no-op and produces no Event.
+
+`SelectActiveVault` changes the device-local active Vault, manually locks both the previous and selected Vault contexts, and produces no Event. It MUST fail when its expected active Vault no longer matches persisted Workspace state or when Vault-scoped authoritative work prevents a safe context transition.
+
 ---
 
 # 13. Error Handling
@@ -227,15 +233,15 @@ Transactions are atomic.
 
 ---
 
-# 15. Future Compatibility
+# 15. Unsupported Commands
 
-Future versions MAY introduce:
+Command semantics outside this specification are unsupported, including:
 
 - additional Command types
 - additional validation rules
 - richer authorization models
 
-Older runtimes SHOULD reject unsupported Commands rather than attempting partial execution.
+Runtimes MUST reject unsupported Commands rather than attempting partial execution.
 
 ---
 

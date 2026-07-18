@@ -20,7 +20,7 @@ This record preserves the RED-before-GREEN history for the vertical slice. The c
 | 2. Schemas and decoders | Decoder tests rejected the absent implementations for Commands, storage records, versions, URLs, identifiers, duplicate Artifact IDs, and unknown error shapes. | `tests/unit/domain-decoders.test.ts` and `tests/unit/capture-job-decoder.test.ts` passed through public decoders. |
 | 3. Canonical formats | Golden and mutation tests initially had no canonical CBOR, deterministic ZIP, checksum, or Bundle reader implementation. | `tests/unit/bundle-format.test.ts` passed repeated-byte, round-trip, checksum, path, timestamp, size, and malformed-Bundle assertions. |
 | 4. Cryptography | HKDF, XChaCha20-Poly1305, and Argon2id vector tests failed before their helpers existed; mutation tests had no authenticated envelope reader. | `tests/unit/crypto.test.ts` passed fixed vectors, domain separation, envelope mutation, and authentication failures. A regression cycle also exposed and fixed typed-array ownership returned by libsodium. |
-| 5. Vault lifecycle | Vault tests failed before device/passphrase slots, verifier authentication, manual lock persistence, and atomic creation existed. | `tests/unit/vault.test.ts` passed create, auto-unlock, manual lock, passphrase, corrupt-slot, verifier, and onboarding rollback cases; the real-browser `vault` integration scenario proved the stored AES-KW device key is non-exportable. |
+| 5. Vault lifecycle | Vault tests failed before the device slot, verifier authentication, manual lock persistence, and atomic creation existed. | `tests/unit/vault.test.ts` passed create, auto-unlock, manual lock, corrupt-slot, verifier, and onboarding rollback cases; the real-browser `vault` integration scenario proved the stored AES-KW device key is non-exportable. |
 | 6. IndexedDB and atomicity | Real-browser scenarios failed before the schema and Driver existed; rollback and reconciliation assertions initially had no transaction implementation. | Six Playwright IndexedDB scenarios passed immutable insertion, identical duplicate acceptance, conflict rejection, atomic registration/idempotency, rollback, Projection clearing, and interrupted-job reconciliation. |
 | 7. Preflight and MHTML | Host tests failed before URL/permission/API checks and mandatory Blob acquisition existed. Real Chrome then exposed a failing Blob-lifetime regression when bytes were read after the `saveAsMHTML` callback returned. | `tests/unit/capture-host.test.ts` passed all preflight and empty/rejected/unreadable MHTML cases. The Chrome Host now takes ownership of MHTML bytes inside the native callback, and packaged-Chrome E2E validates real MHTML content. |
 | 8. Full-page screenshot | Geometry/lifecycle tests failed before tiling, throttling, fixed-element mitigation, stitching, limits, warnings, and restoration existed. The strengthened E2E landmark assertion then failed while its samples landed on black fixture labels. | `tests/unit/screenshot.test.ts` passed ten geometry and failure-path cases. The E2E test samples decoded pixels away from labels and proves a 1280×2100 red/green/blue capture with the fixed header appearing once. |
@@ -32,7 +32,7 @@ This record preserves the RED-before-GREEN history for the vertical slice. The c
 
 - A MHTML callback returned a Blob that became unreadable after callback completion. The regression failed in real Chrome before byte ownership moved inside the callback.
 - Sodium WASM was blocked by the original extension CSP. The packaged extension failed before narrowly adding `wasm-unsafe-eval`; general `unsafe-eval` remains prohibited and build-verified.
-- Error-path byte wiping could mask the primary failure when sodium initialization was unavailable. Regression tests failed before `wipe` became best-effort with a direct byte-fill fallback.
+- Error-path byte wiping could mask the primary failure when sodium initialization was unavailable. Regression tests established direct byte filling as the canonical error-path wipe behavior.
 - Screenshot final-tile geometry initially cropped the wrong source area on clamped final scroll positions. Geometry tests failed before source offsets were derived from requested tile position minus actual scroll position.
 - Background message handling initially claimed unrelated offscreen messages with an asynchronous `undefined` response. The stitch probe failed before invalid app messages returned synchronously.
 
@@ -90,7 +90,7 @@ The recent-capture card described in plan section 14 followed an additional RED-
 - **RED:** the focused Library test failed with `TypeError: groupLibraryItems is not a function` before normalized page grouping existed.
 - **GREEN:** the Library suite passed with fragment-insensitive page keys, newest-first histories, and latest-capture group metadata.
 - **Packaged Chrome:** E2E archived the same fixture twice, displayed one card with `2 captures` and the latest screenshot thumbnail, opened the newest immutable version while offline, and downloaded its MHTML.
-- The superseded `LibraryGroupRemoved` polish implementation and evidence have been replaced by the section 15 deletion/restoration/Vacuum cycle below. No compatibility reader remains.
+- Section 15 deletion/restoration/Vacuum is the canonical lifecycle exercised by the evidence below.
 
 ### Collection visualization and per-capture thumbnails
 
@@ -117,9 +117,9 @@ The recent-capture card described in plan section 14 followed an additional RED-
 
 ### Generation, verification, and crash-safety evidence
 
-- Vault creation atomically persists encrypted generation zero and its active head with Vault metadata and key slots. Each later authoritative commit atomically records opaque Object/Event IDs in the active append tail; Vacuum verifies manifest base plus tail exactly matches storage and folds retained entries into its successor. The canonical database is `awsm-vault`; IndexedDB's internal schema version owns storage versioning, and earlier development databases are intentionally not migrated.
+- Vault creation atomically persists encrypted generation zero and its active head with Vault metadata and key slots. Each later authoritative commit atomically records opaque Object/Event IDs in the active append tail; Vacuum verifies manifest base plus tail exactly matches storage and folds retained entries into its successor. The canonical database is `awsm-vault`.
 - Vacuum acquires a persisted opaque lease before snapshotting. Capture/delete/restore transactions reject writes while that lease exists. Startup clears only abandoned pre-activation leases; activation, Projection publication, collection, generation replacement, head CAS, and lease removal share one IndexedDB transaction.
-- Unit tests prove unsupported Objects/Events fail before commit, retained Event replay must equal the pre-Vacuum Active Bundle set, mixed lifecycle Events receive new IDs while filtering deleted references and preserving supported unknown fields, failed work releases its lease, and a successful successor manifest is encrypted, checksummed, increments the generation, preserves the Vault ID, records only a scalar predecessor, and retains only Active Objects and Events.
+- Unit tests prove unsupported Objects/Events fail before commit, retained Event replay must equal the pre-Vacuum Active Bundle set, mixed lifecycle Events receive new IDs while filtering deleted references, failed work releases its lease, and a successful successor manifest is encrypted, checksummed, increments the generation, preserves the Vault ID, records only a scalar predecessor, and retains only Active Objects and Events.
 - Real-browser integration proves a late transaction failure rolls back every deletion, a source-generation CAS conflict activates nothing, and an abandoned pre-activation lease blocks writes until restart reconciliation.
 - Packaged Chrome proves Object counts decrease, the predecessor manifest is collected, Deleted becomes empty, and the retained capture still opens its authenticated full screenshot offline.
 
@@ -184,7 +184,7 @@ The packaged path extracts a selected Capture, undoes it, extracts again, merges
 
 - **RED:** focused Bundle and screenshot lifecycle tests failed when they first required `image/webp`, `screenshot-full.webp`, and WebP result fields while the implementation still emitted PNG.
 - **GREEN:** the offscreen Host now stitches Chrome's transient PNG viewport tiles and encodes the persisted full screenshot as WebP at quality 0.72 and its bounded thumbnail as WebP at quality 0.68. MHTML remains the mandatory high-fidelity Artifact.
-- No migration, PNG reader, dual format, or compatibility branch remains in the pre-release format.
+- WebP is the sole persisted screenshot representation exercised by this evidence.
 - Packaged Chrome verifies successful WebP decode, full-page dimensions and landmarks, distinct per-Capture thumbnails, offline detail, and the existing encrypted-at-rest boundary.
 
 ### Oversized screenshot and thumbnail refinement

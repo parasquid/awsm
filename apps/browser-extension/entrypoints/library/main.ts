@@ -1,11 +1,11 @@
 import { base64ToBytes } from "../../src/app/base64";
 import { AppClientError, sendRequest } from "../../src/app/client";
 import type {
-  AppRequestV1,
-  AppStateV1,
-  LibraryDetailMessageV1,
-  LibraryOperationReceiptV1,
-  LibraryPageGroupMessageV1,
+  AppRequest,
+  AppState,
+  LibraryDetailMessage,
+  LibraryOperationReceipt,
+  LibraryPageGroupMessage,
 } from "../../src/app/protocol";
 import {
   captureDropRequest,
@@ -16,6 +16,7 @@ import {
   libraryStateConfirmation,
   mergeDropRequest,
 } from "../../src/ui/library-view";
+import { deepLinkVaultRoute, vaultManagementView } from "../../src/ui/vault-management-view";
 
 function requiredElement(selector: string): HTMLElement {
   const node = document.querySelector<HTMLElement>(selector);
@@ -25,15 +26,25 @@ function requiredElement(selector: string): HTMLElement {
 
 const app = requiredElement("#app");
 const announcer = requiredElement("#announcer");
+const pageHeader = requiredElement("header");
+const libraryTitle = requiredElement("#library-title");
 let screenshotUrl: string | undefined;
-let activeGroups: readonly LibraryPageGroupMessageV1[] = [];
-let deletedGroups: readonly LibraryPageGroupMessageV1[] = [];
+let activeGroups: readonly LibraryPageGroupMessage[] = [];
+let deletedGroups: readonly LibraryPageGroupMessage[] = [];
 let undoTimer: number | undefined;
 let undoNotice: HTMLElement | undefined;
 let draggedCollectionId: string | undefined;
+let activeVaultId: string | undefined;
+let editingVaultId: string | undefined;
+let expandedLibrarySection: "Active" | "Deleted" = "Active";
+
+function expectedVaultId(): string {
+  if (activeVaultId === undefined) throw new Error("No active Vault is selected.");
+  return activeVaultId;
+}
 
 type ManagementRequest = Extract<
-  AppRequestV1,
+  AppRequest,
   {
     readonly type: "MergeCollections" | "MoveCaptures" | "ExtractCaptures" | "UndoLibraryOperation";
   }
@@ -48,6 +59,373 @@ function element<K extends keyof HTMLElementTagNameMap>(
   if (text !== undefined) node.textContent = text;
   if (className !== undefined) node.className = className;
   return node;
+}
+
+async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
+  const suggestion = await sendRequest<{ readonly name: string }>({ type: "SuggestVaultName" });
+  const { dialog, form } = dialogShell("Create another Vault");
+  form.append(element("p", "Creating another Vault locks the current Vault.", "muted"));
+  const label = element("label", "Vault name");
+  const name = element("input");
+  name.value = suggestion.name;
+  name.required = true;
+  name.maxLength = 64;
+  label.append(name);
+  const regenerate = element("button", "Generate another name");
+  regenerate.type = "button";
+  regenerate.addEventListener("click", () => {
+    regenerate.disabled = true;
+    void sendRequest<{ readonly name: string }>({ type: "SuggestVaultName" }).then(
+      (next) => {
+        name.value = next.name;
+        name.focus();
+        name.select();
+        regenerate.disabled = false;
+      },
+      () => {
+        regenerate.disabled = false;
+      },
+    );
+  });
+  const controls = element("div", undefined, "actions");
+  const submit = element("button", "Create Vault");
+  submit.type = "submit";
+  const cancel = element("button", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => dialog.close());
+  controls.append(submit, cancel);
+  form.append(label, regenerate, controls);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    void sendRequest<AppState>({
+      type: "CreateVault",
+      expectedActiveVaultId: expectedVaultId(),
+      name: name.value,
+    }).then(
+      async (next) => {
+        dialog.close();
+        renderVaultBar(next);
+        announcer.textContent = `Created and selected ${name.value}.`;
+        const active = next.workspace.vaults.find((vault) => vault.active);
+        if (active?.unlocked === true) await loadList();
+        else await showUnlock();
+      },
+      async (error) => {
+        dialog.close();
+        await handleContextError(error);
+      },
+    );
+  });
+  dialog.addEventListener("close", () => restoreFocus.focus(), { once: true });
+  dialog.showModal();
+  name.focus();
+  name.select();
+}
+
+function showExportVaultDialog(restoreFocus: HTMLElement): void {
+  const { dialog, form } = dialogShell("Export encrypted Vault");
+  form.append(
+    element(
+      "p",
+      "Create a complete portable .awsm package. You will need this new passphrase to recover it.",
+      "muted",
+    ),
+  );
+  const passphraseLabel = element("label", "Export passphrase");
+  const passphrase = element("input");
+  passphrase.type = "password";
+  passphrase.required = true;
+  passphrase.autocomplete = "new-password";
+  passphrase.setAttribute("aria-describedby", "export-passphrase-help");
+  passphraseLabel.append(passphrase);
+  const help = element(
+    "p",
+    "Use at least 12 characters. This passphrase is not saved and does not unlock the local Vault.",
+    "muted",
+  );
+  help.id = "export-passphrase-help";
+  const confirmationLabel = element("label", "Confirm export passphrase");
+  const confirmation = element("input");
+  confirmation.type = "password";
+  confirmation.required = true;
+  confirmation.autocomplete = "new-password";
+  confirmationLabel.append(confirmation);
+  const feedback = element("p", "", "notice error");
+  feedback.hidden = true;
+  const actions = element("div", undefined, "actions");
+  const submit = element("button", "Export Vault");
+  submit.type = "submit";
+  const cancel = element("button", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => dialog.close());
+  actions.append(submit, cancel);
+  form.append(passphraseLabel, help, confirmationLabel, feedback, actions);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (
+      Array.from(passphrase.value).length < 12 ||
+      new TextEncoder().encode(passphrase.value).byteLength > 1024
+    ) {
+      feedback.textContent = "Use at least 12 characters and no more than 1,024 UTF-8 bytes.";
+      feedback.hidden = false;
+      passphrase.focus();
+      return;
+    }
+    if (passphrase.value !== confirmation.value) {
+      feedback.textContent = "The passphrases do not match.";
+      feedback.hidden = false;
+      confirmation.focus();
+      return;
+    }
+    submit.disabled = true;
+    cancel.disabled = true;
+    submit.textContent = "Preparing…";
+    const request = sendRequest<{ readonly jobId: string; readonly filename: string }>({
+      type: "ExportVault",
+      expectedVaultId: expectedVaultId(),
+      passphrase: passphrase.value,
+    });
+    passphrase.value = "";
+    confirmation.value = "";
+    dialog.close();
+    announcer.textContent = "Encrypted Vault Export started.";
+    void request.then(
+      (result) => {
+        announcer.textContent = `Export downloaded as ${result.filename}`;
+        reconcile();
+      },
+      (error) => {
+        announcer.textContent =
+          error instanceof AppClientError ? error.message : "Vault Export failed.";
+        reconcile();
+      },
+    );
+  });
+  dialog.addEventListener("close", () => restoreFocus.focus(), { once: true });
+  dialog.showModal();
+  passphrase.focus();
+}
+
+function renderLibraryTitle(state: AppState, restoreFocus = false): void {
+  const view = vaultManagementView(state.workspace);
+  const active = state.workspace.vaults.find((vault) => vault.active);
+  const heading = element("h1");
+  if (active === undefined) {
+    heading.textContent = "Your local library";
+    libraryTitle.replaceChildren(heading);
+    return;
+  }
+  if (!active.unlocked || view.managementDisabled) {
+    heading.textContent = active.name;
+    libraryTitle.replaceChildren(heading);
+    return;
+  }
+  const rename = element("button", active.name, "vault-title-button");
+  rename.type = "button";
+  rename.setAttribute("aria-label", `Rename ${active.name}`);
+  rename.addEventListener("click", () => {
+    if (editingVaultId !== undefined) return;
+    editingVaultId = active.vaultId;
+    const form = element("form", undefined, "library-title-edit");
+    const label = element("label", "Vault name", "sr-only");
+    const input = element("input");
+    input.id = `vault-name-${active.vaultId}`;
+    label.htmlFor = input.id;
+    input.value = active.name;
+    input.required = true;
+    input.maxLength = 64;
+    const submit = element("button", "Rename");
+    submit.type = "submit";
+    let submitting = false;
+    const finish = (restoreTitleFocus = false): void => {
+      editingVaultId = undefined;
+      renderLibraryTitle(state, restoreTitleFocus);
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(true);
+      }
+    });
+    form.append(label, input, submit);
+    form.addEventListener("focusout", (event) => {
+      const next = event.relatedTarget;
+      if (!submitting && (!(next instanceof Node) || !form.contains(next))) finish();
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitting = true;
+      submit.disabled = true;
+      submit.textContent = "Renaming…";
+      void sendRequest<AppState>({
+        type: "RenameVault",
+        expectedActiveVaultId: active.vaultId,
+        vaultId: active.vaultId,
+        name: input.value,
+      }).then(
+        (next) => {
+          editingVaultId = undefined;
+          renderVaultBar(next);
+          const renamed = next.workspace.vaults.find((vault) => vault.active)?.name ?? active.name;
+          announcer.textContent = `Vault renamed to ${renamed}`;
+          libraryTitle.querySelector<HTMLButtonElement>(".vault-title-button")?.focus();
+        },
+        async (error) => {
+          if (error instanceof AppClientError && error.id === "VAULT_CONTEXT_CHANGED") {
+            editingVaultId = undefined;
+            await handleContextError(error);
+            return;
+          }
+          submitting = false;
+          submit.disabled = false;
+          submit.textContent = "Rename";
+          const message =
+            error instanceof AppClientError ? error.message : "The Vault could not be renamed.";
+          form.querySelector(".error")?.remove();
+          form.append(element("p", message, "notice error"));
+          input.focus();
+        },
+      );
+    });
+    libraryTitle.replaceChildren(form);
+    input.focus();
+    input.select();
+  });
+  heading.append(rename);
+  libraryTitle.replaceChildren(heading);
+  if (restoreFocus) rename.focus();
+}
+
+function renderVaultBar(state: AppState): void {
+  activeVaultId = state.workspace.activeVaultId;
+  document.querySelector("#vault-management")?.remove();
+  const view = vaultManagementView(state.workspace);
+  const active = state.workspace.vaults.find((vault) => vault.active);
+  if (
+    active === undefined ||
+    (editingVaultId !== undefined &&
+      (editingVaultId !== active.vaultId || !active.unlocked || view.managementDisabled))
+  ) {
+    editingVaultId = undefined;
+  }
+  if (editingVaultId === undefined) renderLibraryTitle(state);
+  if (active === undefined) return;
+  const bar = element("section", undefined, "vault-control");
+  bar.id = "vault-management";
+  bar.append(element("p", active.unlocked ? "Unlocked" : "Locked", "muted"));
+  if (view.busyText !== undefined) bar.append(element("p", view.busyText, "muted"));
+  const actions = element("div", undefined, "actions");
+  const switcher = element("button", "Switch Vault");
+  switcher.disabled = view.managementDisabled;
+  switcher.addEventListener("click", () => {
+    const { dialog, form } = dialogShell("Switch Vault");
+    form.append(element("p", "Switching locks the current Vault.", "muted"));
+    let selectedVaultId = active.vaultId;
+    for (const option of view.options) {
+      const label = element("label", undefined, "picker__option");
+      const radio = element("input");
+      radio.type = "radio";
+      radio.name = "vault";
+      radio.checked = option.current;
+      radio.autofocus = option.current;
+      radio.addEventListener("change", () => {
+        selectedVaultId = option.vaultId;
+      });
+      label.append(
+        radio,
+        element(
+          "span",
+          `${option.label}${option.current ? " · Current" : ""} · Created ${option.createdAt.slice(0, 10)}`,
+        ),
+      );
+      form.append(label);
+    }
+    const controls = element("div", undefined, "actions");
+    const choose = element("button", "Switch");
+    choose.type = "submit";
+    const cancel = element("button", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => dialog.close());
+    controls.append(choose, cancel);
+    form.append(controls);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      choose.disabled = true;
+      void sendRequest<AppState>({
+        type: "SelectActiveVault",
+        expectedActiveVaultId: active.vaultId,
+        vaultId: selectedVaultId,
+      }).then(
+        async (next) => {
+          dialog.close();
+          renderVaultBar(next);
+          announcer.textContent = `Selected ${next.workspace.vaults.find((vault) => vault.active)?.name ?? "Vault"}. Unlock it to continue.`;
+          await showUnlock();
+        },
+        async (error) => {
+          dialog.close();
+          await handleContextError(error);
+        },
+      );
+    });
+    dialog.addEventListener("close", () => switcher.focus(), { once: true });
+    dialog.showModal();
+  });
+  actions.append(switcher);
+  const create = element("button", "Create another Vault");
+  create.disabled = view.managementDisabled;
+  create.addEventListener("click", () => {
+    create.disabled = true;
+    void showCreateVaultDialog(create).finally(() => {
+      create.disabled = view.managementDisabled;
+    });
+  });
+  actions.append(create);
+  const exportButton = element("button", "Export Vault");
+  exportButton.disabled = !active.unlocked || view.managementDisabled;
+  exportButton.addEventListener("click", () => showExportVaultDialog(exportButton));
+  actions.append(exportButton);
+  const exportJob =
+    state.latestExportJob?.vaultId === active.vaultId ? state.latestExportJob : undefined;
+  if (exportJob !== undefined) {
+    if (exportJob.state === "Created" || exportJob.state === "Running") {
+      const progress = element(
+        "p",
+        `Export · ${exportJob.stage} · ${String(exportJob.completedEntries)} of ${String(exportJob.totalEntries)} entries`,
+        "muted",
+      );
+      const cancelExport = element("button", "Cancel Export");
+      cancelExport.disabled = exportJob.cancellationRequested;
+      cancelExport.addEventListener("click", () => {
+        cancelExport.disabled = true;
+        void sendRequest<null>({
+          type: "CancelVaultExport",
+          expectedVaultId: active.vaultId,
+          jobId: exportJob.jobId,
+        }).catch(() => reconcile());
+      });
+      bar.append(progress, cancelExport);
+    } else if (exportJob.state === "Failed") {
+      bar.append(element("p", "The last Vault Export failed safely.", "notice error"));
+    } else if (exportJob.state === "Succeeded") {
+      bar.append(element("p", "The last encrypted Vault Export was downloaded.", "muted"));
+    }
+  }
+  bar.append(actions);
+  pageHeader.after(bar);
+}
+
+async function handleContextError(error: unknown): Promise<void> {
+  if (error instanceof AppClientError && error.id === "VAULT_CONTEXT_CHANGED") {
+    releaseScreenshot();
+    activeGroups = [];
+    deletedGroups = [];
+    announcer.textContent = "The active Vault changed. Library data was refreshed.";
+    await initialize();
+    return;
+  }
+  renderError(error instanceof AppClientError ? error.message : "The operation failed safely.");
 }
 
 function useTiltedDragPreview(event: DragEvent, source: HTMLElement): void {
@@ -90,7 +468,7 @@ function clearUndoNotice(): void {
   undoNotice = undefined;
 }
 
-function showUndoNotice(message: string, receipt: LibraryOperationReceiptV1): void {
+function showUndoNotice(message: string, receipt: LibraryOperationReceipt): void {
   clearUndoNotice();
   const notice = element("div", undefined, "snackbar");
   notice.setAttribute("role", "status");
@@ -99,9 +477,9 @@ function showUndoNotice(message: string, receipt: LibraryOperationReceiptV1): vo
   undo.type = "button";
   undo.addEventListener("click", () => {
     undo.disabled = true;
-    void sendRequest<LibraryOperationReceiptV1>({
-      version: 1,
+    void sendRequest<LibraryOperationReceipt>({
       type: "UndoLibraryOperation",
+      expectedVaultId: expectedVaultId(),
       operationEventId: receipt.operationEventId,
     }).then(
       async () => {
@@ -124,11 +502,15 @@ function showUndoNotice(message: string, receipt: LibraryOperationReceiptV1): vo
 
 async function applyManagement(request: ManagementRequest, message: string): Promise<void> {
   try {
-    const receipt = await sendRequest<LibraryOperationReceiptV1>(request);
+    const receipt = await sendRequest<LibraryOperationReceipt>(request);
     await loadList();
     announcer.textContent = message;
     showUndoNotice(message, receipt);
   } catch (error) {
+    if (error instanceof AppClientError && error.id === "VAULT_CONTEXT_CHANGED") {
+      await handleContextError(error);
+      return;
+    }
     if (error instanceof AppClientError && error.id === "LIBRARY_STATE_CHANGED") {
       await loadList();
       announcer.textContent = "The Library changed. Review it and try again.";
@@ -145,14 +527,17 @@ function dialogShell(title: string): {
   const dialog = element("dialog", undefined, "picker") as HTMLDialogElement;
   const form = element("form") as HTMLFormElement;
   form.method = "dialog";
-  form.append(element("h2", title));
+  const heading = element("h2", title);
+  heading.id = `dialog-title-${crypto.randomUUID()}`;
+  dialog.setAttribute("aria-labelledby", heading.id);
+  form.append(heading);
   dialog.append(form);
   document.body.append(dialog);
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
   return { dialog, form };
 }
 
-function showMergePicker(destination: LibraryPageGroupMessageV1): void {
+function showMergePicker(destination: LibraryPageGroupMessage): void {
   const candidates = activeGroups.filter(
     (candidate) => candidate.collectionId !== destination.collectionId,
   );
@@ -201,8 +586,8 @@ function showMergePicker(destination: LibraryPageGroupMessageV1): void {
     dialog.close();
     void applyManagement(
       {
-        version: 1,
         type: "MergeCollections",
+        expectedVaultId: expectedVaultId(),
         destinationCollectionId: destination.collectionId,
         sourceCollectionIds: [...selected],
       },
@@ -249,14 +634,19 @@ function showMovePicker(bundleIds: readonly string[], sourceCollectionId: string
     if (destination === undefined) return;
     dialog.close();
     void applyManagement(
-      { version: 1, type: "MoveCaptures", bundleIds, destinationCollectionId: destination },
+      {
+        type: "MoveCaptures",
+        expectedVaultId: expectedVaultId(),
+        bundleIds,
+        destinationCollectionId: destination,
+      },
       `Moved ${String(bundleIds.length)} ${bundleIds.length === 1 ? "capture" : "captures"}`,
     );
   });
   dialog.showModal();
 }
 
-function thumbnailFor(group: LibraryPageGroupMessageV1, bundleId: string): string | undefined {
+function thumbnailFor(group: LibraryPageGroupMessage, bundleId: string): string | undefined {
   return group.captureThumbnails.find((thumbnail) => thumbnail.bundleId === bundleId)
     ?.thumbnailBase64;
 }
@@ -280,7 +670,7 @@ function originalSiteLink(item: {
   return link;
 }
 
-function collectionPreview(group: LibraryPageGroupMessageV1): HTMLElement | undefined {
+function collectionPreview(group: LibraryPageGroupMessage): HTMLElement | undefined {
   const layerIds = collectionLayerBundleIds(group);
   const available = layerIds.flatMap((bundleId, index) => {
     const base64 = thumbnailFor(group, bundleId);
@@ -306,7 +696,7 @@ function collectionPreview(group: LibraryPageGroupMessageV1): HTMLElement | unde
 }
 
 function groupGrid(
-  groups: readonly LibraryPageGroupMessageV1[],
+  groups: readonly LibraryPageGroupMessage[],
   status: "Active" | "Deleted",
 ): HTMLElement {
   const grid = element("div", undefined, "grid");
@@ -339,7 +729,10 @@ function groupGrid(
         const request = mergeDropRequest(source, group.collectionId);
         if (request === undefined) return;
         event.preventDefault();
-        void applyManagement(request, `Merged a collection into ${group.title}`);
+        void applyManagement(
+          { ...request, expectedVaultId: expectedVaultId() },
+          `Merged a collection into ${group.title}`,
+        );
       });
       wrapper.addEventListener("dragend", () => {
         draggedCollectionId = undefined;
@@ -409,10 +802,9 @@ function vacuumControl(captureCount: number, reclaimableBytes: number): HTMLButt
       return;
     vacuum.disabled = true;
     void sendRequest<{
-      readonly version: 1;
       readonly deletedCaptureCount: number;
       readonly reclaimedBytes: number;
-    }>({ version: 1, type: "VacuumVault" }).then(
+    }>({ type: "VacuumVault", expectedVaultId: expectedVaultId() }).then(
       async (result) => {
         announcer.textContent = `Vault Vacuum removed ${String(result.deletedCaptureCount)} captures and reclaimed ${formatByteSize(result.reclaimedBytes)}`;
         await loadList("Deleted");
@@ -423,18 +815,24 @@ function vacuumControl(captureCount: number, reclaimableBytes: number): HTMLButt
   return vacuum;
 }
 
-async function loadList(expandedSection: "Active" | "Deleted" = "Active"): Promise<void> {
+async function loadList(expandedSection?: "Active" | "Deleted"): Promise<void> {
+  if (expandedSection !== undefined) expandedLibrarySection = expandedSection;
   releaseScreenshot();
   app.setAttribute("aria-busy", "true");
   try {
     const [loadedActiveGroups, loadedDeletedGroups, vacuumEstimate] = await Promise.all([
-      sendRequest<readonly LibraryPageGroupMessageV1[]>({ version: 1, type: "ListLibrary" }),
-      sendRequest<readonly LibraryPageGroupMessageV1[]>({ version: 1, type: "ListDeleted" }),
+      sendRequest<readonly LibraryPageGroupMessage[]>({
+        type: "ListLibrary",
+        expectedVaultId: expectedVaultId(),
+      }),
+      sendRequest<readonly LibraryPageGroupMessage[]>({
+        type: "ListDeleted",
+        expectedVaultId: expectedVaultId(),
+      }),
       sendRequest<{
-        readonly version: 1;
         readonly deletedCaptureCount: number;
         readonly reclaimableBytes: number;
-      }>({ version: 1, type: "GetVacuumEstimate" }),
+      }>({ type: "GetVacuumEstimate", expectedVaultId: expectedVaultId() }),
     ]);
     activeGroups = loadedActiveGroups;
     deletedGroups = loadedDeletedGroups;
@@ -451,7 +849,10 @@ async function loadList(expandedSection: "Active" | "Deleted" = "Active"): Promi
       0,
     );
     const deletedSection = element("details", undefined, "deleted-section") as HTMLDetailsElement;
-    deletedSection.open = expandedSection === "Deleted";
+    deletedSection.open = expandedLibrarySection === "Deleted";
+    deletedSection.addEventListener("toggle", () => {
+      expandedLibrarySection = deletedSection.open ? "Deleted" : "Active";
+    });
     const deletedSummary = element(
       "summary",
       `Deleted (${String(deletedCount)})`,
@@ -478,6 +879,10 @@ async function loadList(expandedSection: "Active" | "Deleted" = "Active"): Promi
     app.replaceChildren(content);
     app.setAttribute("aria-busy", "false");
   } catch (error) {
+    if (error instanceof AppClientError && error.id === "VAULT_CONTEXT_CHANGED") {
+      await handleContextError(error);
+      return;
+    }
     if (error instanceof AppClientError && error.id === "VAULT_LOCKED") {
       await showUnlock();
       return;
@@ -490,7 +895,7 @@ async function loadList(expandedSection: "Active" | "Deleted" = "Active"): Promi
   }
 }
 
-function renderGroup(group: LibraryPageGroupMessageV1): void {
+function renderGroup(group: LibraryPageGroupMessage): void {
   releaseScreenshot();
   const section = element("section", undefined, "history");
   const actions = element("div", undefined, "actions");
@@ -543,7 +948,7 @@ function renderGroup(group: LibraryPageGroupMessageV1): void {
     const bundleIds = [...selected];
     if (bundleIds.length === 0) return;
     void applyManagement(
-      { version: 1, type: "ExtractCaptures", bundleIds },
+      { type: "ExtractCaptures", expectedVaultId: expectedVaultId(), bundleIds },
       `Extracted ${String(bundleIds.length)} ${bundleIds.length === 1 ? "capture" : "captures"} to a new collection`,
     );
   });
@@ -619,7 +1024,7 @@ function renderGroup(group: LibraryPageGroupMessageV1): void {
       const request = captureDropRequest(parsed, destination);
       if (request === undefined) return;
       void applyManagement(
-        request,
+        { ...request, expectedVaultId: expectedVaultId() },
         destination === "new"
           ? "Extracted captures to a new collection"
           : `Moved captures to ${label}`,
@@ -639,15 +1044,15 @@ function renderGroup(group: LibraryPageGroupMessageV1): void {
 }
 
 async function changeGroupState(
-  group: LibraryPageGroupMessageV1,
+  group: LibraryPageGroupMessage,
   control: HTMLButtonElement,
   operation: "Delete" | "Restore",
 ): Promise<void> {
   control.disabled = true;
   try {
     await sendRequest<null>({
-      version: 1,
       type: operation === "Delete" ? "DeleteCaptures" : "RestoreCaptures",
+      expectedVaultId: expectedVaultId(),
       bundleIds: group.captures.map((capture) => capture.bundleId),
     });
     announcer.textContent = `${operation === "Delete" ? "Deleted" : "Restored"} ${group.title}`;
@@ -658,7 +1063,7 @@ async function changeGroupState(
 }
 
 function confirmAndChangeGroup(
-  group: LibraryPageGroupMessageV1,
+  group: LibraryPageGroupMessage,
   control: HTMLButtonElement,
   operation: "Delete" | "Restore",
 ): void {
@@ -669,8 +1074,10 @@ function confirmAndChangeGroup(
 
 async function showUnlock(): Promise<void> {
   try {
-    const state = await sendRequest<AppStateV1>({ version: 1, type: "GetState" });
-    if (state.unlocked) {
+    const state = await sendRequest<AppState>({ type: "GetState" });
+    renderVaultBar(state);
+    const active = state.workspace.vaults.find((vault) => vault.active);
+    if (active?.unlocked === true) {
       renderError("A library record could not be authenticated.");
       return;
     }
@@ -682,37 +1089,12 @@ async function showUnlock(): Promise<void> {
     const device = element("button", "Unlock on this device");
     device.addEventListener("click", () => {
       device.disabled = true;
-      void sendRequest<AppStateV1>({ version: 1, type: "UnlockDevice" }).then(
+      void sendRequest<AppState>({ type: "UnlockDevice", expectedVaultId: expectedVaultId() }).then(
         () => loadList(),
         () => renderError("The Vault could not be unlocked."),
       );
     });
     box.append(device);
-    if (state.hasPassphraseSlot) {
-      const form = element("form");
-      const label = element("label", "Passphrase");
-      const input = element("input");
-      input.type = "password";
-      input.required = true;
-      input.autocomplete = "current-password";
-      label.append(input);
-      const submit = element("button", "Unlock with passphrase");
-      submit.type = "submit";
-      form.append(label, submit);
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        submit.disabled = true;
-        void sendRequest<AppStateV1>({
-          version: 1,
-          type: "UnlockPassphrase",
-          passphrase: input.value,
-        }).then(
-          () => loadList(),
-          () => renderError("The Vault could not be unlocked."),
-        );
-      });
-      box.append(form);
-    }
     app.replaceChildren(box);
     app.setAttribute("aria-busy", "false");
   } catch {
@@ -725,13 +1107,19 @@ async function loadDetail(bundleId: string): Promise<void> {
   app.setAttribute("aria-busy", "true");
   try {
     const [detail, activeGroups, deletedGroups] = await Promise.all([
-      sendRequest<LibraryDetailMessageV1>({
-        version: 1,
+      sendRequest<LibraryDetailMessage>({
         type: "GetLibraryDetail",
+        expectedVaultId: expectedVaultId(),
         bundleId,
       }),
-      sendRequest<readonly LibraryPageGroupMessageV1[]>({ version: 1, type: "ListLibrary" }),
-      sendRequest<readonly LibraryPageGroupMessageV1[]>({ version: 1, type: "ListDeleted" }),
+      sendRequest<readonly LibraryPageGroupMessage[]>({
+        type: "ListLibrary",
+        expectedVaultId: expectedVaultId(),
+      }),
+      sendRequest<readonly LibraryPageGroupMessage[]>({
+        type: "ListDeleted",
+        expectedVaultId: expectedVaultId(),
+      }),
     ]);
     const groups = [...activeGroups, ...deletedGroups];
     const group = groups.find((candidate) =>
@@ -787,8 +1175,8 @@ async function loadDetail(bundleId: string): Promise<void> {
       if (!window.confirm(libraryStateConfirmation(detail.item.title, 1, operation))) return;
       stateAction.disabled = true;
       void sendRequest<null>({
-        version: 1,
         type: operation === "Delete" ? "DeleteCaptures" : "RestoreCaptures",
+        expectedVaultId: expectedVaultId(),
         bundleIds: [detail.item.bundleId],
       }).then(
         () => loadList(detail.item.status),
@@ -806,7 +1194,11 @@ async function loadDetail(bundleId: string): Promise<void> {
       extract.type = "button";
       extract.addEventListener("click", () => {
         void applyManagement(
-          { version: 1, type: "ExtractCaptures", bundleIds: [detail.item.bundleId] },
+          {
+            type: "ExtractCaptures",
+            expectedVaultId: expectedVaultId(),
+            bundleIds: [detail.item.bundleId],
+          },
           `Extracted ${detail.item.title} to a new collection`,
         );
       });
@@ -844,12 +1236,118 @@ async function loadDetail(bundleId: string): Promise<void> {
     app.replaceChildren(section);
     app.setAttribute("aria-busy", "false");
     announcer.textContent = `Opened ${detail.item.title}`;
-  } catch {
+  } catch (error) {
+    if (error instanceof AppClientError && error.id === "VAULT_CONTEXT_CHANGED") {
+      await handleContextError(error);
+      return;
+    }
     renderError("This capture is missing or corrupt. No partial content was opened.");
   }
 }
 
 window.addEventListener("pagehide", releaseScreenshot);
 const requestedBundleId = new URLSearchParams(window.location.search).get("bundleId");
-if (requestedBundleId === null) void loadList();
-else void loadDetail(requestedBundleId);
+const requestedVaultId = new URLSearchParams(window.location.search).get("vaultId");
+
+async function initialize(): Promise<void> {
+  try {
+    const state = await sendRequest<AppState>({ type: "GetState" });
+    renderVaultBar(state);
+    const active = state.workspace.vaults.find((vault) => vault.active);
+    if (active === undefined) {
+      app.replaceChildren(
+        element("h2", "Create your first Vault"),
+        element("p", "Use the AWSM toolbar popup to create an encrypted local Vault."),
+      );
+      app.setAttribute("aria-busy", "false");
+      return;
+    }
+    if (requestedVaultId !== null) {
+      const route = deepLinkVaultRoute(state.workspace.activeVaultId, requestedVaultId);
+      if (route.route === "switch-prompt") {
+        const target = state.workspace.vaults.find(
+          (vault) => vault.vaultId === route.targetVaultId,
+        );
+        const box = element("section", undefined, "notice");
+        box.append(
+          element("h2", `Switch to ${target?.name ?? `Vault ${route.targetVaultId.slice(-6)}`}?`),
+          element("p", "This link belongs to another Vault. Switching locks the current Vault."),
+        );
+        const select = element("button", "Switch to this Vault");
+        select.addEventListener("click", () => {
+          select.disabled = true;
+          void sendRequest<AppState>({
+            type: "SelectActiveVault",
+            expectedActiveVaultId: active.vaultId,
+            vaultId: route.targetVaultId,
+          }).then(
+            (next) => {
+              renderVaultBar(next);
+              announcer.textContent = "Vault selected. Unlock it to open this capture.";
+              void showUnlock();
+            },
+            (error) => void handleContextError(error),
+          );
+        });
+        box.append(select);
+        app.replaceChildren(box);
+        app.setAttribute("aria-busy", "false");
+        return;
+      }
+    }
+    if (!active.unlocked) {
+      await showUnlock();
+      return;
+    }
+    if (requestedBundleId === null) await loadList();
+    else await loadDetail(requestedBundleId);
+  } catch (error) {
+    renderError(
+      error instanceof AppClientError ? error.message : "The local Vault could not be opened.",
+    );
+  }
+}
+
+let reconciliationRequested = false;
+let reconciliationRunning = false;
+
+function reconcile(): void {
+  reconciliationRequested = true;
+  if (reconciliationRunning) return;
+  reconciliationRunning = true;
+  void (async () => {
+    while (reconciliationRequested) {
+      reconciliationRequested = false;
+      await initialize();
+    }
+  })().finally(() => {
+    reconciliationRunning = false;
+    if (reconciliationRequested) reconcile();
+  });
+}
+
+browser.runtime.onMessage.addListener((message: unknown) => {
+  if (
+    typeof message === "object" &&
+    message !== null &&
+    "type" in message &&
+    message.type === "AppStateChanged"
+  ) {
+    releaseScreenshot();
+    activeGroups = [];
+    deletedGroups = [];
+    editingVaultId = undefined;
+    app.replaceChildren(element("p", "Refreshing Vault state…", "muted"));
+    app.setAttribute("aria-busy", "true");
+    announcer.textContent = "Vault state changed. Library data is refreshing.";
+    reconcile();
+  }
+  return undefined;
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") reconcile();
+});
+window.addEventListener("focus", reconcile);
+
+reconcile();

@@ -49,6 +49,10 @@ A Workspace manages one or more Vaults.
 
 Each Vault is logically independent.
 
+Workspace membership and the device-local active Vault selection are operational state. They MUST NOT combine Vault Root Keys, authoritative history, synchronization state, or Object identity across Vaults.
+
+Exactly one registered Vault SHALL be active whenever a Workspace contains a Vault. New Commands execute only in the named active Vault context. Changing the active Vault is local and MUST NOT produce a Vault Event.
+
 ---
 
 # 4. Vault Identity
@@ -58,8 +62,13 @@ Every Vault SHALL possess:
 - Vault ID
 - Vault Version
 - Creation Timestamp
+- encrypted Event-derived Name
 
 The Vault ID MUST remain stable for the lifetime of the Vault.
+
+The initial Vault name SHALL be recorded by `VaultCreated`. Later names SHALL be recorded by `VaultRenamed`. Names are labels rather than identifiers, MAY be duplicated across Vaults, and MUST remain encrypted outside trusted clients.
+
+A local client MAY maintain an encrypted rebuildable name cache so that Vault names remain visible while Vault contents are locked. Such a cache is a Materialization: it is not authoritative, synchronized, or required in Backup.
 
 ---
 
@@ -184,16 +193,15 @@ Examples include:
 
 ## 12.1 Local Vault Key Slots
 
-A client MAY store multiple local wrappers for the same Vault Root Key.
+A client MAY store multiple local device wrappers for the same Vault Root Key when device enrollment requires them.
 
-The initial browser implementation SHALL create:
-
-- one mandatory device slot backed by a non-exportable local device wrapping key
-- zero or one passphrase slot created during onboarding
+The initial browser implementation SHALL create one mandatory device slot backed by a non-exportable local device wrapping key. It SHALL NOT create or persist a local passphrase slot.
 
 Every slot SHALL include an explicit slot version, wrapping algorithm identifier, Vault ID, and Device ID where applicable.
 
-Passphrase-slot metadata SHALL be authenticated by its wrapping envelope. A local AES-KW device slot SHALL be verified after unwrap using a Vault verifier derived from the Vault Root Key and bound to the slot metadata.
+A local AES-KW device slot SHALL be verified after unwrap using a Vault verifier derived from the Vault Root Key and bound to the slot metadata.
+
+An export key envelope belongs to a Vault Package, not to the Vault Trust Registry or local key-slot collection.
 
 The Vault Root Key MUST NOT be persisted unwrapped.
 
@@ -278,6 +286,8 @@ Derived state is disposable.
 Replicas converge through synchronization.
 
 Object identities never migrate between Vaults.
+
+Every persisted Vault-owned record, Runtime Job, Projection, and operational lease MUST identify its Vault. Reads, enumeration, replay, recovery, and destructive work MUST remain scoped to that Vault.
 
 Event Log Segment Objects are append-only by protocol semantics.
 

@@ -1,20 +1,33 @@
 import type {
+  CaptureJob,
   CaptureJobStage,
   CaptureJobState,
-  CaptureJobV1,
   RuntimeErrorId,
 } from "../../domain/contracts";
 import { RUNTIME_ERROR_IDS } from "../../domain/contracts";
 import { DomainValidationError } from "../../domain/errors";
-import { boolean, bytes, integer, literal, record, timestamp, uuid } from "../../domain/validation";
+import {
+  boolean,
+  bytes,
+  canonicalRecord,
+  integer,
+  literal,
+  timestamp,
+  uuid,
+} from "../../domain/validation";
 import type {
   CommandOutcomeV1,
+  ExportJobStage,
+  ExportJobState,
+  ExportJobV1,
   StoredCollectionProjectionV1,
-  StoredEventV1,
+  StoredEvent,
   StoredObjectType,
   StoredObjectV1,
   StoredProjectionV1,
   StoredVaultGenerationV1,
+  StoredVaultHeadV1,
+  StoredVaultNameProjectionV1,
 } from "./schema";
 
 function objectType(value: unknown): StoredObjectType {
@@ -25,7 +38,13 @@ function objectType(value: unknown): StoredObjectType {
 }
 
 export function decodeStoredVaultGeneration(value: unknown): StoredVaultGenerationV1 {
-  const input = record(value, "vaultGeneration");
+  const input = canonicalRecord(value, "vaultGeneration", [
+    "version",
+    "generationId",
+    "generationNumber",
+    "predecessorGenerationId",
+    "envelopeBytes",
+  ]);
   return {
     version: literal(input.version, 1, "vaultGeneration.version"),
     generationId: uuid(input.generationId, "vaultGeneration.generationId"),
@@ -42,8 +61,43 @@ export function decodeStoredVaultGeneration(value: unknown): StoredVaultGenerati
   };
 }
 
+export function decodeStoredVaultHead(value: unknown): StoredVaultHeadV1 {
+  const input = canonicalRecord(value, "vaultHead", [
+    "version",
+    "vaultId",
+    "generationId",
+    "generationNumber",
+    "appendedObjectIds",
+    "appendedEventIds",
+  ]);
+  const identifiers = (value: unknown, field: string): readonly string[] => {
+    if (!Array.isArray(value)) throw new DomainValidationError(field, "must be an array");
+    const result = value.map((entry, index) => uuid(entry, `${field}.${String(index)}`));
+    if (
+      result.length !== new Set(result).size ||
+      result.join("\n") !== [...result].toSorted().join("\n")
+    ) {
+      throw new DomainValidationError(field, "must be a canonical sorted unique list");
+    }
+    return result;
+  };
+  return {
+    version: literal(input.version, 1, "vaultHead.version"),
+    vaultId: uuid(input.vaultId, "vaultHead.vaultId"),
+    generationId: uuid(input.generationId, "vaultHead.generationId"),
+    generationNumber: integer(input.generationNumber, "vaultHead.generationNumber"),
+    appendedObjectIds: identifiers(input.appendedObjectIds, "vaultHead.appendedObjectIds"),
+    appendedEventIds: identifiers(input.appendedEventIds, "vaultHead.appendedEventIds"),
+  };
+}
+
 export function decodeStoredObject(value: unknown): StoredObjectV1 {
-  const input = record(value, "object");
+  const input = canonicalRecord(value, "object", [
+    "version",
+    "objectId",
+    "objectType",
+    "envelopeBytes",
+  ]);
   return {
     version: literal(input.version, 1, "object.version"),
     objectId: uuid(input.objectId, "object.objectId"),
@@ -52,19 +106,43 @@ export function decodeStoredObject(value: unknown): StoredObjectV1 {
   };
 }
 
-export function decodeStoredEvent(value: unknown): StoredEventV1 {
-  const input = record(value, "event");
+export function decodeStoredEvent(value: unknown): StoredEvent {
+  const input = canonicalRecord(value, "event", [
+    "version",
+    "vaultId",
+    "eventId",
+    "referencedObjectIds",
+    "orderingTimestamp",
+    "envelopeBytes",
+  ]);
+  const version = literal(input.version, 1, "event.version");
+  if (!Array.isArray(input.referencedObjectIds)) {
+    throw new DomainValidationError("event.referencedObjectIds", "must be an array");
+  }
+  const referencedObjectIds = input.referencedObjectIds.map((value, index) =>
+    uuid(value, `event.referencedObjectIds.${String(index)}`),
+  );
+  if (
+    new Set(referencedObjectIds).size !== referencedObjectIds.length ||
+    referencedObjectIds.join("\n") !== [...referencedObjectIds].toSorted().join("\n")
+  ) {
+    throw new DomainValidationError(
+      "event.referencedObjectIds",
+      "must be a canonical sorted unique list",
+    );
+  }
   return {
-    version: literal(input.version, 1, "event.version"),
+    version,
+    vaultId: uuid(input.vaultId, "event.vaultId"),
     eventId: uuid(input.eventId, "event.eventId"),
-    objectId: uuid(input.objectId, "event.objectId"),
+    referencedObjectIds,
     orderingTimestamp: timestamp(input.orderingTimestamp, "event.orderingTimestamp"),
     envelopeBytes: bytes(input.envelopeBytes, undefined, "event.envelopeBytes"),
   };
 }
 
 export function decodeStoredProjection(value: unknown): StoredProjectionV1 {
-  const input = record(value, "projection");
+  const input = canonicalRecord(value, "projection", ["version", "bundleId", "envelopeBytes"]);
   return {
     version: literal(input.version, 1, "projection.version"),
     bundleId: uuid(input.bundleId, "projection.bundleId"),
@@ -73,7 +151,11 @@ export function decodeStoredProjection(value: unknown): StoredProjectionV1 {
 }
 
 export function decodeStoredCollectionProjection(value: unknown): StoredCollectionProjectionV1 {
-  const input = record(value, "collectionProjection");
+  const input = canonicalRecord(value, "collectionProjection", [
+    "version",
+    "projectionId",
+    "envelopeBytes",
+  ]);
   return {
     version: literal(input.version, 1, "collectionProjection.version"),
     projectionId: uuid(input.projectionId, "collectionProjection.projectionId"),
@@ -81,8 +163,30 @@ export function decodeStoredCollectionProjection(value: unknown): StoredCollecti
   };
 }
 
+export function decodeStoredVaultNameProjection(value: unknown): StoredVaultNameProjectionV1 {
+  const input = canonicalRecord(value, "vaultNameProjection", [
+    "version",
+    "vaultId",
+    "sourceEventId",
+    "envelopeBytes",
+  ]);
+  return {
+    version: literal(input.version, 1, "vaultNameProjection.version"),
+    vaultId: uuid(input.vaultId, "vaultNameProjection.vaultId"),
+    sourceEventId: uuid(input.sourceEventId, "vaultNameProjection.sourceEventId"),
+    envelopeBytes: bytes(input.envelopeBytes, undefined, "vaultNameProjection.envelopeBytes"),
+  };
+}
+
 export function decodeCommandOutcome(value: unknown): CommandOutcomeV1 {
-  const input = record(value, "outcome");
+  const input = canonicalRecord(value, "outcome", [
+    "version",
+    "commandId",
+    "status",
+    "bundleId",
+    "bundleObjectId",
+    "eventId",
+  ]);
   return {
     version: literal(input.version, 1, "outcome.version"),
     commandId: uuid(input.commandId, "outcome.commandId"),
@@ -114,8 +218,20 @@ function runtimeErrorId(value: unknown): RuntimeErrorId {
   throw new DomainValidationError("captureJob.errorId", "contains an unsupported error identifier");
 }
 
-export function decodeCaptureJob(value: unknown): CaptureJobV1 {
-  const input = record(value, "captureJob");
+export function decodeCaptureJob(value: unknown): CaptureJob {
+  const input = canonicalRecord(value, "captureJob", [
+    "version",
+    "vaultId",
+    "jobId",
+    "commandId",
+    "tabId",
+    "state",
+    "stage",
+    "createdAt",
+    "updatedAt",
+    "errorId",
+    "noticeDismissed",
+  ]);
   const errorId = input.errorId === undefined ? undefined : runtimeErrorId(input.errorId);
   const noticeDismissed =
     input.noticeDismissed === undefined
@@ -123,6 +239,7 @@ export function decodeCaptureJob(value: unknown): CaptureJobV1 {
       : boolean(input.noticeDismissed, "captureJob.noticeDismissed");
   return {
     version: literal(input.version, 1, "captureJob.version"),
+    vaultId: uuid(input.vaultId, "captureJob.vaultId"),
     jobId: uuid(input.jobId, "captureJob.jobId"),
     commandId: uuid(input.commandId, "captureJob.commandId"),
     tabId: integer(input.tabId, "captureJob.tabId"),
@@ -132,5 +249,47 @@ export function decodeCaptureJob(value: unknown): CaptureJobV1 {
     updatedAt: timestamp(input.updatedAt, "captureJob.updatedAt"),
     ...(errorId === undefined ? {} : { errorId }),
     ...(noticeDismissed === undefined ? {} : { noticeDismissed }),
+  };
+}
+
+export function decodeExportJob(value: unknown): ExportJobV1 {
+  const input = canonicalRecord(value, "exportJob", [
+    "version",
+    "vaultId",
+    "jobId",
+    "packageId",
+    "state",
+    "stage",
+    "createdAt",
+    "updatedAt",
+    "completedEntries",
+    "totalEntries",
+    "processedBytes",
+    "totalBytes",
+    "cancellationRequested",
+    "errorId",
+  ]);
+  if (!["Created", "Running", "Succeeded", "Failed", "Cancelled"].includes(String(input.state))) {
+    throw new DomainValidationError("exportJob.state", "contains an unsupported state");
+  }
+  if (!["Preflight", "Snapshot", "Verify", "Package", "Download"].includes(String(input.stage))) {
+    throw new DomainValidationError("exportJob.stage", "contains an unsupported stage");
+  }
+  const errorId = input.errorId === undefined ? undefined : runtimeErrorId(input.errorId);
+  return {
+    version: literal(input.version, 1, "exportJob.version"),
+    vaultId: uuid(input.vaultId, "exportJob.vaultId"),
+    jobId: uuid(input.jobId, "exportJob.jobId"),
+    packageId: uuid(input.packageId, "exportJob.packageId"),
+    state: input.state as ExportJobState,
+    stage: input.stage as ExportJobStage,
+    createdAt: timestamp(input.createdAt, "exportJob.createdAt"),
+    updatedAt: timestamp(input.updatedAt, "exportJob.updatedAt"),
+    completedEntries: integer(input.completedEntries, "exportJob.completedEntries"),
+    totalEntries: integer(input.totalEntries, "exportJob.totalEntries"),
+    processedBytes: integer(input.processedBytes, "exportJob.processedBytes"),
+    totalBytes: integer(input.totalBytes, "exportJob.totalBytes"),
+    cancellationRequested: boolean(input.cancellationRequested, "exportJob.cancellationRequested"),
+    ...(errorId === undefined ? {} : { errorId }),
   };
 }

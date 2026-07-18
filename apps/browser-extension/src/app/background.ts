@@ -1,10 +1,16 @@
 import { browser } from "wxt/browser";
 import type { RuntimeErrorId } from "../domain/contracts";
-import { IndexedDbDriver, IndexedDbVaultRepository } from "../drivers/indexeddb";
+import {
+  IndexedDbDriver,
+  IndexedDbVaultRepository,
+  IndexedDbWorkspaceRepository,
+} from "../drivers/indexeddb";
 import { ChromeCaptureHost, ChromeScreenshotHost } from "../hosts/chrome/api";
 import { acquireMandatoryMhtml, preflightCapture } from "../hosts/chrome/capture";
+import { ChromeVaultExportHost } from "../hosts/chrome/export";
 import { acquireBestEffortScreenshot } from "../hosts/chrome/screenshot";
 import { CaptureRuntime, defaultPrepareRegistration } from "../runtime/capture/service";
+import { VaultExportService } from "../runtime/export";
 import { prepareLibraryStateChange, selectLibraryItems } from "../runtime/library/lifecycle";
 import {
   decodeCollectionOperationEvent,
@@ -15,26 +21,53 @@ import {
 } from "../runtime/library/management";
 import { LibraryProjectionRebuilder } from "../runtime/library/rebuild";
 import { LibraryService } from "../runtime/library/service";
-import { VaultVacuumService } from "../runtime/library/vacuum";
-import { VaultService } from "../runtime/vault";
-import { RUNTIME_VERSION } from "../runtime/version";
+import { type VacuumRepository, VaultVacuumService } from "../runtime/library/vacuum";
+import { VaultService, WorkspaceContextManager, WorkspaceService } from "../runtime/vault";
 import { recentCaptureMatchesActiveUrl } from "../ui/popup-view";
 import { bytesToBase64 } from "./base64";
-import type {
-  AppRequestV1,
-  AppResponseV1,
-  AppStateV1,
-  LibraryOperationReceiptV1,
+import {
+  type AppRequest,
+  type AppResponse,
+  type AppState,
+  isAppRequest,
+  type LibraryOperationReceipt,
 } from "./protocol";
 
-const driver = new IndexedDbDriver();
+const databaseName = "awsm-vault";
 const vaultRepository = new IndexedDbVaultRepository();
-const vault = new VaultService(vaultRepository);
+const workspaceRepository = new IndexedDbWorkspaceRepository();
+const workspace = new WorkspaceService(workspaceRepository);
+
+async function notifyAppStateChanged(): Promise<void> {
+  await browser.runtime.sendMessage({ type: "AppStateChanged" }).catch(() => undefined);
+}
+
+const contexts = new WorkspaceContextManager({
+  workspaceRepository,
+  createVaultPreparer: () => new VaultService(vaultRepository),
+  createVaultService: (vaultId) => new VaultService(vaultRepository, vaultId),
+  createDriver: (vaultId) => new IndexedDbDriver(databaseName, vaultId),
+  notify: notifyAppStateChanged,
+});
 const captureHost = new ChromeCaptureHost();
+const exportHost = new ChromeVaultExportHost();
+const exportControllers = new Map<string, AbortController>();
 
-const startup = driver.reconcileInterruptedVacuum();
+const startup = contexts.initialize().then(async () => {
+  const context = contexts.active();
+  if (context === undefined) return;
+  await context.driver.reconcileInterruptedVacuum();
+  await context.driver.reconcileInterruptedJobs(new Date().toISOString());
+  const interruptedExport = await context.driver.latestExportJob();
+  if (await context.driver.reconcileInterruptedExports(new Date().toISOString())) {
+    if (interruptedExport?.state === "Created" || interruptedExport?.state === "Running") {
+      await exportHost.cleanup(interruptedExport.packageId).catch(() => undefined);
+    }
+    await notifyAppStateChanged();
+  }
+});
 
-function safeError(error: unknown): AppResponseV1 {
+function safeError(error: unknown): AppResponse {
   const id =
     error instanceof Error && "id" in error && typeof error.id === "string"
       ? (error.id as RuntimeErrorId)
@@ -49,32 +82,43 @@ function safeError(error: unknown): AppResponseV1 {
     CAPTURE_INTERRUPTED: "Capture was interrupted. Retry it manually.",
     BUNDLE_INVALID: "The archived capture is missing or corrupt.",
     CRYPTO_AUTHENTICATION_FAILED: "Local Vault encryption could not be initialized.",
-    WRONG_PASSPHRASE: "The Vault could not be unlocked.",
+    INVALID_VAULT_NAME: "Use a Vault name between 1 and 64 characters without controls.",
+    VAULT_NOT_FOUND: "The selected Vault no longer exists.",
+    VAULT_CONTEXT_CHANGED: "The active Vault changed. Refresh and try again.",
+    VAULT_BUSY: "Wait for the active Vault operation to finish.",
     LIBRARY_STATE_CHANGED: "The Library changed. Refresh it and try again.",
+    INVALID_EXPORT_PASSPHRASE: "Use at least 12 characters for the Export passphrase.",
+    EXPORT_AUTHENTICATION_FAILED: "The Export could not be authenticated.",
+    EXPORT_PACKAGE_INVALID: "The Vault could not be proven safe to export.",
+    EXPORT_INTERRUPTED: "Export was interrupted. Retry it manually.",
+    EXPORT_DOWNLOAD_FAILED: "The encrypted Vault Package could not be downloaded.",
   };
   return {
-    version: 1,
     ok: false,
     error: { id, message: messages[id] ?? "The operation could not be completed safely." },
   };
 }
 
-async function state(): Promise<AppStateV1> {
-  const records = await vaultRepository.load();
-  let latestJob = await driver.latestCaptureJob();
-  let latestWarnings: AppStateV1["latestWarnings"];
-  let recentCapture: AppStateV1["recentCapture"];
+async function state(): Promise<AppState> {
+  const context = contexts.active();
+  const records = context === undefined ? undefined : await vaultRepository.load(context.vaultId);
+  let latestJob = context === undefined ? undefined : await context.driver.latestCaptureJob();
+  let latestWarnings: AppState["latestWarnings"];
+  let recentCapture: AppState["recentCapture"];
+  const busyOperation = context === undefined ? undefined : await context.driver.managementBusy();
+  const latestExportJob =
+    context === undefined ? undefined : await context.driver.latestExportJob();
   if (
     records !== undefined &&
-    vault.isUnlocked() &&
+    context?.vault.isUnlocked() &&
     latestJob?.state === "Succeeded" &&
     latestJob.noticeDismissed !== true
   ) {
-    const outcome = await driver.findCommandOutcome(latestJob.commandId);
+    const outcome = await context.driver.findCommandOutcome(latestJob.commandId);
     if (outcome !== undefined) {
       const libraryService = new LibraryService(
-        driver,
-        vault.requireRootKey(),
+        context.driver,
+        context.vault.requireRootKey(),
         records.metadata.vaultId,
       );
       const detail = await libraryService.detail(outcome.bundleId);
@@ -82,6 +126,7 @@ async function state(): Promise<AppStateV1> {
       if (recentCaptureMatchesActiveUrl(detail.item.originalUrl, activeTab?.url)) {
         latestWarnings = detail.item.warnings;
         recentCapture = {
+          vaultId: records.metadata.vaultId,
           jobId: latestJob.jobId,
           bundleId: detail.item.bundleId,
           title: detail.item.title,
@@ -91,48 +136,180 @@ async function state(): Promise<AppStateV1> {
             : { screenshotBase64: bytesToBase64(detail.item.thumbnailWebp) }),
         };
       } else {
-        await driver.dismissCaptureNotice(latestJob.jobId);
+        await context.driver.dismissCaptureNotice(latestJob.jobId);
         latestJob = { ...latestJob, noticeDismissed: true };
       }
     }
   }
   return {
-    version: 1,
-    vaultExists: records !== undefined,
-    unlocked: vault.isUnlocked(),
-    hasPassphraseSlot: records?.passphraseSlot !== undefined,
+    workspace: await workspace.state({
+      ...(records !== undefined && context?.vault.isUnlocked()
+        ? { unlockedVaultId: records.metadata.vaultId }
+        : {}),
+      ...(context === undefined || busyOperation === undefined
+        ? {}
+        : { busy: { vaultId: context.vaultId, operation: busyOperation } }),
+    }),
     ...(latestJob === undefined ? {} : { latestJob }),
     ...(latestWarnings === undefined ? {} : { latestWarnings }),
     ...(recentCapture === undefined ? {} : { recentCapture }),
+    ...(latestExportJob === undefined ? {} : { latestExportJob }),
   };
 }
 
+function validateExportPassphrase(passphrase: string): void {
+  const codePoints = Array.from(passphrase).length;
+  const bytes = new TextEncoder().encode(passphrase).byteLength;
+  if (codePoints < 12 || bytes > 1024) {
+    throw Object.assign(new Error("Invalid Export passphrase."), {
+      id: "INVALID_EXPORT_PASSPHRASE",
+    });
+  }
+}
+
+function exportFilename(createdAt: string, packageId: string): string {
+  const stamp = createdAt.replaceAll("-", "").replaceAll(":", "").replace(".000", "");
+  return `awsm-vault-${stamp}-${packageId.slice(0, 8)}.awsm`;
+}
+
+async function exportVault(
+  expectedVaultId: string,
+  passphrase: string,
+): Promise<{ jobId: string; filename: string }> {
+  validateExportPassphrase(passphrase);
+  const context = contexts.snapshot(expectedVaultId);
+  const records = await vaultRepository.load(context.vaultId);
+  if (records === undefined || !context.vault.isUnlocked()) {
+    throw Object.assign(new Error("Vault locked"), { id: "VAULT_LOCKED" });
+  }
+  const createdAt = new Date().toISOString();
+  const jobId = crypto.randomUUID();
+  const packageId = crypto.randomUUID();
+  const filename = exportFilename(createdAt, packageId);
+  let job: import("../drivers/indexeddb/schema").ExportJobV1 = {
+    version: 1,
+    vaultId: context.vaultId,
+    jobId,
+    packageId,
+    state: "Created",
+    stage: "Preflight",
+    createdAt,
+    updatedAt: createdAt,
+    completedEntries: 0,
+    totalEntries: 0,
+    processedBytes: 0,
+    totalBytes: 0,
+    cancellationRequested: false,
+  };
+  await context.driver.acquireExport(job);
+  await notifyAppStateChanged();
+  const controller = new AbortController();
+  exportControllers.set(jobId, controller);
+  const save = async (
+    changes: Partial<import("../drivers/indexeddb/schema").ExportJobV1>,
+  ): Promise<void> => {
+    job = { ...job, ...changes, updatedAt: new Date().toISOString() };
+    await context.driver.updateExportJob(job);
+    await notifyAppStateChanged();
+  };
+  try {
+    await save({ state: "Running", stage: "Snapshot" });
+    await save({ stage: "Verify" });
+    const prepared = await new VaultExportService(
+      context.driver,
+      context.vault,
+      context.vaultId,
+    ).prepare({
+      packageId,
+      createdAt,
+      passphrase,
+      salt: crypto.getRandomValues(new Uint8Array(16)),
+      nonce: crypto.getRandomValues(new Uint8Array(24)),
+    });
+    const totalBytes = prepared.manifest.entries.reduce(
+      (total, entry) => total + entry.byteLength,
+      0,
+    );
+    await save({
+      stage: "Package",
+      totalEntries: prepared.manifest.entries.length + 2,
+      totalBytes,
+    });
+    await exportHost.writeAndValidate(packageId, prepared, passphrase, controller.signal);
+    await save({
+      stage: "Download",
+      completedEntries: prepared.manifest.entries.length + 2,
+      processedBytes: totalBytes,
+    });
+    await exportHost.download(packageId, filename, controller.signal);
+    await save({ state: "Succeeded" });
+    return { jobId, filename };
+  } catch (error) {
+    const cancelled = controller.signal.aborted;
+    const errorId =
+      error instanceof Error && "id" in error && typeof error.id === "string"
+        ? (error.id as RuntimeErrorId)
+        : "EXPORT_PACKAGE_INVALID";
+    if (cancelled) {
+      await save({ state: "Cancelled", cancellationRequested: true });
+    } else {
+      await save({ state: "Failed", cancellationRequested: job.cancellationRequested, errorId });
+    }
+    throw error;
+  } finally {
+    exportControllers.delete(jobId);
+    await exportHost.cleanup(packageId).catch(() => undefined);
+  }
+}
+
 browser.runtime.onConnect.addListener((port) => {
-  if (port.name !== "awsm:popup-lifetime:v1") return;
-  let visibleJobId: string | undefined;
+  if (port.name !== "awsm:popup-lifetime") return;
+  let visibleCapture: { readonly vaultId: string; readonly jobId: string } | undefined;
   port.onMessage.addListener((message: unknown) => {
-    if (typeof message !== "object" || message === null || !("jobId" in message)) return;
-    const jobId = message.jobId;
-    visibleJobId = typeof jobId === "string" ? jobId : undefined;
+    if (
+      typeof message !== "object" ||
+      message === null ||
+      !("vaultId" in message) ||
+      !("jobId" in message)
+    )
+      return;
+    visibleCapture =
+      typeof message.vaultId === "string" && typeof message.jobId === "string"
+        ? { vaultId: message.vaultId, jobId: message.jobId }
+        : undefined;
   });
   port.onDisconnect.addListener(() => {
-    if (visibleJobId !== undefined)
-      void driver.dismissCaptureNotice(visibleJobId).catch(() => undefined);
+    if (visibleCapture === undefined) return;
+    const active = contexts.active();
+    if (active?.vaultId === visibleCapture.vaultId) {
+      void active.driver.dismissCaptureNotice(visibleCapture.jobId).catch(() => undefined);
+      return;
+    }
+    const scopedDriver = new IndexedDbDriver(databaseName, visibleCapture.vaultId);
+    void scopedDriver
+      .dismissCaptureNotice(visibleCapture.jobId)
+      .catch(() => undefined)
+      .finally(() => scopedDriver.close());
   });
 });
 
-async function library(): Promise<LibraryService> {
-  const records = await vaultRepository.load();
+async function library(expectedVaultId: string): Promise<LibraryService> {
+  const context = contexts.snapshot(expectedVaultId);
+  const records = await vaultRepository.load(context.vaultId);
   if (records === undefined) throw Object.assign(new Error("Vault locked"), { id: "VAULT_LOCKED" });
-  const service = new LibraryService(driver, vault.requireRootKey(), records.metadata.vaultId);
+  const service = new LibraryService(
+    context.driver,
+    context.vault.requireRootKey(),
+    records.metadata.vaultId,
+  );
   const [projections, events] = await Promise.all([
-    driver.listEncryptedProjections(),
-    driver.listStoredEvents(),
+    context.driver.listEncryptedProjections(),
+    context.driver.listStoredEvents(),
   ]);
   if (projections.length === 0 && events.length > 0) {
     await new LibraryProjectionRebuilder(
-      driver,
-      vault.requireRootKey(),
+      context.driver,
+      context.vault.requireRootKey(),
       records.metadata.vaultId,
     ).execute();
   }
@@ -140,9 +317,10 @@ async function library(): Promise<LibraryService> {
 }
 
 async function libraryGroups(
+  expectedVaultId: string,
   status: "Active" | "Deleted" = "Active",
-): Promise<import("./protocol").LibraryPageGroupMessageV1[]> {
-  const service = await library();
+): Promise<import("./protocol").LibraryPageGroupMessage[]> {
+  const service = await library(expectedVaultId);
   const groups = status === "Active" ? await service.groups() : await service.deletedGroups();
   return Promise.all(
     groups.map(async (group) => {
@@ -163,12 +341,14 @@ async function libraryGroups(
 }
 
 async function changeLibraryState(
+  expectedVaultId: string,
   bundleIds: readonly string[],
   operation: "Delete" | "Restore",
 ): Promise<void> {
-  const records = await vaultRepository.load();
+  const context = contexts.snapshot(expectedVaultId);
+  const records = await vaultRepository.load(context.vaultId);
   if (records === undefined) throw Object.assign(new Error("Vault locked"), { id: "VAULT_LOCKED" });
-  const service = await library();
+  const service = await library(expectedVaultId);
   const expected = operation === "Delete" ? "Active" : "Deleted";
   const items = await service.list();
   let selected: readonly import("../domain/contracts").LibraryItemV1[];
@@ -179,7 +359,7 @@ async function changeLibraryState(
   }
   const timestamp = new Date().toISOString();
   const prepared = await prepareLibraryStateChange({
-    rootKey: vault.requireRootKey(),
+    rootKey: context.vault.requireRootKey(),
     vaultId: records.metadata.vaultId,
     deviceId: records.metadata.deviceId,
     eventId: crypto.randomUUID(),
@@ -187,20 +367,20 @@ async function changeLibraryState(
     operation,
     items: selected,
   });
-  await driver.commitLibraryState(prepared.event, prepared.projections);
+  contexts.assertCurrent(context);
+  await context.driver.commitLibraryState(prepared.event, prepared.projections);
 }
 
-async function vacuumEstimate(): Promise<{
-  readonly version: 1;
+async function vacuumEstimate(expectedVaultId: string): Promise<{
   readonly deletedCaptureCount: number;
   readonly reclaimableBytes: number;
 }> {
-  const service = await library();
+  const context = contexts.snapshot(expectedVaultId);
+  const service = await library(expectedVaultId);
   const deleted = await service.listDeleted();
   const objectIds = new Set(deleted.map((item) => item.bundleObjectId));
-  const objects = await driver.listStoredObjects();
+  const objects = await context.driver.listStoredObjects();
   return {
-    version: 1,
     deletedCaptureCount: deleted.length,
     reclaimableBytes: objects
       .filter((object) => objectIds.has(object.objectId))
@@ -208,8 +388,12 @@ async function vacuumEstimate(): Promise<{
   };
 }
 
-async function captureActivePage(tabId?: number): Promise<{ readonly bundleId: string }> {
-  const records = await vaultRepository.load();
+async function captureActivePage(
+  expectedVaultId: string,
+  tabId?: number,
+): Promise<{ readonly bundleId: string }> {
+  const context = contexts.snapshot(expectedVaultId);
+  const records = await vaultRepository.load(context.vaultId);
   if (records === undefined) throw Object.assign(new Error("Vault locked"), { id: "VAULT_LOCKED" });
   const tab =
     tabId === undefined ? await captureHost.getActiveTab() : await captureHost.getTab(tabId);
@@ -238,12 +422,18 @@ async function captureActivePage(tabId?: number): Promise<{ readonly bundleId: s
     vaultId: records.metadata.vaultId,
     deviceId: records.metadata.deviceId,
     clientVersion: browser.runtime.getManifest().version,
-    isVaultUnlocked: () => vault.isUnlocked(),
-    rootKey: () => vault.requireRootKey(),
-    findOutcome: (id) => driver.findCommandOutcome(id),
-    saveJob: (job) => driver.saveCaptureJob(job),
-    commitRegistration: (input) => driver.commitRegistration(input),
-    preflight: () => preflightCapture(selectedHost, vault.isUnlocked()),
+    isVaultUnlocked: () => context.vault.isUnlocked(),
+    rootKey: () => context.vault.requireRootKey(),
+    findOutcome: (id) => context.driver.findCommandOutcome(id),
+    saveJob: async (job) => {
+      await context.driver.saveCaptureJob(job);
+      await notifyAppStateChanged();
+    },
+    commitRegistration: (input) => {
+      contexts.assertCurrent(context);
+      return context.driver.commitRegistration(input);
+    },
+    preflight: () => preflightCapture(selectedHost, context.vault.isUnlocked()),
     acquireMhtml: (tabId) => acquireMandatoryMhtml(captureHost, tabId),
     acquireScreenshot: async (tabId) => {
       try {
@@ -260,7 +450,7 @@ async function captureActivePage(tabId?: number): Promise<{ readonly bundleId: s
         browser.runtime.getManifest().version,
       ),
     collectionContext: async () => {
-      const service = await library();
+      const service = await library(expectedVaultId);
       const [items, topology] = await Promise.all([service.list(), service.topology()]);
       return { items, topology };
     },
@@ -273,7 +463,7 @@ async function captureActivePage(tabId?: number): Promise<{ readonly bundleId: s
 }
 
 type CollectionManagementRequest = Extract<
-  AppRequestV1,
+  AppRequest,
   {
     readonly type: "MergeCollections" | "MoveCaptures" | "ExtractCaptures" | "UndoLibraryOperation";
   }
@@ -281,10 +471,11 @@ type CollectionManagementRequest = Extract<
 
 async function manageCollections(
   request: CollectionManagementRequest,
-): Promise<LibraryOperationReceiptV1> {
-  const records = await vaultRepository.load();
+): Promise<LibraryOperationReceipt> {
+  const context = contexts.snapshot(request.expectedVaultId);
+  const records = await vaultRepository.load(context.vaultId);
   if (records === undefined) throw Object.assign(new Error("Vault locked"), { id: "VAULT_LOCKED" });
-  const service = await library();
+  const service = await library(request.expectedVaultId);
   const [items, topology] = await Promise.all([service.list(), service.topology()]);
   const eventId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
@@ -315,7 +506,7 @@ async function manageCollections(
     });
     fact = { eventType: "CapturesMoved", moves };
   } else {
-    const original = await driver.getStoredEvent(request.operationEventId);
+    const original = await context.driver.getStoredEvent(request.operationEventId);
     if (original === undefined) {
       throw Object.assign(new Error("Library operation missing"), {
         id: "LIBRARY_STATE_CHANGED",
@@ -323,7 +514,7 @@ async function manageCollections(
     }
     const decoded = await decodeCollectionOperationEvent(
       original,
-      vault.requireRootKey(),
+      context.vault.requireRootKey(),
       records.metadata.vaultId,
     );
     if (decoded.eventType === "CapturesMoved") {
@@ -352,7 +543,7 @@ async function manageCollections(
     }
   }
   const prepared = await prepareCollectionOperation({
-    rootKey: vault.requireRootKey(),
+    rootKey: context.vault.requireRootKey(),
     vaultId: records.metadata.vaultId,
     deviceId: records.metadata.deviceId,
     eventId,
@@ -361,71 +552,126 @@ async function manageCollections(
     topology,
     fact,
   });
-  await driver.commitCollectionOperation(prepared);
-  return { version: 1, operationEventId: eventId, destinationCollectionId };
+  contexts.assertCurrent(context);
+  await context.driver.commitCollectionOperation(prepared);
+  return { operationEventId: eventId, destinationCollectionId };
 }
 
-async function handle(request: AppRequestV1): Promise<AppResponseV1> {
+async function handle(request: AppRequest): Promise<AppResponse> {
   await startup;
   try {
     switch (request.type) {
       case "GetState":
-        return { version: 1, ok: true, value: await state() };
+        return { ok: true, value: await state() };
+      case "SuggestVaultName":
+        return { ok: true, value: { name: await workspace.suggestName() } };
       case "CreateVault":
-        await vault.create(
-          request.passphrase === undefined ? {} : { passphrase: request.passphrase },
-        );
-        return { version: 1, ok: true, value: await state() };
-      case "UnlockDevice":
-        await vault.unlockWithDevice();
-        return { version: 1, ok: true, value: await state() };
-      case "UnlockPassphrase":
-        await vault.unlockWithPassphrase(request.passphrase);
-        return { version: 1, ok: true, value: await state() };
-      case "LockVault":
-        await vault.lock();
-        return { version: 1, ok: true, value: await state() };
-      case "DismissRecentCapture":
-        await driver.dismissCaptureNotice(request.jobId);
-        return { version: 1, ok: true, value: await state() };
+        await contexts.create(request);
+        return { ok: true, value: await state() };
+      case "SelectActiveVault":
+        await contexts.select(request);
+        return { ok: true, value: await state() };
+      case "RenameVault":
+        await contexts.rename(request);
+        return { ok: true, value: await state() };
+      case "UnlockDevice": {
+        await contexts.unlockWithDevice(request.expectedVaultId);
+        await notifyAppStateChanged();
+        return { ok: true, value: await state() };
+      }
+      case "LockVault": {
+        const context = contexts.snapshot(request.expectedVaultId);
+        await context.vault.lock();
+        await notifyAppStateChanged();
+        return { ok: true, value: await state() };
+      }
+      case "DismissRecentCapture": {
+        const context = contexts.snapshot(request.expectedVaultId);
+        await context.driver.dismissCaptureNotice(request.jobId);
+        await notifyAppStateChanged();
+        return { ok: true, value: await state() };
+      }
       case "CaptureActivePage":
-        return { version: 1, ok: true, value: await captureActivePage(request.tabId) };
+        return {
+          ok: true,
+          value: await captureActivePage(request.expectedVaultId, request.tabId),
+        };
       case "ListLibrary":
-        return { version: 1, ok: true, value: await libraryGroups() };
+        return { ok: true, value: await libraryGroups(request.expectedVaultId) };
       case "ListDeleted":
-        return { version: 1, ok: true, value: await libraryGroups("Deleted") };
+        return { ok: true, value: await libraryGroups(request.expectedVaultId, "Deleted") };
       case "DeleteCaptures":
-        await changeLibraryState(request.bundleIds, "Delete");
-        return { version: 1, ok: true, value: null };
+        await changeLibraryState(request.expectedVaultId, request.bundleIds, "Delete");
+        await notifyAppStateChanged();
+        return { ok: true, value: null };
       case "RestoreCaptures":
-        await changeLibraryState(request.bundleIds, "Restore");
-        return { version: 1, ok: true, value: null };
+        await changeLibraryState(request.expectedVaultId, request.bundleIds, "Restore");
+        await notifyAppStateChanged();
+        return { ok: true, value: null };
       case "MergeCollections":
       case "MoveCaptures":
       case "ExtractCaptures":
-      case "UndoLibraryOperation":
-        return { version: 1, ok: true, value: await manageCollections(request) };
+      case "UndoLibraryOperation": {
+        const receipt = await manageCollections(request);
+        await notifyAppStateChanged();
+        return { ok: true, value: receipt };
+      }
       case "VacuumVault": {
-        const records = await vaultRepository.load();
+        const context = contexts.snapshot(request.expectedVaultId);
+        const records = await vaultRepository.load(context.vaultId);
         if (records === undefined) {
           throw Object.assign(new Error("Vault locked"), { id: "VAULT_LOCKED" });
         }
-        const service = await library();
+        const service = await library(request.expectedVaultId);
+        const repository: VacuumRepository = {
+          listStoredObjects: () => context.driver.listStoredObjects(),
+          listStoredEvents: () => context.driver.listStoredEvents(),
+          getVaultNameProjection: () => context.driver.getVaultNameProjection(),
+          acquireVacuum: async (jobId, createdAt) => {
+            const head = await context.driver.acquireVacuum(jobId, createdAt);
+            await notifyAppStateChanged();
+            return head;
+          },
+          updateVacuumStage: async (jobId, stage) => {
+            await context.driver.updateVacuumStage(jobId, stage);
+            await notifyAppStateChanged();
+          },
+          getVaultGeneration: (generationId) => context.driver.getVaultGeneration(generationId),
+          releaseVacuum: async (jobId) => {
+            await context.driver.releaseVacuum(jobId);
+            await notifyAppStateChanged();
+          },
+          commitVacuum: async (input) => {
+            await context.driver.commitVacuum(input);
+            await notifyAppStateChanged();
+          },
+        };
         const result = await new VaultVacuumService(
-          driver,
+          repository,
           service,
-          vault.requireRootKey(),
+          context.vault.requireRootKey(),
           records.metadata.vaultId,
           records.metadata.deviceId,
         ).execute();
-        return { version: 1, ok: true, value: result };
+        return { ok: true, value: result };
       }
       case "GetVacuumEstimate":
-        return { version: 1, ok: true, value: await vacuumEstimate() };
-      case "GetLibraryDetail": {
-        const detail = await (await library()).detail(request.bundleId);
+        return { ok: true, value: await vacuumEstimate(request.expectedVaultId) };
+      case "ExportVault":
         return {
-          version: 1,
+          ok: true,
+          value: await exportVault(request.expectedVaultId, request.passphrase),
+        };
+      case "CancelVaultExport": {
+        const context = contexts.snapshot(request.expectedVaultId);
+        await context.driver.requestExportCancellation(request.jobId, new Date().toISOString());
+        exportControllers.get(request.jobId)?.abort();
+        await notifyAppStateChanged();
+        return { ok: true, value: null };
+      }
+      case "GetLibraryDetail": {
+        const detail = await (await library(request.expectedVaultId)).detail(request.bundleId);
+        return {
           ok: true,
           value: {
             item: detail.item,
@@ -444,20 +690,8 @@ async function handle(request: AppRequestV1): Promise<AppResponseV1> {
 }
 
 export function startBackground(): void {
-  const ready = Promise.all([
-    driver.reconcileInterruptedJobs(new Date().toISOString()),
-    vault.autoUnlock().catch(() => false),
-  ]);
   browser.runtime.onMessage.addListener((request: unknown) => {
-    if (
-      typeof request !== "object" ||
-      request === null ||
-      !("version" in request) ||
-      request.version !== RUNTIME_VERSION.api ||
-      !("type" in request)
-    ) {
-      return undefined;
-    }
-    return ready.then(() => handle(request as AppRequestV1));
+    if (!isAppRequest(request)) return undefined;
+    return startup.then(() => handle(request));
   });
 }

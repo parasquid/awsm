@@ -28,7 +28,7 @@ The Bundle format must provide:
 
 - faithful preservation
 - immutability
-- forward compatibility
+- canonical format validation
 - efficient validation
 - deterministic serialization
 - offline portability
@@ -283,9 +283,9 @@ Filenames remain informative. Readers SHALL resolve Artifacts using Manifest ide
 
 # 17. Unknown Fields
 
-Readers SHALL ignore unknown fields.
+Readers SHALL reject unknown fields.
 
-Readers SHALL preserve unknown fields when rewriting Bundles.
+Readers SHALL write only fields defined by this specification.
 
 ---
 
@@ -317,15 +317,15 @@ A valid Bundle MUST satisfy:
 
 ---
 
-# 20. Future Compatibility
+# 20. Unsupported Bundle Semantics
 
-Future Bundle versions MAY introduce:
+Bundle semantics outside this specification are unsupported, including:
 
 - new Artifact roles
 - new metadata
 - new compression methods
 
-Readers SHOULD preserve unsupported data whenever possible.
+Readers MUST reject unsupported Bundle data.
 
 ---
 

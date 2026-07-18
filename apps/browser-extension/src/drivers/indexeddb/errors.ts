@@ -1,7 +1,18 @@
 export type StorageDriverErrorId =
   | "IMMUTABLE_OBJECT_CONFLICT"
   | "STORAGE_QUOTA_EXCEEDED"
-  | "STORAGE_TRANSACTION_FAILED";
+  | "STORAGE_TRANSACTION_FAILED"
+  | "VAULT_BUSY"
+  | "VAULT_CONTEXT_CHANGED"
+  | "VAULT_NOT_FOUND"
+  | "VAULT_LOCKED";
+
+const TRANSACTION_ERROR_IDS = new Set<StorageDriverErrorId>([
+  "VAULT_BUSY",
+  "VAULT_CONTEXT_CHANGED",
+  "VAULT_NOT_FOUND",
+  "VAULT_LOCKED",
+]);
 
 export class StorageDriverError extends Error {
   readonly id: StorageDriverErrorId;
@@ -16,6 +27,14 @@ export class StorageDriverError extends Error {
 export function storageError(error: unknown): StorageDriverError {
   if (error instanceof StorageDriverError) {
     return error;
+  }
+  if (
+    error instanceof Error &&
+    "id" in error &&
+    typeof error.id === "string" &&
+    TRANSACTION_ERROR_IDS.has(error.id as StorageDriverErrorId)
+  ) {
+    return new StorageDriverError(error.id as StorageDriverErrorId, error.message);
   }
   if (error instanceof DOMException && error.name === "QuotaExceededError") {
     return new StorageDriverError("STORAGE_QUOTA_EXCEEDED", "Local storage quota was exceeded.");

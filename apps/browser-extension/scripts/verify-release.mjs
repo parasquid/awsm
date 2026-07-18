@@ -9,6 +9,7 @@ const approvedPermissions = [
   "pageCapture",
   "offscreen",
   "unlimitedStorage",
+  "downloads",
 ];
 
 function assert(condition, message) {

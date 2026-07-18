@@ -27,7 +27,7 @@ The protocol MUST provide:
 - deterministic behavior
 - offline operation
 - transport independence
-- forward compatibility
+- one canonical deterministic message format
 
 ---
 
@@ -208,17 +208,11 @@ Blocks MAY transfer in parallel.
 
 ---
 
-# 12. Version Negotiation
+# 12. Protocol Selection
 
-Protocol negotiation occurs during connection establishment.
+The client and Service use the one protocol defined by this specification.
 
-Both peers advertise:
-
-- protocol version
-- supported extensions
-- cryptographic capabilities
-
-The highest mutually supported version SHOULD be selected.
+No negotiation or alternate protocol path exists before the first release and an explicit compatibility decision.
 
 ---
 
@@ -274,16 +268,16 @@ Vault Generation activation is fenced by opaque compare-and-swap metadata.
 
 ---
 
-# 18. Future Compatibility
+# 18. Future Capabilities
 
-Future protocol versions MAY introduce:
+Future approved work MAY introduce:
 
 - streaming synchronization
 - peer-to-peer synchronization
 - LAN discovery
 - incremental object transfer
 
-Existing message semantics SHOULD remain stable.
+This section does not authorize alternate protocol formats or negotiation paths.
 
 ---
 

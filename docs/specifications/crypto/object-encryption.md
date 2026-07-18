@@ -30,7 +30,7 @@ The encrypted object format MUST provide:
 - integrity
 - algorithm agility
 - deterministic parsing
-- forward compatibility
+- canonical format validation
 
 ---
 
@@ -144,11 +144,11 @@ Readers SHALL reject unsupported format versions.
 
 ---
 
-# 13. Migration
+# 13. Canonical Encryption Format
 
-New encryption algorithms MAY coexist with previous versions.
+Exactly one encryption algorithm defined by this specification is canonical before the first release.
 
-Objects SHALL indicate their encryption format explicitly.
+Objects SHALL indicate that encryption format explicitly. Alternate algorithm readers are not implemented.
 
 ---
 
