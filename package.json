@@ -1,0 +1,15 @@
+{
+  "name": "awsm",
+  "private": true,
+  "packageManager": "pnpm@11.13.1",
+  "scripts": {
+    "build": "corepack pnpm --filter @awsm/browser-extension build",
+    "lint": "corepack pnpm --filter @awsm/browser-extension lint",
+    "test": "corepack pnpm --filter @awsm/browser-extension test",
+    "test:integration": "corepack pnpm --filter @awsm/browser-extension test:integration",
+    "test:e2e": "corepack pnpm --filter @awsm/browser-extension test:e2e",
+    "test:e2e:chrome": "corepack pnpm --filter @awsm/browser-extension test:e2e:chrome",
+    "typecheck": "corepack pnpm --filter @awsm/browser-extension typecheck",
+    "zip": "corepack pnpm --filter @awsm/browser-extension zip"
+  }
+}

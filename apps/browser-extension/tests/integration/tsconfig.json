@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "../../.output/integration",
+    "rootDir": "../.."
+  },
+  "include": [
+    "../../src/domain/hash.ts",
+    "../../src/drivers/indexeddb/**/*.ts",
+    "../../src/runtime/vault/contracts.ts",
+    "./browser/harness.ts"
+  ]
+}

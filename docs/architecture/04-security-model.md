@@ -1,0 +1,381 @@
+# Security Model
+
+**Document:** `architecture/04-security-model.md`
+
+**Status:** Draft
+
+**Owner:** Engineering
+
+**Depends On:**
+
+- architecture/03-zero-knowledge.md
+
+---
+
+# Purpose
+
+This document defines the security architecture of Archive Platform.
+
+It specifies:
+
+- trust relationships
+- cryptographic ownership
+- key hierarchy
+- device authorization
+- vault access
+- revocation strategy
+
+It intentionally does **not** specify cryptographic algorithms. Those are defined in the Cryptography document.
+
+---
+
+# Security Goals
+
+The platform must ensure:
+
+1. Only trusted devices can decrypt vault contents.
+2. The backend cannot decrypt user data.
+3. Compromising one device should not permanently compromise a vault.
+4. Multiple devices can safely share a vault.
+5. Devices can be revoked.
+6. Cryptographic material can evolve without redesigning the platform.
+
+---
+
+# Security Domains
+
+There are three logical trust domains.
+
+```text
+                User
+
+                  │
+
+        Trusted Devices
+
+        Chrome
+        Firefox
+        Desktop
+        Mobile
+
+                  │
+
+         Encrypted Transport
+
+                  │
+
+        Coordination Server
+
+                  │
+
+         Object Storage
+```
+
+Only trusted devices possess plaintext vault keys.
+
+---
+
+# Identity
+
+A user account represents an authenticated identity.
+
+The account is **not** the cryptographic owner of archived content.
+
+Instead:
+
+```text
+User
+
+↓
+
+Membership
+
+↓
+
+Vault
+```
+
+This distinction allows future support for:
+
+- shared vaults
+- organization vaults
+- delegated access
+
+---
+
+# Key Hierarchy
+
+Every key has exactly one responsibility.
+
+```text
+Master Secret
+
+↓
+
+Vault Root Key
+
+├── Bundle Key
+├── Event Key
+├── Artifact Key
+└── Metadata Key
+```
+
+No key should serve multiple purposes.
+
+---
+
+# Identity Key
+
+The Identity Key uniquely identifies or authenticates a user account.
+
+Responsibilities:
+
+- authenticate vault membership
+- establish trust
+- sign authorization requests
+
+It does **not** encrypt archive content.
+
+---
+
+# Device Key
+
+Every trusted device generates its own key pair during registration.
+
+The private key never leaves the device.
+
+Responsibilities:
+
+- authenticate the device
+- receive encrypted vault keys
+- sign synchronization requests
+
+Compromising one device should not expose private keys from other devices.
+
+---
+
+# Vault Root Key
+
+The Vault Root Key is the root encryption key for a Vault.
+
+Responsibilities:
+
+- authorize access to vault contents
+- derive or wrap subordinate keys
+- enable new devices to access the vault
+
+The Vault Root Key is never stored unencrypted.
+
+---
+
+# Bundle Key
+
+Every Bundle receives its own context-specific encryption key derived from the Vault Root Key using the Bundle ID, Vault ID, domain label, and key version.
+
+Responsibilities:
+
+- encrypt the immutable bundle
+- isolate compromise
+- enable future key rotation
+
+Bundle Keys are not persisted in the initial implementation. Trusted clients reconstruct them deterministically according to the Key Derivation Specification.
+
+The same pattern applies to Event and Projection keys with distinct domain labels and contexts.
+
+---
+
+# Object Encryption
+
+Bundles are encrypted first.
+
+Only then are they serialized into storage Objects or Blocks.
+
+The storage layer never interprets cryptographic semantics.
+
+Instead:
+
+```text
+Bundle
+
+↓
+
+Encrypt
+
+↓
+
+Ciphertext
+
+↓
+
+Store As Objects / Blocks
+```
+
+This keeps the storage layer unaware of plaintext semantics.
+
+---
+
+# Device Enrollment
+
+Adding a new device requires authorization from an existing trusted device.
+
+```text
+New Device
+
+↓
+
+Generate Device Key Pair
+
+↓
+
+Request Access
+
+↓
+
+Existing Device Approves
+
+↓
+
+Vault Root Key Wrapped For New Device
+
+↓
+
+Synchronization Begins
+```
+
+The coordination server relays encrypted messages but cannot read them.
+
+## Initial Local Browser Slot
+
+Before multi-device enrollment exists, the Chrome Host stores one mandatory local device wrapper for the Vault Root Key using a non-exportable Web Crypto key.
+
+Onboarding may add one passphrase wrapper for the same Vault Root Key. The passphrase wrapper is not a recovery system and the first slice does not support changing passphrases or managing slots after onboarding.
+
+---
+
+# Device Revocation
+
+Revocation prevents future synchronization.
+
+Revoking a device:
+
+- invalidates its registration
+- prevents receiving new vault updates
+- prevents uploading new bundles
+
+Revocation **does not** erase previously synchronized local data.
+
+If a device is believed to be compromised, users should rotate the Vault Root Key.
+
+---
+
+# Key Rotation
+
+The architecture supports independent rotation.
+
+Possible rotations:
+
+- Identity Key
+- Device Key
+- Vault Root Key
+- Bundle Keys
+
+Rotating one key should minimize impact on unrelated components.
+
+For example, rotating a Vault Root Key should **not** require re-encrypting every Bundle immediately. Subordinate keys can be rewrapped or rederived gradually according to the cryptography specification.
+
+---
+
+# Authentication vs Encryption
+
+Authentication proves identity.
+
+Encryption protects data.
+
+These are separate concerns.
+
+Examples:
+
+| Action | Authentication | Encryption |
+|--------|----------------|------------|
+| Login | ✓ | ✗ |
+| Upload Bundle | ✓ | ✓ |
+| Download Bundle | ✓ | ✓ |
+| Billing | ✓ | ✗ |
+
+---
+
+# Forward Secrecy
+
+Future versions may support stronger forward secrecy for device-to-device communication.
+
+This is outside the MVP.
+
+---
+
+# Account Recovery
+
+Archive Platform deliberately separates:
+
+- account recovery
+- vault recovery
+
+Losing account credentials should not automatically compromise encrypted vault contents.
+
+Possible recovery mechanisms include:
+
+- recovery keys
+- recovery devices
+- exported vault key packages
+
+No recovery mechanism should require backend access to plaintext vault keys.
+
+This remains an open design area.
+
+---
+
+# Security Events
+
+The system should record security events, including:
+
+- device enrollment
+- device revocation
+- vault key rotation
+- failed authentication
+- recovery attempts
+
+Security logs should avoid exposing private archive metadata.
+
+---
+
+# Security Assumptions
+
+The platform assumes:
+
+- operating systems enforce local permissions
+- TLS protects transport
+- browsers implement WebCrypto correctly
+- users protect their devices with OS-level authentication
+
+Compromise of a trusted client falls outside the zero-knowledge guarantees.
+
+---
+
+# Open Questions
+
+Should vault access require approval from one device or multiple devices?
+
+Should enterprise vaults support hardware-backed keys?
+
+Should users be able to export wrapped vault keys?
+
+Should hardware security modules be supported?
+
+These questions are deferred until enterprise features are designed.
+
+---
+
+# References
+
+- architecture/05-local-storage.md
+- architecture/06-bundle-format.md
+- architecture/08-synchronization.md

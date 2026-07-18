@@ -1,0 +1,9 @@
+# Browser Extension UI Design
+
+The first slice uses a quiet archival-tool aesthetic: warm paper background, dark green primary actions, serif headings, and compact system typography. It uses no UI framework and makes no network requests.
+
+The popup is a 360 px task surface with explicit onboarding, locked, capturing, success, warning, and failure states. Capture continues in the background if the popup closes. Reopening the popup derives its state from the persisted Runtime job.
+
+The library is a full extension page. The list contains title, source URL, capture time, screenshot availability, and warnings. Detail content is decrypted only after unlock. Screenshots may be displayed through short-lived Blob URLs. MHTML is offered only through an anchor with a `download` attribute; it is never assigned to a frame, object, embed, window location, or executable document surface.
+
+All controls are keyboard reachable, use native semantics, retain visible focus, and report asynchronous state through polite live regions. Color is never the only status signal. Motion is nonessential and reduced-motion preferences are honored.

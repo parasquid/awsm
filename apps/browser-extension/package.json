@@ -1,0 +1,31 @@
+{
+  "name": "@awsm/browser-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "wxt build && node scripts/verify-release.mjs",
+    "dev": "wxt",
+    "lint": "biome check .",
+    "postinstall": "wxt prepare",
+    "test": "vitest run",
+    "test:integration": "tsc -p tests/integration/tsconfig.json && LD_LIBRARY_PATH=.output/browser-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} playwright test tests/integration/indexeddb.browser.test.ts --project=chromium",
+    "test:e2e": "wxt build && LD_LIBRARY_PATH=.output/browser-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} playwright test -c playwright.e2e.config.ts",
+    "test:e2e:chrome": "wxt build && LD_LIBRARY_PATH=.output/browser-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} playwright test -c playwright.e2e.config.ts",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "zip": "wxt zip"
+  },
+  "dependencies": {
+    "cborg": "5.1.7",
+    "fflate": "0.8.3",
+    "libsodium-wrappers-sumo": "0.8.4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.4",
+    "@playwright/test": "1.61.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10",
+    "wxt": "0.20.27"
+  }
+}
