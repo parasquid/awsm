@@ -117,8 +117,8 @@ function assertArtifactContract(artifact: ArtifactReferenceV1): void {
   const validScreenshot =
     artifact.role === "SCREENSHOT_FULL" &&
     artifact.kind === "IMAGE" &&
-    artifact.mimeType === "image/png" &&
-    artifact.path === "artifacts/screenshot-full.png";
+    artifact.mimeType === "image/webp" &&
+    artifact.path === "artifacts/screenshot-full.webp";
   if (!validPrimary && !validScreenshot) {
     throw new DomainValidationError("manifest.artifacts", "violates the Capture Profile");
   }
@@ -143,8 +143,8 @@ export async function buildBundle(input: BuildBundleInput): Promise<BuiltBundle>
       artifactId: "A000002",
       kind: "IMAGE",
       role: "SCREENSHOT_FULL",
-      mimeType: "image/png",
-      path: "artifacts/screenshot-full.png",
+      mimeType: "image/webp",
+      path: "artifacts/screenshot-full.webp",
       bytes: input.screenshot,
     });
   }

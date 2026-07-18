@@ -86,7 +86,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
         await extensionApi.offscreen.closeDocument();
       }
     });
-    expect(stitchProbe).toMatchObject({ pngBase64: expect.any(String) });
+    expect(stitchProbe).toMatchObject({ webpBase64: expect.any(String) });
     await popup.evaluate(async () => {
       const extensionApi = (
         globalThis as unknown as {
@@ -111,9 +111,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       );
       await new Promise((resolve) => setTimeout(resolve, 100));
     });
-    await popup.close();
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 10_000));
-    const completedPopup = await extensionPopup(context, extensionId);
+    await popup.reload();
+    const completedPopup = popup;
     await expect(completedPopup.getByText("Archived: AWSM tall fixture")).toBeVisible({
       timeout: 30_000,
     });
@@ -124,6 +124,8 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       name: "Open archived capture: AWSM tall fixture",
     });
     await expect(capturePreview).toHaveAttribute("href", /library\.html\?bundleId=/u);
+    const captureHref = await capturePreview.getAttribute("href");
+    if (captureHref === null) throw new Error("The recent Capture link is unavailable.");
     const dismissRecent = completedPopup.getByRole("button", {
       name: "Dismiss recent capture: AWSM tall fixture",
     });
@@ -131,9 +133,13 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     expect(await dismissRecent.evaluate((node) => node.closest(".recent-capture") === null)).toBe(
       true,
     );
-    const directCapturePagePromise = context.waitForEvent("page");
-    await capturePreview.click();
-    const directCapturePage = await directCapturePagePromise;
+    await completedPopup.close();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    const reopenedPopup = await extensionPopup(context, extensionId);
+    await expect(reopenedPopup.getByText("Archived: AWSM tall fixture")).toHaveCount(0);
+    await expect(reopenedPopup.getByRole("button", { name: "Archive this page" })).toBeVisible();
+    const directCapturePage = await context.newPage();
+    await directCapturePage.goto(captureHref);
     await expect(
       directCapturePage.getByRole("heading", { name: "AWSM tall fixture" }),
     ).toBeVisible();
@@ -146,11 +152,6 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       }),
     ).toHaveAttribute("href", "http://127.0.0.1:4174/fixture");
     await directCapturePage.close();
-    await completedPopup.close();
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    const reopenedPopup = await extensionPopup(context, extensionId);
-    await expect(reopenedPopup.getByText("Archived: AWSM tall fixture")).toHaveCount(0);
-    await expect(reopenedPopup.getByRole("button", { name: "Archive this page" })).toBeVisible();
     await fixturePage.evaluate(() => {
       const redBand = document.querySelector<HTMLElement>(".red");
       if (redBand === null) throw new Error("The evolving fixture band is unavailable.");
@@ -183,10 +184,58 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     });
     await reopenedPopup.close();
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 10_000));
+    await fixturePage.evaluate(() => history.pushState({}, "", "/fixture?different=1"));
+    const popupAfterUrlChange = await extensionPopup(context, extensionId);
+    await expect(popupAfterUrlChange.getByText("Archived: AWSM tall fixture")).toHaveCount(0);
+    await popupAfterUrlChange.close();
 
     await context.setOffline(true);
     const library = await context.newPage();
     await library.goto(`chrome-extension://${extensionId}/library.html`);
+    await library.locator(".card").click();
+    const firstSelection = library.getByRole("checkbox", { name: /Select capture from/u }).first();
+    await firstSelection.check();
+    await library.getByRole("button", { name: "Extract to new collection" }).click();
+    await expect(library.locator(".library-card")).toHaveCount(2);
+    await expect(library.getByRole("button", { name: "Undo" })).toBeVisible();
+    await library.getByRole("button", { name: "Undo" }).click();
+    await expect(library.locator(".library-card")).toHaveCount(1);
+    await expect(library.getByText(/2 captures/u)).toBeVisible();
+
+    await library.locator(".card").click();
+    await library
+      .getByRole("checkbox", { name: /Select capture from/u })
+      .first()
+      .check();
+    await library.getByRole("button", { name: "Extract to new collection" }).click();
+    await expect(library.locator(".library-card")).toHaveCount(2);
+    const sourceCollection = library.locator(".library-card").first();
+    const destinationCollection = library.locator(".library-card").nth(1);
+    await library.evaluate(() => {
+      const [source, destination] = document.querySelectorAll<HTMLElement>(".library-card");
+      if (source === undefined || destination === undefined)
+        throw new Error("Collection cards missing");
+      const transfer = new DataTransfer();
+      source.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: transfer }));
+      destination.dispatchEvent(
+        new DragEvent("dragover", { bubbles: true, dataTransfer: transfer }),
+      );
+    });
+    await expect(destinationCollection).toHaveClass(/library-card--merge-target/u);
+    await sourceCollection.dispatchEvent("dragend");
+    await expect(destinationCollection).not.toHaveClass(/library-card--merge-target/u);
+    await sourceCollection.dragTo(destinationCollection);
+    await expect(library.locator(".library-card")).toHaveCount(1);
+    await library.getByRole("button", { name: "Undo" }).click();
+    await expect(library.locator(".library-card")).toHaveCount(2);
+
+    await library.locator(".library-card .card").first().click();
+    await library.getByRole("button", { name: "Move to collection…" }).click();
+    const moveDialog = library.getByRole("dialog");
+    await expect(moveDialog).toBeVisible();
+    await moveDialog.getByRole("radio").check();
+    await moveDialog.getByRole("button", { name: "Move to collection" }).click();
+    await expect(library.locator(".library-card")).toHaveCount(1);
     await expect(library.getByText(/2 captures/u)).toBeVisible();
     const originalSite = library.getByRole("link", {
       name: "Visit original site for AWSM tall fixture",
@@ -201,8 +250,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       const image = node as HTMLImageElement;
       return { width: image.naturalWidth, height: image.naturalHeight };
     });
-    expect(thumbnailDimensions.width).toBeLessThanOrEqual(320);
-    expect(thumbnailDimensions.height).toBeLessThanOrEqual(180);
+    expect(thumbnailDimensions).toEqual({ width: 640, height: 360 });
     const collectionThumbnails = library.locator(".card__preview--stack .card__thumbnail");
     await expect(collectionThumbnails).toHaveCount(2);
     const collectionSources = await collectionThumbnails.evaluateAll((images) =>
@@ -218,6 +266,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await expect(library.getByRole("heading", { name: "AWSM tall fixture" })).toBeVisible();
     const image = library.getByRole("img", { name: /Full-page screenshot/u });
     await expect(image).toBeVisible();
+    await expect
+      .poll(() => image.evaluate((node) => (node as HTMLImageElement).naturalWidth))
+      .toBeGreaterThan(0);
     const dimensions = await image.evaluate((node) => {
       const imageNode = node as HTMLImageElement;
       return { width: imageNode.naturalWidth, height: imageNode.naturalHeight };

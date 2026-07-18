@@ -6,6 +6,7 @@ const event = {
   eventType: "BundleRegistered" as const,
   bundleId: "00000000-0000-4000-8000-000000000002",
   bundleObjectId: "00000000-0000-4000-8000-000000000003",
+  collectionId: "00000000-0000-4000-8000-000000000020",
   title: "Fixture",
   originalUrl: "https://fixture.test/",
   capturedAt: "2026-07-16T17:00:00.000Z",
@@ -20,6 +21,7 @@ describe("Library Projection replay", () => {
         version: 1,
         bundleId: event.bundleId,
         bundleObjectId: event.bundleObjectId,
+        assignedCollectionId: event.collectionId,
         title: event.title,
         originalUrl: event.originalUrl,
         capturedAt: event.capturedAt,
@@ -87,5 +89,49 @@ describe("Library Projection replay", () => {
       expect.objectContaining({ bundleId: secondBundleId, status: "Deleted" }),
       expect.objectContaining({ bundleId: laterBundleId, status: "Active" }),
     ]);
+  });
+
+  it("moves captures between assigned Collection identities through additive Events", () => {
+    const destination = "00000000-0000-4000-8000-000000000030";
+    const result = reduceLibraryProjection([
+      event,
+      {
+        eventId: "00000000-0000-4000-8000-000000000031",
+        eventType: "CapturesMoved",
+        moves: [
+          {
+            bundleId: event.bundleId,
+            fromCollectionId: event.collectionId,
+            toCollectionId: destination,
+          },
+        ],
+      },
+    ]);
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        bundleId: event.bundleId,
+        assignedCollectionId: destination,
+      }),
+    ]);
+  });
+
+  it("ignores a move whose recorded prior assignment does not match replay state", () => {
+    const result = reduceLibraryProjection([
+      event,
+      {
+        eventId: "00000000-0000-4000-8000-000000000032",
+        eventType: "CapturesMoved",
+        moves: [
+          {
+            bundleId: event.bundleId,
+            fromCollectionId: "00000000-0000-4000-8000-000000000099",
+            toCollectionId: "00000000-0000-4000-8000-000000000030",
+          },
+        ],
+      },
+    ]);
+
+    expect(result[0]?.assignedCollectionId).toBe(event.collectionId);
   });
 });

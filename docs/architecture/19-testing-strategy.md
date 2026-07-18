@@ -191,6 +191,8 @@ Restore on second device
 
 Vault Vacuum tests MUST cover delete/restore replay, retained offline Bundle authentication, actual storage reclamation, transaction failure before activation, restart after activation where collection is asynchronous, unknown dependency failure, and stale-generation resurrection prevention.
 
+Collection-management tests MUST begin with failing tests and cover exact fragmentless URL routing, query-sensitive automatic grouping, deterministic tie-breaking, merge redirects and cycles, Move/Extract assignment, compensating Undo, stale-state rejection, atomic Event/Projection commits, Projection rebuild, and Vacuum preservation. Packaged-browser tests MUST exercise accessible controls and native drag and drop, including Deleted-member behavior, known URLs, tail visit-original routing, and the ten-second single-operation Undo presentation.
+
 ↓
 
 Verify identical state

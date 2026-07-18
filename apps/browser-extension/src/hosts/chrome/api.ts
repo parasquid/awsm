@@ -208,7 +208,7 @@ export class ChromeScreenshotHost implements ScreenshotHost {
       await browser.offscreen.createDocument({
         url: "offscreen.html",
         reasons: ["BLOBS"],
-        justification: "Stitch full-page screenshot tiles into one PNG Blob.",
+        justification: "Stitch screenshot tiles and encode lossy WebP previews.",
       });
     }
     try {
@@ -223,16 +223,16 @@ export class ChromeScreenshotHost implements ScreenshotHost {
       if (
         typeof response !== "object" ||
         response === null ||
-        !("pngBase64" in response) ||
-        typeof response.pngBase64 !== "string" ||
+        !("webpBase64" in response) ||
+        typeof response.webpBase64 !== "string" ||
         !("thumbnailBase64" in response) ||
         typeof response.thumbnailBase64 !== "string"
       ) {
         throw new Error("The offscreen stitcher returned an invalid result.");
       }
       return {
-        pngBytes: base64ToBytes(response.pngBase64),
-        thumbnailPngBytes: base64ToBytes(response.thumbnailBase64),
+        webpBytes: base64ToBytes(response.webpBase64),
+        thumbnailWebpBytes: base64ToBytes(response.thumbnailBase64),
       };
     } finally {
       await browser.offscreen.closeDocument();

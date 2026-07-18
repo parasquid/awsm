@@ -105,6 +105,7 @@ function item(status: "Active" | "Deleted", suffix: number): LibraryItemV1 {
     version: 1,
     bundleId: id(suffix),
     bundleObjectId: id(suffix + 10),
+    assignedCollectionId: id(suffix + 20),
     title: `Capture ${String(suffix)}`,
     originalUrl: `https://fixture.test/${String(suffix)}`,
     capturedAt: "2026-07-17T00:00:00.000Z",
@@ -364,6 +365,76 @@ describe("Vault Vacuum", () => {
       bundleIds: [active.bundleId],
       futureOptional: { preserve: true },
       rewrite: { version: 1, sourceEventId: deletedEvent.eventId },
+    });
+  });
+
+  it("retains Collection topology and rewrites mixed capture moves", async () => {
+    const key = await rootKey();
+    const sourceGeneration = await initialGeneration(key);
+    const active = item("Active", 20);
+    const deleted = item("Deleted", 30);
+    const registrations = await Promise.all(
+      [active, deleted].map((capture, index) =>
+        storedEvent(key, id(80 + index), capture.bundleObjectId, {
+          eventType: "BundleRegistered",
+          bundleId: capture.bundleId,
+          collectionId: capture.assignedCollectionId,
+        }),
+      ),
+    );
+    const moveEvent = await storedEvent(key, id(82), active.bundleObjectId, {
+      eventType: "CapturesMoved",
+      moves: [active, deleted].map((capture) => ({
+        bundleId: capture.bundleId,
+        fromCollectionId: capture.assignedCollectionId,
+        toCollectionId: id(99),
+      })),
+    });
+    const mergeEvent = await storedEvent(key, id(83), active.bundleObjectId, {
+      eventType: "CollectionsMerged",
+      destinationCollectionId: id(99),
+      sourceCollectionIds: [active.assignedCollectionId],
+    });
+    const events = [...registrations, moveEvent, mergeEvent];
+    const objects: StoredObjectV1[] = [active, deleted].map((capture) => ({
+      version: 1,
+      objectId: capture.bundleObjectId,
+      objectType: "Bundle",
+      envelopeBytes: new Uint8Array([1]),
+    }));
+    let committed: Parameters<VacuumRepository["commitVacuum"]>[0] | undefined;
+    const repository: VacuumRepository = {
+      listStoredObjects: async () => objects,
+      listStoredEvents: async () => events,
+      acquireVacuum: async () =>
+        headWith(
+          objects.map((object) => object.objectId),
+          events.map((event) => event.eventId),
+        ),
+      updateVacuumStage: async () => {},
+      getVaultGeneration: async () => sourceGeneration,
+      releaseVacuum: async () => {},
+      commitVacuum: async (input) => {
+        committed = input;
+      },
+    };
+    const library = {
+      list: async () => [active, deleted],
+      detail: async () => ({ item: active, metadata: {}, mhtml: new Uint8Array([1]) }),
+    } as unknown as LibraryService;
+
+    await new VaultVacuumService(repository, library, key, vaultId, deviceId).execute();
+    if (committed === undefined) throw new Error("Vacuum did not commit");
+    expect(committed.eventIds).toContain(moveEvent.eventId);
+    expect(committed.eventIds).not.toContain(mergeEvent.eventId);
+    const rewrittenMove = await decryptedStoredEvent(
+      key,
+      committed.eventsToAdd[0] as StoredEventV1,
+    );
+    expect(rewrittenMove).toMatchObject({
+      eventType: "CapturesMoved",
+      moves: [expect.objectContaining({ bundleId: active.bundleId })],
+      rewrite: { version: 1, sourceEventId: moveEvent.eventId },
     });
   });
 });

@@ -4,11 +4,21 @@ import { wipe } from "../../crypto/sodium";
 import { readBundle } from "../../domain/bundle";
 import { decodeCanonicalCbor } from "../../domain/cbor";
 import type { LibraryItemV1, RuntimeErrorId } from "../../domain/contracts";
-import type { StoredObjectV1, StoredProjectionV1 } from "../../drivers/indexeddb";
+import type {
+  StoredCollectionProjectionV1,
+  StoredObjectV1,
+  StoredProjectionV1,
+} from "../../drivers/indexeddb";
+import {
+  decodeLibraryCollectionState,
+  groupCollectionItems,
+  type LibraryCollectionGroupV1,
+} from "./collections";
 import { decodeLibraryItem } from "./decode";
 
 export interface LibraryRepository {
   listEncryptedProjections(): Promise<readonly StoredProjectionV1[]>;
+  getCollectionProjection(): Promise<StoredCollectionProjectionV1 | undefined>;
   getStoredObject(objectId: string): Promise<StoredObjectV1 | undefined>;
 }
 
@@ -19,45 +29,7 @@ export interface LibraryDetailV1 {
   readonly screenshot?: Uint8Array;
 }
 
-export interface LibraryPageGroupV1 {
-  readonly pageKey: string;
-  readonly title: string;
-  readonly originalUrl: string;
-  readonly latest: LibraryItemV1;
-  readonly captures: readonly LibraryItemV1[];
-}
-
-export function normalizedPageKey(value: string): string {
-  const url = new URL(value);
-  url.hash = "";
-  return url.href;
-}
-
-export function groupLibraryItems(items: readonly LibraryItemV1[]): readonly LibraryPageGroupV1[] {
-  const groups = new Map<string, LibraryItemV1[]>();
-  for (const item of items) {
-    const key = normalizedPageKey(item.originalUrl);
-    const captures = groups.get(key);
-    if (captures === undefined) groups.set(key, [item]);
-    else captures.push(item);
-  }
-  return [...groups.entries()]
-    .map(([pageKey, captures]) => {
-      const sorted = captures.toSorted((left, right) =>
-        right.capturedAt.localeCompare(left.capturedAt),
-      );
-      const latest = sorted[0];
-      if (latest === undefined) throw new Error("A Library group cannot be empty.");
-      return {
-        pageKey,
-        title: latest.title,
-        originalUrl: latest.originalUrl,
-        latest,
-        captures: sorted,
-      };
-    })
-    .toSorted((left, right) => right.latest.capturedAt.localeCompare(left.latest.capturedAt));
-}
+export type LibraryPageGroupV1 = LibraryCollectionGroupV1;
 
 export class LibraryError extends Error {
   readonly id: RuntimeErrorId;
@@ -99,11 +71,34 @@ export class LibraryService {
   }
 
   async groups(): Promise<readonly LibraryPageGroupV1[]> {
-    return groupLibraryItems(await this.listActive());
+    const [items, topology] = await Promise.all([this.list(), this.topology()]);
+    return groupCollectionItems(items, topology, "Active");
   }
 
   async deletedGroups(): Promise<readonly LibraryPageGroupV1[]> {
-    return groupLibraryItems(await this.listDeleted());
+    const [items, topology] = await Promise.all([this.list(), this.topology()]);
+    return groupCollectionItems(items, topology, "Deleted");
+  }
+
+  async topology() {
+    const record = await this.repository.getCollectionProjection();
+    if (record === undefined) return [];
+    const key = await deriveContextKeyFromCryptoKey(this.rootKey, {
+      vaultId: this.vaultId,
+      domain: "vault:projection:v1",
+      contextId: `LibraryCollections-v1:${this.vaultId}`,
+      keyVersion: 1,
+    });
+    try {
+      const envelope = decodeEncryptedEnvelopeBytes(record.envelopeBytes);
+      if (envelope.objectId !== record.projectionId || envelope.objectType !== "Projection") {
+        throw new Error("Collection Projection envelope mismatch");
+      }
+      return decodeLibraryCollectionState(decodeCanonicalCbor(await decryptEnvelope(envelope, key)))
+        .topologyEvents;
+    } finally {
+      await wipe(key);
+    }
   }
 
   async detail(bundleId: string): Promise<LibraryDetailV1> {

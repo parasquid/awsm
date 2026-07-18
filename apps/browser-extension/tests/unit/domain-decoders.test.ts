@@ -87,7 +87,7 @@ describe("domain boundary decoders", () => {
       {
         ...(manifest.artifacts as readonly Record<string, unknown>[])[0],
         role: "SCREENSHOT_FULL",
-        path: "artifacts/screenshot-full.png",
+        path: "artifacts/screenshot-full.webp",
       },
     ];
 
@@ -129,6 +129,7 @@ describe("domain boundary decoders", () => {
         version: 1,
         bundleId: IDS.bundle,
         bundleObjectId: IDS.object,
+        assignedCollectionId: IDS.command,
         title: "Example",
         originalUrl: "https://example.test/",
         capturedAt: "2026-07-16T17:00:00.000Z",

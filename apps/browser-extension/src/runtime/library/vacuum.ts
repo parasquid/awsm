@@ -106,6 +106,45 @@ async function rewrittenEvent(
   }
 }
 
+async function rewrittenMoveEvent(
+  source: StoredEventV1,
+  payload: Record<string, unknown>,
+  moves: readonly Record<string, string>[],
+  objectId: string,
+  rootKey: CryptoKey,
+  vaultId: string,
+): Promise<StoredEventV1> {
+  const eventId = crypto.randomUUID();
+  const key = await deriveContextKeyFromCryptoKey(rootKey, {
+    vaultId,
+    domain: "vault:event:v1",
+    contextId: eventId,
+    keyVersion: 1,
+  });
+  try {
+    return {
+      version: 1,
+      eventId,
+      objectId,
+      orderingTimestamp: source.orderingTimestamp,
+      envelopeBytes: encodeEncryptedEnvelope(
+        await encryptEnvelope({
+          objectType: "Event",
+          objectId: eventId,
+          plaintext: encodeCanonicalCbor({
+            ...payload,
+            moves,
+            rewrite: { version: 1, sourceEventId: source.eventId },
+          }),
+          key,
+        }),
+      ),
+    };
+  } finally {
+    await wipe(key);
+  }
+}
+
 export class VaultVacuumService {
   constructor(
     readonly repository: VacuumRepository,
@@ -245,6 +284,55 @@ export class VaultVacuumService {
           const status = eventType === "CapturesDeleted" ? "Deleted" : "Active";
           for (const bundleId of retainedIds) replayState.set(bundleId, status);
         }
+        continue;
+      }
+      if (eventType === "CapturesMoved") {
+        eventIds.push(event.eventId);
+        eventBytes += event.envelopeBytes.byteLength;
+        if (!Array.isArray(payload.moves)) throw new Error("Capture move entries are invalid.");
+        const retainedMoves = payload.moves.flatMap((value, index) => {
+          const move = record(value, `event.moves.${String(index)}`);
+          const bundleId = string(move.bundleId, `event.moves.${String(index)}.bundleId`);
+          const fromCollectionId = string(
+            move.fromCollectionId,
+            `event.moves.${String(index)}.fromCollectionId`,
+          );
+          const toCollectionId = string(
+            move.toCollectionId,
+            `event.moves.${String(index)}.toCollectionId`,
+          );
+          return activeBundleIds.has(bundleId)
+            ? [{ bundleId, fromCollectionId, toCollectionId }]
+            : [];
+        });
+        if (retainedMoves.length > 0) {
+          const first = items.find((item) => item.bundleId === retainedMoves[0]?.bundleId);
+          if (first === undefined) throw new Error("Rewritten move references a missing Bundle.");
+          const rewritten = await rewrittenMoveEvent(
+            event,
+            payload,
+            retainedMoves,
+            first.bundleObjectId,
+            this.rootKey,
+            this.vaultId,
+          );
+          eventsToAdd.push(rewritten);
+          rewrittenEventBytes += rewritten.envelopeBytes.byteLength;
+        }
+        continue;
+      }
+      if (eventType === "CollectionsMerged") {
+        string(payload.destinationCollectionId, "event.destinationCollectionId");
+        if (!Array.isArray(payload.sourceCollectionIds)) {
+          throw new Error("Collection merge source identifiers are invalid.");
+        }
+        payload.sourceCollectionIds.forEach((value, index) => {
+          string(value, `event.sourceCollectionIds.${String(index)}`);
+        });
+        continue;
+      }
+      if (eventType === "CollectionMergeReverted") {
+        string(payload.mergeEventId, "event.mergeEventId");
         continue;
       }
       throw new Error(`Unsupported Event type during Vault Vacuum: ${eventType}`);

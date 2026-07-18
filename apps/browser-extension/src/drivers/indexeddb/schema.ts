@@ -7,6 +7,7 @@ export const STORES = {
   objects: "objects",
   events: "events",
   libraryProjection: "library_projection",
+  collectionProjection: "collection_projection",
   captureJobs: "capture_jobs",
   commandOutcomes: "command_outcomes",
   vaultGenerations: "vault_generations",
@@ -34,6 +35,12 @@ export interface StoredEventV1 {
 export interface StoredProjectionV1 {
   readonly version: 1;
   readonly bundleId: string;
+  readonly envelopeBytes: Uint8Array;
+}
+
+export interface StoredCollectionProjectionV1 {
+  readonly version: 1;
+  readonly projectionId: string;
   readonly envelopeBytes: Uint8Array;
 }
 

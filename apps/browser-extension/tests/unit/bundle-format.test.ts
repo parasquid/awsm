@@ -84,7 +84,7 @@ describe("canonical Bundle serialization", () => {
   it("round-trips and validates a Bundle with an optional screenshot", async () => {
     const built = await buildBundle({
       ...bundleInput(),
-      screenshot: new Uint8Array([137, 80, 78, 71]),
+      screenshot: new Uint8Array([82, 73, 70, 70]),
     });
     const read = await readBundle(built.bytes);
 
@@ -97,7 +97,11 @@ describe("canonical Bundle serialization", () => {
       originalUrl: "https://example.test/article",
     });
     expect(read.artifacts.get("PRIMARY")).toEqual(bundleInput().mhtml);
-    expect(read.artifacts.get("SCREENSHOT_FULL")).toEqual(new Uint8Array([137, 80, 78, 71]));
+    expect(read.manifest.artifacts[1]).toMatchObject({
+      mimeType: "image/webp",
+      path: "artifacts/screenshot-full.webp",
+    });
+    expect(read.artifacts.get("SCREENSHOT_FULL")).toEqual(new Uint8Array([82, 73, 70, 70]));
   });
 
   it("rejects Artifact bytes changed after Manifest creation", async () => {

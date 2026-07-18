@@ -111,7 +111,7 @@ Artifacts contain preserved content.
 Examples include:
 
 - page.mhtml
-- screenshot.png
+- screenshot.webp
 - favicon.ico
 - extracted-text.txt
 - ai-summary.md
@@ -197,6 +197,8 @@ image/png
 
 image/jpeg
 
+image/webp
+
 text/plain
 
 application/pdf
@@ -273,7 +275,7 @@ User-visible Bundle metadata SHALL remain inside the Bundle serialization so tha
 The first implementation Capture Profile, `ChromeWebPage-v1`, SHALL use:
 
 - `artifacts/primary.mhtml` for the required `PRIMARY` Artifact
-- `artifacts/screenshot-full.png` for the optional `SCREENSHOT_FULL` Artifact
+- `artifacts/screenshot-full.webp` for the optional lossy `SCREENSHOT_FULL` Artifact
 
 Filenames remain informative. Readers SHALL resolve Artifacts using Manifest identifiers and Roles.
 

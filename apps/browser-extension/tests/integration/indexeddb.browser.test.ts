@@ -119,3 +119,13 @@ test("blocks writes while Vacuum owns the Vault and recovers an abandoned pre-ac
     committedAfterRecovery: true,
   });
 });
+
+test("atomically commits a Collection Event, item rows, topology, and generation tail", async ({
+  page,
+}) => {
+  await expect(scenario(page, "collection-operation")).resolves.toEqual({
+    counts: { objects: 2, events: 3, projections: 2, outcomes: 2 },
+    topologyStored: "00000000-0000-4000-8000-000000000992",
+    appendedEvents: 3,
+  });
+});

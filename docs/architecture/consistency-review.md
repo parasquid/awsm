@@ -213,7 +213,7 @@ The following questions remain intentionally unresolved and are outside the firs
 The following first-slice decisions are resolved by `docs/plans/02-chrome-extension-capture-vertical-slice.md`:
 
 1. The synchronized Vault Event is `BundleRegistered`.
-2. The first Capture Profile is `ChromeWebPage-v1`: MHTML is mandatory and a full-page PNG is best effort.
+2. The first Capture Profile is `ChromeWebPage-v1`: high-fidelity MHTML is mandatory and a lossy full-page WebP preview is best effort.
 3. The first implementation supports Chrome only.
 4. Bundle serialization is deterministic ZIP with canonical CBOR.
 5. The initial browser Storage Driver is IndexedDB.
@@ -253,3 +253,9 @@ Plan section 15 replaces the pre-release `LibraryGroupRemoved` model. The canoni
 The owning formal contract is `docs/specifications/vault/vacuum.md`; intent and trade-offs are in `docs/architecture/21-vault-history-rewrite.md`. Vault, Event, Object Store, Runtime Storage/Jobs/Synchronization, protocol errors, Backup, Restore, content storage, glossary, and testing strategy now share the same reachability and generation-fencing model.
 
 The current browser slice implements local generation activation and collection with one IndexedDB transaction. Remote synchronization remains deferred, so its generation behavior is specified and contract-scoped rather than claimed as end-to-end evidence. Vacuum explicitly excludes old Backup Sets, exports, and offline replicas and is not Secure Scrub.
+
+# 10. Collection Management Reconciliation
+
+Plan section 16 replaces transient URL-only UI grouping with stable, Event-backed Collection identities. The canonical model assigns a Collection ID in `BundleRegistered`, routes only exact fragmentless URL matches automatically, and records user-directed Merge, Move, Extract, and Undo through `CollectionsMerged`, `CapturesMoved`, and `CollectionMergeReverted`.
+
+The owning formal contract is `docs/specifications/vault/collection.md`. The glossary, Event and Command specifications, Runtime capture contract, Event model, Projection engine, Vault Vacuum, history-rewrite architecture, and testing strategy now share its assignment, redirect, atomicity, replay, and Vacuum semantics. Collection Materializations remain encrypted and rebuildable; immutable Captures and accepted Events are never edited.

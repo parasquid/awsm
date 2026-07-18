@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppStateV1 } from "../../src/app/protocol";
-import { popupView } from "../../src/ui/popup-view";
+import { popupView, recentCaptureMatchesActiveUrl } from "../../src/ui/popup-view";
 
 const base: AppStateV1 = {
   version: 1,
@@ -10,6 +10,22 @@ const base: AppStateV1 = {
 };
 
 describe("popup state model", () => {
+  it("shows a recent capture only on the same fragmentless URL", () => {
+    expect(
+      recentCaptureMatchesActiveUrl(
+        "https://example.test/page?mode=full#saved",
+        "https://example.test/page?mode=full#current",
+      ),
+    ).toBe(true);
+    expect(
+      recentCaptureMatchesActiveUrl(
+        "https://example.test/page?mode=full",
+        "https://example.test/page?mode=compact",
+      ),
+    ).toBe(false);
+    expect(recentCaptureMatchesActiveUrl("https://example.test/page", undefined)).toBe(false);
+  });
+
   it("shows onboarding before a Vault exists", () => {
     expect(popupView({ ...base, vaultExists: false, unlocked: false })).toEqual({
       screen: "onboarding",

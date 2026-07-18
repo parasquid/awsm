@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CaptureMetadataV1 } from "../../src/domain/bundle";
-import type { CapturePageCommandV1 } from "../../src/domain/contracts";
+import type { CapturePageCommandV1, LibraryItemV1 } from "../../src/domain/contracts";
 import type { AtomicRegistrationV1, CommandOutcomeV1 } from "../../src/drivers/indexeddb";
 import { CaptureHostError } from "../../src/hosts/chrome/capture";
 import {
@@ -91,10 +91,11 @@ function ports(overrides: Partial<CaptureRuntimePorts> = {}): CaptureRuntimePort
     preflight: vi.fn(async () => ({ tabId: 7, url: command.observedUrl })),
     acquireMhtml: vi.fn(async () => new TextEncoder().encode("MIME-Version: 1.0")),
     acquireScreenshot: vi.fn(async () => ({
-      pngBytes: new Uint8Array([137, 80, 78, 71]),
+      webpBytes: new Uint8Array([137, 80, 78, 71]),
       warnings: [],
     })),
     collectMetadata: vi.fn(async () => metadata),
+    collectionContext: vi.fn(async () => ({ items: [], topology: [] })),
     prepareRegistration: vi.fn(async () => registration()),
     uuid: () => fixedId(idIndex++),
     now: () => timestamp,
@@ -162,6 +163,28 @@ describe("capture Runtime job", () => {
     );
     expect(vi.mocked(fake.prepareRegistration).mock.calls[0]?.[0]).not.toHaveProperty("screenshot");
     expect(fake.commitRegistration).toHaveBeenCalledOnce();
+  });
+
+  it("records the matching stable Collection identity during registration", async () => {
+    const existing: LibraryItemV1 = {
+      version: 1,
+      bundleId: fixedId(12),
+      bundleObjectId: fixedId(13),
+      assignedCollectionId: fixedId(14),
+      title: "Earlier",
+      originalUrl: `${metadata.originalUrl}#earlier`,
+      capturedAt: "2026-07-16T16:00:00.000Z",
+      screenshotPresent: false,
+      status: "Active",
+      warnings: [],
+    };
+    const fake = ports({
+      collectionContext: vi.fn(async () => ({ items: [existing], topology: [] })),
+    });
+    await new CaptureRuntime(fake).execute(command);
+    expect(fake.prepareRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({ collectionId: existing.assignedCollectionId }),
+    );
   });
 
   it("maps an oversized Bundle to CAPTURE_TOO_LARGE and never opens the commit", async () => {

@@ -2,11 +2,11 @@
 
 **Document:** `docs/plans/02-chrome-extension-capture-vertical-slice.md`
 
-**Status:** Implemented
+**Status:** Implemented through section 15; section 16 is an approved implementation plan
 
 **Owner:** Engineering
 
-**Last Updated:** 2026-07-16
+**Last Updated:** 2026-07-18
 
 **Supersedes conflicting implementation guidance in:** existing Draft architecture and specification documents
 
@@ -24,7 +24,7 @@ The deliverable is a Chrome-only Manifest V3 extension that:
 
 1. creates and unlocks a local Vault;
 2. captures the active HTTP(S) page as mandatory MHTML;
-3. attempts a full-page PNG screenshot and records a warning if it cannot;
+3. attempts a lossy full-page WebP screenshot and records a warning if it cannot;
 4. constructs a deterministic, immutable Bundle;
 5. encrypts all sensitive persisted data locally;
 6. atomically registers the Bundle through a `BundleRegistered` Event;
@@ -246,13 +246,13 @@ Implement versioned discriminated unions rather than untyped messages.
 - extension version;
 - Capture Profile ID and version;
 - mandatory MHTML bytes;
-- optional PNG bytes; and
+- optional lossy WebP bytes; and
 - zero or more typed warnings.
 
 Initial warning identifiers:
 
 - `SCREENSHOT_UNAVAILABLE`
-- `SCREENSHOT_TOO_LARGE`
+- `SCREENSHOT_TRUNCATED`
 - `SCREENSHOT_CAPTURE_FAILED`
 - `OPTIONAL_METADATA_UNAVAILABLE`
 
@@ -400,7 +400,7 @@ Required:
 
 Best effort:
 
-- full-page PNG Artifact with Kind `IMAGE`, Role `SCREENSHOT_FULL`, and MIME type `image/png`.
+- lossy full-page WebP Artifact with Kind `IMAGE`, Role `SCREENSHOT_FULL`, and MIME type `image/webp`.
 
 The profile succeeds when MHTML and required metadata are valid. Screenshot failure produces a typed warning and no screenshot Artifact. It does not invalidate the Bundle.
 
@@ -413,7 +413,7 @@ manifest.cbor
 metadata.cbor
 artifacts/
 ├── primary.mhtml
-└── screenshot-full.png   # omitted when unavailable
+└── screenshot-full.webp  # omitted when unavailable
 ```
 
 Rules:
@@ -515,9 +515,11 @@ The content script:
 
 The background Host calls `chrome.tabs.captureVisibleTab` no faster than two calls per second. Use a minimum 600 ms interval between calls.
 
-The offscreen document stitches decoded tile images into one PNG. Create it with the narrowest applicable offscreen reason and a literal justification. Close it when no capture or image work remains.
+The offscreen document stitches transient PNG tiles and encodes one lossy WebP. Create it with the narrowest applicable offscreen reason and a literal justification. Close it when no capture or image work remains.
 
-If dimensions exceed safe canvas/browser limits, a tile fails, the tab changes, or stitching fails:
+If native-resolution dimensions exceed the 16,384-pixel canvas boundary, clamp the output at that boundary from the top-left, capture every tile intersecting the retained region, persist the valid partial WebP, and add `SCREENSHOT_TRUNCATED`. Do not scale the page.
+
+If a tile fails, the tab changes, or stitching fails:
 
 - discard all partial screenshot bytes;
 - restore the page;
@@ -621,7 +623,7 @@ Required states:
 - detail;
 - corrupted capture error.
 
-After unlock, decrypt Projection rows for the list. The detail view decrypts and validates the Bundle, displays metadata and the PNG when present, and offers an MHTML download.
+After unlock, decrypt Projection rows for the list. The detail view decrypts and validates the Bundle, displays metadata and the lossy WebP when present, and offers the high-fidelity MHTML download.
 
 MHTML handling:
 
@@ -783,7 +785,7 @@ RED:
 
 GREEN:
 
-- Implement scrolling, throttled capture, offscreen stitching, PNG creation, cleanup, and warnings.
+- Implement scrolling, throttled capture, offscreen stitching, lossy WebP encoding, cleanup, and warnings.
 
 Verify:
 
@@ -865,7 +867,7 @@ The slice is complete only when all are true:
 2. The Vault Root Key is never stored unwrapped.
 3. A user can capture a local HTTP fixture through the toolbar action.
 4. Valid MHTML is mandatory.
-5. Full-page PNG is attempted without `debugger`; failure is a visible warning, not data loss.
+5. Lossy full-page WebP is attempted without `debugger`; failure is a visible warning, not data loss.
 6. The resulting deterministic Bundle validates before encryption.
 7. Sensitive Bundle, Event, and Projection data is encrypted at rest.
 8. Registration atomically persists one Bundle Object, one `BundleRegistered` Event, one Projection row, and one command outcome.
@@ -920,6 +922,10 @@ Replace the generic persisted success message with a recent-capture card that:
 
 The preview card itself is an accessible control. Activating it marks the preview as seen and opens the immutable detail view for that exact Bundle in the Library; it must not route through the page collection or choose whichever capture is newest later.
 
+Popup closure dismissal MUST NOT depend on an asynchronous unload request from the popup document. The popup opens a named Runtime port, reports the currently visible recent-capture Job ID through it, and the background persists dismissal when that port disconnects. Explicit dismissal first clears the reported ID so disconnect remains idempotent.
+
+The preview is scoped to the active page. Before returning popup state, the background compares the Capture's original URL with the active tab's URL after removing fragments only; query parameters remain significant. A missing, invalid, or different active URL immediately persists dismissal and returns neither the preview nor a generic success notice. This prevents a previous page's preview from appearing after the user switches tabs or navigates to another address.
+
 The card is derived from the latest encrypted Projection and Bundle after Vault unlock. Title and screenshot content remain encrypted at rest. Only the opaque operational capture job stores the dismissal Boolean; it must not store title, URL, screenshot, or other decrypted capture content.
 
 Failures remain retryable alerts rather than recent-capture cards. Active capture progress remains persistent when the popup closes.
@@ -931,12 +937,15 @@ Failures remain retryable alerts rather than recent-capture cards. Active captur
 - A real-browser IndexedDB test must prove dismissal persists on the completed operational job.
 - Packaged-Chrome E2E must prove the title and thumbnail are shown, the close control is accessible, and the card remains absent after closing and reopening the popup.
 - Opening the Library must persist the same seen state before navigation, so returning to the popup cannot resurrect the preview.
+- URL-matching tests must prove fragments are ignored while query changes suppress and dismiss the stale preview.
 
 ## 14.2 Group repeated captures as page history
 
 **Added:** 2026-07-16
 
 Repeated captures of the same page remain distinct immutable Bundles and `BundleRegistered` Events. The Library must not present those archival moments as unrelated duplicate cards.
+
+Section 16 supersedes normalized URL as the identity of a collection. After section 16 is implemented, stable Collection IDs own identity and the fragmentless normalized URL described below remains only the conservative automatic-matching heuristic for new captures. Do not preserve both identity models.
 
 The Library Projection groups visible captures by normalized page URL:
 
@@ -958,7 +967,7 @@ Capture detail uses breadcrumb navigation rather than a generic back button: `Li
 
 **Added:** 2026-07-16
 
-Each grouped Library card displays the newest capture’s screenshot as a cropped visual thumbnail when the optional screenshot Artifact exists. During the same offscreen stitch operation, the Host derives a bounded 320×180 PNG from the full screenshot. The Runtime stores that PNG inside the encrypted Library Projection; it is a rebuildable Materialization, not an authoritative Bundle Artifact. No separate live-page capture, plaintext thumbnail file, Cache Storage entry, or remote asset is permitted.
+Each grouped Library card displays the newest capture’s screenshot as a cropped visual thumbnail when the optional screenshot Artifact exists. During the same offscreen stitch operation, the Host derives a bounded lossy 640×360 WebP at quality 0.78 from the full screenshot. The Runtime stores that WebP inside the encrypted Library Projection; it is a rebuildable Materialization, not an authoritative Bundle Artifact. No separate live-page capture, plaintext thumbnail file, Cache Storage entry, or remote asset is permitted.
 
 The original pre-release “Remove from Library” model has been replaced directly. Section 15 is the sole canonical deletion, restoration, Deleted, Vault Generation, and Vault Vacuum design. There is no `LibraryGroupRemoved` Event or compatibility behavior.
 
@@ -985,7 +994,7 @@ Navigation depends on the collection size:
 
 When a screenshot Artifact is absent, that capture remains accessible through its textual history entry and warning state; missing optional thumbnails must not hide a valid mandatory-MHTML capture.
 
-The thumbnails are decrypted only after Vault unlock and remain presentation data. They are bounded to 320×180 before encrypted persistence so listing a collection never decrypts or transports every full-resolution screenshot. They are not new authoritative Artifacts, plaintext persistence, synchronized state, or substitutes for the original screenshot Artifacts.
+The thumbnails are decrypted only after Vault unlock and remain presentation data. They are bounded to 640×360 before encrypted persistence so listing a collection never decrypts or transports every full-resolution screenshot. They are not new authoritative Artifacts, plaintext persistence, synchronized state, or substitutes for the original screenshot Artifacts.
 
 This is the sole canonical pre-release representation. Existing development Vaults are recreated when this format changes; there is no thumbnail migration, legacy reader, lazy conversion, or compatibility fallback before the user declares the first release.
 
@@ -994,7 +1003,7 @@ This is the sole canonical pre-release representation. Existing development Vaul
 - A focused UI-model test must fail before single-item direct routing and multi-item collection routing exist.
 - Unit tests must prove that collection layers select the actual newest capture IDs rather than repeating one capture.
 - Packaged-Chrome E2E must create two visually different versions of the same fixture and prove the collection and history each contain two distinct screenshot sources.
-- Packaged-Chrome E2E must assert that rendered Library thumbnails have natural dimensions no greater than 320×180.
+- Packaged-Chrome E2E must assert that rendered Library thumbnails have natural dimensions exactly 640×360.
 - Persistence tests must prove thumbnail bytes exist in the decrypted Projection and do not appear in plaintext storage.
 - Library failures must distinguish a locked Vault, an authenticated-record failure, and an unrelated request/transport failure rather than labeling every failure as authentication.
 
@@ -1281,3 +1290,448 @@ Implementation is complete only when:
 - no plaintext capture content or identifiers appear in diagnostics, operational Job rows, or unencrypted coordination data;
 - all verification gates pass from a clean pre-release Vault;
 - evidence records test counts, intentional RED failures, deferred synchronization coverage, and the explicit limitation that old backups/offline copies are not scrubbed.
+
+---
+
+# 16. Library Collection Curation
+
+**Added:** 2026-07-18
+
+**Status:** Approved implementation plan. This section supersedes URL-derived collection identity in section 14.2. Replace the current pre-release model directly; do not add a migration, legacy reader, fallback grouping path, or dual representation. The user has not declared the first release, so existing development Vaults may be discarded and recreated.
+
+## 16.1 Goal and user-visible vocabulary
+
+AWSM must let a user correct conservative automatic grouping without modifying any Capture or Bundle. The user can:
+
+1. merge one or more collections into an explicit destination collection;
+2. move one or more captures into an existing collection;
+3. extract one or more captures into one new collection;
+4. perform the same operations through accessible controls or drag and drop; and
+5. undo the latest successful management operation for ten seconds.
+
+Use **Collection** as the canonical name for a logical, ordered page history whose captures the user considers versions of the same resource. A Collection may span different URLs, paths, or hosts after explicit user curation. It is not a Folder, tag, mutable Bundle, container Object, or replacement for immutable capture history.
+
+A Collection has a stable opaque Collection ID, but its membership is logical state derived from authoritative Events. There is no separately editable Collection Object. A Collection exists only while at least one retained capture is assigned to its identity or to an identity that resolves to it.
+
+Use these user-facing actions consistently:
+
+- `Merge with…` combines complete Collection identities into the current or dropped-on destination.
+- `Move to collection…` reassigns selected captures to an existing destination.
+- `Extract to new collection` reassigns selected captures to one fresh Collection ID.
+- `Undo` records a compensating fact; it never deletes or edits an earlier Event.
+
+Do not call Move or Extract a copy. One retained capture belongs to exactly one effective Collection at a time.
+
+## 16.2 Fixed invariants and non-goals
+
+The implementation must preserve all of these invariants:
+
+- Bundles, Bundle IDs, capture timestamps, original URLs, screenshots, and MHTML remain byte-for-byte immutable.
+- Collection changes are accepted through Runtime Commands and recorded as encrypted authoritative Events.
+- Collection grouping, redirects, known-address lists, cards, and navigation are rebuildable Projections or Materializations.
+- A Collection ID is a canonical UUID generated with `crypto.randomUUID()` inside the trusted Runtime.
+- A merge redirects the complete source identities, including their Active and Deleted members, into one explicit destination identity.
+- Move and Extract operate on explicit Active Bundle IDs. A Deleted capture must be restored before it can be moved or extracted.
+- Automatic routing considers Active captures only. Deleted captures retain membership for Restore but do not attract a new capture.
+- The newest capture visible in the current section supplies its Collection title, thumbnail, timestamp, warning state, and primary `Visit original site` link.
+- Manual merge may combine arbitrary hosts and paths. It teaches only addresses represented by current captures; it never infers a host-wide, path-wide, or ignore-query rule.
+- Empty Collection identities are not displayed or retained merely as placeholders.
+- UI, Host, and IndexedDB Driver code do not decide membership, redirect, matching, or Undo policy.
+
+This version does not add custom Collection names, persistent operation history, Redo, direct collection management inside Deleted, URL-rule editing, scheduled recapture, synchronization UI, or a general-purpose Folder model.
+
+No new dependency is required. Continue using strict TypeScript, vanilla DOM/CSS, native drag events, Vitest, Playwright, and the existing cryptographic and serialization dependencies.
+
+## 16.3 Canonical Collection assignment and automatic routing
+
+Add `collectionId` to the canonical version-1 `BundleRegistered` Event payload. The Capture Runtime chooses it before registration and persists the same assignment in the encrypted Library item Projection. Rename the Projection field internally to `assignedCollectionId` wherever that distinction prevents confusion: assignment is the ID written by registration or Move, while the effective Collection ID is obtained after resolving non-reverted merge redirects.
+
+For a capture of URL `candidateUrl`, the Runtime performs this algorithm against the current unlocked Library Projection:
+
+1. Parse `candidateUrl` as an absolute HTTP(S) URL.
+2. Produce its matching key by removing only the fragment and serializing through `URL.href`. Preserve scheme, host, effective port, path, and query.
+3. Consider only effective Collections containing at least one Active capture.
+4. For each such Collection, derive the set of matching keys from its Active captures.
+5. Retain Collections whose key set contains the candidate key.
+6. If no Collection matches, generate a fresh Collection ID.
+7. If exactly one matches, use its effective Collection ID.
+8. If several match, select the Collection whose newest Active capture has the greatest `capturedAt` timestamp.
+9. Break an exact timestamp tie using the ascending lexical Collection ID.
+10. Put the selected ID in `BundleRegistered`; replay must never rerun this heuristic for an already accepted capture.
+
+This is intentionally conservative. For example, manually merging:
+
+```text
+https://example.test/article?foo=bar
+https://mirror.test/story
+```
+
+allows later captures of either exact fragmentless address to join the merged Collection. It does not match `?foo=baz`, `/account`, or another path merely because a host is already present.
+
+If extraction leaves the same matching key in two Active Collections, the newest Active tail wins. If the only matching Collection is wholly Deleted, the new capture receives a fresh Collection ID. Restoring the old Collection can then leave two Active Collections with the same key; the same newest-tail rule resolves later captures until the user curates them.
+
+Expose two URL representations on the Library group model:
+
+```ts
+type LibraryPageGroupV1 = {
+  collectionId: string;
+  title: string;
+  originalUrl: string;
+  knownUrls: readonly string[];
+  latest: LibraryItemV1;
+  captures: readonly LibraryItemV1[];
+};
+```
+
+`knownUrls` contains distinct exact `originalUrl` values from the captures visible in that group, ordered by the newest capture that uses each value. Do not strip fragments from display values. `originalUrl` remains the newest visible capture's exact URL and supplies the primary visit link. Matching keys are internal derived values and must not replace exact recorded URLs.
+
+Active and Deleted are separate views of the same effective Collection identities. Their `knownUrls`, `latest`, and visible capture arrays are derived independently from their respective statuses.
+
+## 16.4 Commands, accepted Events, and operation receipts
+
+Add these local Runtime Commands. Commands are decoded from `unknown`, validated before any write, and never synchronized:
+
+```ts
+type MergeCollectionsV1 = {
+  version: 1;
+  type: "MergeCollections";
+  destinationCollectionId: string;
+  sourceCollectionIds: readonly string[];
+};
+
+type MoveCapturesV1 = {
+  version: 1;
+  type: "MoveCaptures";
+  bundleIds: readonly string[];
+  destinationCollectionId: string;
+};
+
+type ExtractCapturesV1 = {
+  version: 1;
+  type: "ExtractCaptures";
+  bundleIds: readonly string[];
+};
+
+type UndoLibraryOperationV1 = {
+  version: 1;
+  type: "UndoLibraryOperation";
+  operationEventId: string;
+};
+```
+
+Successful Merge, Move, and Extract return:
+
+```ts
+type LibraryOperationReceiptV1 = {
+  version: 1;
+  operationEventId: string;
+  destinationCollectionId: string;
+};
+```
+
+The ten-second Undo window is presentation policy. The Runtime does not trust elapsed UI time; it accepts an Undo request only when the referenced operation exists, is reversible, and its affected membership or redirect state remains exactly as produced by that operation.
+
+Record accepted facts with the standard encrypted Event header plus these payloads:
+
+```ts
+type CollectionsMergedV1 = {
+  eventType: "CollectionsMerged";
+  eventVersion: 1;
+  payloadVersion: 1;
+  destinationCollectionId: string;
+  sourceCollectionIds: readonly string[];
+};
+
+type CaptureCollectionMoveV1 = {
+  bundleId: string;
+  fromCollectionId: string;
+  toCollectionId: string;
+};
+
+type CapturesMovedV1 = {
+  eventType: "CapturesMoved";
+  eventVersion: 1;
+  payloadVersion: 1;
+  moves: readonly CaptureCollectionMoveV1[];
+  revertsEventId?: string;
+};
+
+type CollectionMergeRevertedV1 = {
+  eventType: "CollectionMergeReverted";
+  eventVersion: 1;
+  payloadVersion: 1;
+  mergeEventId: string;
+};
+```
+
+Store all identifier lists in canonical ascending order. A `CapturesMoved` Event created by Move or Extract records each capture's assigned ID before the operation, not merely its effective resolved ID. This lets an inverse move restore the exact prior assignment even when redirects exist. An inverse `CapturesMoved` Event swaps every `fromCollectionId` and `toCollectionId` and sets `revertsEventId` to the original Event ID.
+
+Extract generates one new destination Collection ID and uses it for every selected capture. It does not need a distinct authoritative Event type because `CapturesMoved` completely records the accepted fact. The Command name preserves user intent at the local request boundary.
+
+Merge creates redirect facts rather than rewriting every capture assignment. This ensures a late synchronized registration that still names a merged source identity resolves into the destination. `CollectionMergeReverted` deactivates only the named merge Event; it does not mutate or remove that Event.
+
+Add stable Runtime error ID `LIBRARY_STATE_CHANGED`. Use it for stale Collection roots, an Undo whose effect is no longer current, merge-cycle attempts, and other optimistic-state conflicts. Continue using authentication, format, and storage error IDs for their existing meanings; do not encode behavior in diagnostic strings.
+
+## 16.5 Validation, replay, and deterministic conflict behavior
+
+Merge validation must:
+
+- require one destination and at least one source Collection ID;
+- reject malformed IDs, duplicate sources, or a destination repeated as a source;
+- resolve every supplied ID through the current non-reverted redirects;
+- require the destination and every source to be distinct effective Collections with at least one Active capture;
+- snapshot the resolved source and destination IDs before preparing the Event; and
+- reject the whole Command without writes if current state changed or adding a redirect would create a cycle.
+
+A merge affects every Active and Deleted capture assigned through its source identities. The UI may initiate it from Active, but Deleted members follow the identity automatically. Later Delete/Restore continues to snapshot explicit visible Bundle IDs; it never deletes or restores a Collection identity dynamically.
+
+Move validation must:
+
+- require a non-empty, duplicate-free list of explicit Bundle IDs;
+- require every selected capture to be Active and in the same effective source Collection;
+- require the destination to be a different effective Collection with an Active member; and
+- fail the whole Command if any selection or destination is stale.
+
+Extract uses the same selection rules, permits extracting every Active capture from the source, generates one fresh destination ID, and never changes Deleted captures that share the source identity. Moving or extracting the final retained member makes the empty source disappear; if Deleted members remain, the source continues to appear only under Deleted.
+
+Projection replay must be deterministic and idempotent by first accepted Event ID:
+
+1. Apply `BundleRegistered`, lifecycle Events, and `CapturesMoved` in canonical Event order to obtain assigned membership and status.
+2. Track accepted `CollectionsMerged` Events and the set named by `CollectionMergeReverted` Events.
+3. Exclude reverted merge edges and resolve remaining redirects in their canonical Event order.
+4. Recompute effective Collection IDs whenever a revert changes the redirect graph.
+5. Treat a synchronized merge edge whose endpoints already resolve to one Collection as a deterministic no-op rather than a cycle or a second merge.
+6. Reject cycles at Command time; a decoder or replay encountering malformed persisted redirect data fails authentication/format validation rather than guessing.
+7. Group captures by effective Collection ID and status, then sort captures newest first and groups by their newest visible capture.
+
+Undo behavior is exact:
+
+- Undo Move or Extract validates that every affected capture still has the `toCollectionId` assignment recorded by the original Event, then atomically appends the inverse `CapturesMoved` Event.
+- Undo Merge validates that the named merge edge is still active and has not been reverted, then atomically appends `CollectionMergeReverted`.
+- A conflicting later operation makes Undo fail with `LIBRARY_STATE_CHANGED`; no partial inverse is permitted.
+- Undo does not delete the original Event, restore an expired snackbar, or offer Redo.
+
+## 16.6 Runtime, Projection, and IndexedDB transaction boundary
+
+Keep Collection policy inside the Runtime Library Service. The Host supplies gestures and rendering; the Driver supplies atomic storage operations.
+
+Add an encrypted rebuildable Collection-state Projection containing enough accepted merge and revert information to resolve effective identities without placing plaintext URLs or titles in IndexedDB. Library item Projections retain the per-capture assigned Collection ID. A full Projection rebuild from authoritative Events must reproduce both forms exactly.
+
+Each operation uses one Runtime transaction intent:
+
+- Merge commits one encrypted `CollectionsMerged` Event and the updated encrypted Collection-state Projection.
+- Move/Extract commits one encrypted `CapturesMoved` Event, every affected encrypted item Projection, and any updated Collection-state Materialization.
+- Undo commits its compensating Event and all affected encrypted Projections.
+
+The IndexedDB Driver commits the Event, active-generation append-tail entry, and every affected Projection record in one read-write transaction while checking the existing Vault Vacuum lease. A crash exposes either the complete previous logical state or the complete accepted operation. The Driver must not infer Collection membership or inspect decrypted URLs.
+
+Extend storage decoders and canonical CBOR tests for every new persisted field and Event. Because this is pre-release, replace the schema directly and recreate the development Vault. Keep the canonical database name `awsm-vault`; IndexedDB's internal schema version changes, not the database name.
+
+Update the application protocol with typed requests and `LibraryOperationReceiptV1`. The background handler delegates validation and Event preparation to the Runtime and maps `LIBRARY_STATE_CHANGED` without leaking decrypted content into logs or operational rows.
+
+## 16.7 Library interaction design
+
+Do not add a global Manage mode. Use context actions and pickers as the complete accessible workflow, with drag and drop as a faster equivalent.
+
+### Merge workflow
+
+Every Active Collection card and Collection-history view exposes `Merge with…`. Activating it opens an accessible picker in which:
+
+- the current Collection is the fixed destination;
+- one or more other Active Collections can be selected as sources;
+- each candidate shows its current title, front thumbnail when available, Active capture count, and Deleted capture count;
+- the submit label names the destination and selected source count; and
+- submitting acts immediately without a confirmation dialog.
+
+A Collection card is draggable. Dropping source card A onto card B sends `MergeCollections` with B as the explicit destination. The drop target always wins, even when A has the newer capture. Cards already resolving to one effective identity are not valid drop pairs. While dragging, visual and live-region feedback must identify the source, destination, and whether hidden Deleted captures are included.
+
+Only the floating drag ghost is slightly rotated and translucent; the stationary Library card is not rotated. The ghost preserves the pointer's exact position relative to the source element and rotates around that grabbed point, so the same visible area remains under the cursor. Eligible merge destinations receive a distinct highlight only while targeted.
+
+### Move and Extract workflow
+
+Collection history adds standard selection controls to each Active capture row. Selection must not interfere with the control that opens capture detail.
+
+- `Move to collection…` opens an accessible destination picker containing every other Active effective Collection with title, thumbnail, and count.
+- `Extract to new collection` is enabled for any non-empty selection and creates exactly one destination.
+- Capture detail exposes the same actions for its single Bundle ID.
+- Acting is immediate and has no confirmation dialog.
+
+Capture rows are draggable. Beginning a capture drag reveals a destination tray containing other Active Collections and `New collection`. Dragging an already selected row moves or extracts the entire current selection; dragging an unselected row acts on that one capture. Dropping on an existing Collection performs Move; dropping on `New collection` performs Extract. The source Collection and Deleted-only Collections are not valid destinations.
+
+Use native browser drag facilities and pure UI-model helpers. Do not add a drag library. Every drag operation must have the picker/button equivalent, visible focus, keyboard operation, meaningful labels, and live-region announcements. Do not rely on position, color, thumbnails, or pointer input alone.
+
+### Completion and Undo
+
+After a successful operation, rerender Library state and show one non-modal snackbar containing a concise result and `Undo` button for exactly 10,000 milliseconds.
+
+- Only the latest management operation has a snackbar. Starting another successful operation replaces the prior snackbar and timer.
+- Closing or reloading the Library tab discards the snackbar; there is no persistent operation panel.
+- Undo sends `UndoLibraryOperation` with the receipt's Event ID, disables the control while pending, and replaces the snackbar with a short `Undone` status on success.
+- Do not offer Redo.
+- If Undo fails because state changed, announce that the Library changed, dismiss the stale action, refresh from the authoritative Projection, and preserve all accepted Events.
+
+### Collection display and navigation
+
+Cards remain concise: show the newest visible capture's title, exact URL, thumbnail stack, timestamp, and count. Collection history adds a collapsed `Known addresses` disclosure listing `knownUrls` newest first. The primary `Visit original site` link continues to use only the newest visible capture's exact URL; individual detail continues to use that capture's own exact URL.
+
+Use stable Collection IDs for Collection navigation and breadcrumbs. Direct popup links still target an exact Bundle ID, after which the Library resolves its current effective Collection. A one-capture Collection still opens detail directly; a multi-capture Collection opens history.
+
+## 16.8 Deleted, Vault Vacuum, and synchronization boundaries
+
+Deleted remains a collapsed section below Library. It displays grouping by effective Collection ID but offers only Restore, detail, download, and Vault Vacuum. It does not offer Merge, Move, Extract, drag sources, or drag destinations.
+
+Merging Active Collections also unifies their Deleted members because redirect resolution is status-independent. Surface those counts in the Merge picker and drag announcement. Restoring a capture after a merge places it in the merged effective Collection. Undoing that merge restores each capture's original identity assignment unless a later conflicting operation makes Undo invalid.
+
+Extend Vault Vacuum's registered dependency enumeration and rewrite handlers for:
+
+- the `collectionId` carried by `BundleRegistered`;
+- `CollectionsMerged` source and destination identities;
+- `CapturesMoved` Bundle and Collection references;
+- `CollectionMergeReverted` references to merge Events; and
+- the encrypted Collection-state Projection.
+
+Vacuum may omit a management Event that concerns only reclaimed captures or identities with no retained members. A mixed `CapturesMoved` Event must be rewritten under a new Event ID with only retained moves. Merge and revert facts must be retained or rewritten whenever they affect a retained capture's effective identity. Vacuum verification must prove that every pre-Vacuum Active Bundle remains Active in the same effective Collection and that Deleted is empty. Unknown management Events or dependencies abort before activation.
+
+Remote synchronization remains deferred in the browser slice, but reducer contract tests must cover late Events: a late `BundleRegistered` naming a merged source resolves into the destination; a reverted merge restores that source identity; duplicate Event IDs remain idempotent; and every peer using the same canonical Event order converges. Do not claim network E2E coverage that does not exist.
+
+## 16.9 Cold-start implementation order
+
+An implementer starting without session context must first read, in order:
+
+1. `AGENTS.md`;
+2. this entire plan, especially sections 2, 14.2, 15, and 16;
+3. `docs/architecture/00-design-principles.md` and `docs/architecture/glossary.md`;
+4. the Event, Command, Vault, Runtime Capture, Projection, storage, and Vault Vacuum specifications;
+5. `docs/architecture/19-testing-strategy.md` and `docs/architecture/21-vault-history-rewrite.md`; and
+6. the current extension implementation and tests before assuming the paths below still exist.
+
+Work as one agent. Do not spawn or delegate to subagents. Preserve unrelated user changes and inspect `git status --short` before editing.
+
+Implement in this order, never skipping the failing-test step:
+
+1. **Pure model RED:** add failing tests for Collection assignment, URL matching, redirect/revert resolution, Move/Extract membership, deterministic grouping, and Undo preconditions.
+2. **Domain GREEN:** add canonical types, decoders, pure reducers, matching functions, and explicit error results. Do not touch DOM or IndexedDB policy yet.
+3. **Event preparation RED/GREEN:** add failing encryption and canonical-CBOR tests, then implement Merge, Move, Extract, and compensating Event preparation in the Runtime.
+4. **Driver RED/GREEN:** add real-browser transaction tests, then implement atomic Event/Projection commits and schema replacement.
+5. **Capture routing RED/GREEN:** prove query/fragment and ambiguous-match behavior before adding Collection assignment to `BundleRegistered` and capture registration.
+6. **Protocol/background RED/GREEN:** add typed request/response tests, then wire background handlers only to Runtime public interfaces.
+7. **UI-model RED/GREEN:** test picker eligibility, selection, drop interpretation, known-address ordering, snackbar replacement, and destination choice as pure functions before DOM wiring.
+8. **Packaged-Chrome RED/GREEN:** implement context workflows, native drag and drop, accessibility, navigation, and Undo against real packaged Chrome.
+9. **Vacuum RED/GREEN:** add rewrite, failure, and retained-state tests before extending dependency handlers and successor verification.
+10. **Documentation reconciliation:** add `Collection` to the glossary; create `docs/specifications/vault/collection.md` as the formal owner of identity, membership, routing, replay, and invariants; reconcile every Event, Capture, Projection, synchronization, Vacuum, and testing consumer. Remove stale statements that normalized URL is the Collection identity.
+11. **Refactor and verify:** remove superseded URL-key identity fields and branches, run every gate, inspect the release build, and record the complete Section 16 RED/GREEN evidence in `02-chrome-extension-capture-vertical-slice-tdd-evidence.md`.
+
+Likely implementation areas are `apps/browser-extension/src/runtime/library/`, `apps/browser-extension/src/app/`, `apps/browser-extension/src/drivers/indexeddb/`, `apps/browser-extension/entrypoints/library/`, and the corresponding unit, integration, and E2E suites. Search before editing; filenames are not architectural boundaries.
+
+## 16.10 Mandatory TDD scenarios
+
+Use strict RED → GREEN → REFACTOR for every bullet. Record the focused failing command, expected failure reason, focused passing command, and final full-suite result in the evidence document.
+
+### Phase A: identity, matching, and replay
+
+Write failing tests proving:
+
+- every registration receives one valid Collection ID;
+- fragments do not split automatic matching, while a different query or path does;
+- a cross-host merge matches each exact known fragmentless URL but no other URL on either host;
+- no Active match creates a fresh ID;
+- one match reuses its effective ID;
+- multiple matches select the newest Active tail and use ascending Collection ID for a timestamp tie;
+- Deleted-only matches are ignored;
+- URL display preserves exact original values and orders distinct `knownUrls` by newest use;
+- redirect chains resolve deterministically and a late source registration joins the destination;
+- a named revert removes only its merge edge;
+- duplicate Event IDs are idempotent; and
+- malformed IDs, redirect cycles, and unsupported versions fail closed.
+
+### Phase B: Merge, Move, Extract, and Undo
+
+Write failing Runtime tests proving:
+
+- an explicit merge destination survives regardless of which source has the newest capture;
+- merge unifies every source's Active and Deleted members;
+- merge rejects missing, duplicate, already-unified, stale, or cyclic input without a write;
+- Move supports one or many Active captures and preserves exclusive membership;
+- Move rejects a Deleted capture, mixed effective sources, the current source as destination, or a stale destination atomically;
+- Extract creates exactly one fresh Collection for the complete selection;
+- extracting all Active captures removes the source from Library while preserving any Deleted portion;
+- Move/Extract Events retain exact prior assigned IDs through redirect chains;
+- Undo Move/Extract appends one inverse Event and restores exact assignments;
+- Undo Merge appends `CollectionMergeReverted` and restores source identities;
+- a conflicting later operation makes Undo fail with `LIBRARY_STATE_CHANGED` and changes nothing; and
+- original Events and immutable Bundle Objects remain present after every operation and Undo.
+
+### Phase C: storage and crash atomicity
+
+Write failing real-browser IndexedDB tests proving:
+
+- Merge commits its Event, append-tail entry, and Collection Projection atomically;
+- Move/Extract/Undo commit their Event and every affected item Projection atomically;
+- forced failure at each transaction boundary leaves the entire old state visible;
+- a Vacuum lease blocks every management write retryably;
+- clearing Projections and replaying Events rebuilds identical Collection membership and redirects;
+- encrypted Projection rows authenticate before plaintext is returned; and
+- no Collection URL, title, Bundle ID, or other decrypted identifier is written to diagnostics or unencrypted operational Job state.
+
+### Phase D: Library UI and accessibility
+
+Write failing UI-model and packaged-Chrome tests proving:
+
+- `Merge with…` exposes an explicit destination and multi-source selection with Active/Deleted counts;
+- no Merge, Move, or Extract confirmation dialog appears;
+- dropping A onto B sends B as destination and includes A's whole identity;
+- a single unselected capture drag moves only that capture;
+- dragging a selected capture moves the complete selection;
+- dropping captures on `New collection` extracts them together;
+- pickers and keyboard controls perform every drag action without pointer input;
+- invalid targets are unavailable and no-op drops write no Event;
+- the latest successful operation shows one 10-second Undo snackbar;
+- a later operation replaces the earlier snackbar and Undo target;
+- successful Undo announces completion and offers no Redo;
+- stale Undo announces failure, refreshes state, and loses no accepted work;
+- Collection history shows a collapsed newest-first Known addresses disclosure;
+- Active and Deleted use their respective newest visible captures for the primary visit link; and
+- breadcrumbs and popup-to-Bundle navigation resolve the current effective Collection after Move, Merge, Extract, and Undo.
+
+Do not make timing tests flaky: isolate the 10,000 ms presentation timer behind an injected clock or pure timer state for unit tests, then use one packaged-browser assertion for actual visibility and dismissal.
+
+### Phase E: deletion, Vacuum, and convergence
+
+Write failing tests proving:
+
+- Delete/Restore preserves assigned identity and resolves current merge redirects;
+- an entirely Deleted matching Collection does not receive a new capture;
+- restoring it can produce two matching Active Collections and newest-tail routing remains deterministic;
+- Vacuum preserves every retained capture's effective Collection membership;
+- management Events concerning only reclaimed captures are omitted safely;
+- mixed Move Events are rewritten with new IDs and retained assignments;
+- required merge/revert facts remain reachable;
+- unknown management dependencies abort before activation;
+- a late registration naming a merged source converges into the destination; and
+- replaying the same canonical Event sequence produces identical Collection groups on every replica fixture.
+
+## 16.11 Completion criteria
+
+Implementation is complete only when:
+
+- normalized URL is no longer used as Collection identity anywhere in code, tests, or current documentation;
+- every retained capture has one assigned Collection ID and one effective Collection;
+- exact conservative automatic routing and all tie-breakers match section 16.3;
+- Merge, Move, Extract, native drag and drop, and ten-second additive Undo work offline;
+- all management writes are atomic, encrypted, replayable, and compatible with Vault Vacuum;
+- Deleted remains restorable and unmanaged except through Restore/Delete/Vacuum lifecycle actions;
+- arbitrary cross-host merges preserve every exact current address without inferring broad URL rules;
+- no new runtime dependency, migration, legacy reader, dual-write path, or compatibility fallback exists;
+- glossary and formal specifications are reconciled with the implemented canonical model;
+- the evidence document contains intentional RED and final GREEN records for Section 16; and
+- all discovered verification gates pass from a clean pre-release Vault:
+
+```bash
+cd apps/browser-extension
+corepack pnpm lint
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm test:integration
+corepack pnpm test:e2e
+corepack pnpm build
+```

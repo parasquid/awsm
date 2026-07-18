@@ -77,6 +77,8 @@ Examples:
 
 Archive Projection
 
+Library Collection Projection
+
 Folder Projection
 
 Timeline Projection
@@ -90,6 +92,8 @@ AI Projection
 Plugin Projection
 
 Each Projection has independent lifecycle management.
+
+The Library Collection Projection derives assigned and effective Collection membership, merge redirects, Active/Deleted membership, known URLs, and tail selection from immutable Events. Its item rows and Collection-state Materialization are encrypted and disposable. Rebuilding from the same Event order MUST reproduce equivalent Collection topology.
 
 ---
 

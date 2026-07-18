@@ -156,6 +156,12 @@ CapturesDeleted
 
 CapturesRestored
 
+CollectionsMerged
+
+CapturesMoved
+
+CollectionMergeReverted
+
 TagAdded
 
 TagRemoved

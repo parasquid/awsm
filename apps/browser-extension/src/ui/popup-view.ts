@@ -1,6 +1,22 @@
 import type { AppStateV1, RecentCaptureV1 } from "../app/protocol";
 import type { RuntimeErrorId } from "../domain/contracts";
 
+export function recentCaptureMatchesActiveUrl(
+  capturedUrl: string,
+  activeUrl: string | undefined,
+): boolean {
+  if (activeUrl === undefined) return false;
+  try {
+    const captured = new URL(capturedUrl);
+    const active = new URL(activeUrl);
+    captured.hash = "";
+    active.hash = "";
+    return captured.href === active.href;
+  } catch {
+    return false;
+  }
+}
+
 export type PopupView =
   | { readonly screen: "onboarding" }
   | { readonly screen: "locked"; readonly passphraseAvailable: boolean }

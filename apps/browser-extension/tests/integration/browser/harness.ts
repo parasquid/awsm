@@ -472,6 +472,51 @@ async function vacuumLeaseScenario(): Promise<unknown> {
   return result;
 }
 
+async function collectionOperationScenario(): Promise<unknown> {
+  const driver = new IndexedDbDriver(`awsm-integration-${crypto.randomUUID()}`);
+  await seedHead(driver);
+  const first = registration(1);
+  const second = registration(2);
+  await driver.commitRegistration(first);
+  await driver.commitRegistration(second);
+  const event = {
+    version: 1 as const,
+    eventId: id("850"),
+    objectId: first.object.objectId,
+    orderingTimestamp: "2026-07-18T12:00:00.000Z",
+    envelopeBytes: new Uint8Array([8, 5, 0]),
+  };
+  await driver.commitCollectionOperation({
+    event,
+    projections: [
+      {
+        version: 1,
+        bundleId: first.projection.bundleId,
+        envelopeBytes: new Uint8Array([8, 5, 1]),
+      },
+    ],
+    collectionProjection: {
+      version: 1,
+      projectionId: id("992"),
+      envelopeBytes: new Uint8Array([8, 5, 2]),
+    },
+  });
+  const rebuiltTopology = {
+    version: 1 as const,
+    projectionId: id("992"),
+    envelopeBytes: new Uint8Array([9, 9, 2]),
+  };
+  await driver.clearLibraryProjection();
+  await driver.replaceLibraryProjections([first.projection, second.projection], rebuiltTopology);
+  const result = {
+    counts: await driver.counts(),
+    topologyStored: (await driver.getCollectionProjection())?.projectionId,
+    appendedEvents: (await driver.getVaultHead())?.appendedEventIds.length,
+  };
+  await driver.deleteDatabase();
+  return result;
+}
+
 async function run(): Promise<void> {
   const scenario = new URL(location.href).searchParams.get("scenario");
   const result =
@@ -497,7 +542,9 @@ async function run(): Promise<void> {
                         ? await vacuumCasConflictScenario()
                         : scenario === "vacuum-lease"
                           ? await vacuumLeaseScenario()
-                          : { error: "unknown scenario" };
+                          : scenario === "collection-operation"
+                            ? await collectionOperationScenario()
+                            : { error: "unknown scenario" };
   const output = document.querySelector("#result");
   if (output !== null) {
     output.textContent = JSON.stringify(result);

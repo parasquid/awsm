@@ -1,6 +1,6 @@
 export const CAPTURE_WARNINGS = [
   "SCREENSHOT_UNAVAILABLE",
-  "SCREENSHOT_TOO_LARGE",
+  "SCREENSHOT_TRUNCATED",
   "SCREENSHOT_CAPTURE_FAILED",
   "OPTIONAL_METADATA_UNAVAILABLE",
 ] as const;
@@ -20,6 +20,7 @@ export const RUNTIME_ERROR_IDS = [
   "UNSUPPORTED_FORMAT_VERSION",
   "STORAGE_TRANSACTION_FAILED",
   "WRONG_PASSPHRASE",
+  "LIBRARY_STATE_CHANGED",
 ] as const;
 
 export type RuntimeErrorId = (typeof RUNTIME_ERROR_IDS)[number];
@@ -85,12 +86,13 @@ export interface LibraryItemV1 {
   readonly version: 1;
   readonly bundleId: string;
   readonly bundleObjectId: string;
+  readonly assignedCollectionId: string;
   readonly title: string;
   readonly originalUrl: string;
   readonly capturedAt: string;
   readonly screenshotPresent: boolean;
   readonly status: "Active" | "Deleted";
-  readonly thumbnailPng?: Uint8Array;
+  readonly thumbnailWebp?: Uint8Array;
   readonly warnings: readonly CaptureWarningId[];
 }
 

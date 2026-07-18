@@ -4,12 +4,14 @@ import type {
   CaptureJobV1,
   CapturePageCommandV1,
   CaptureWarningId,
+  LibraryItemV1,
   RuntimeErrorId,
 } from "../../domain/contracts";
 import { decodeCapturePageCommand } from "../../domain/decode-command";
 import type { AtomicRegistrationV1, CommandOutcomeV1 } from "../../drivers/indexeddb";
 import type { CapturePreflight } from "../../hosts/chrome/capture";
 import type { ScreenshotResult } from "../../hosts/chrome/screenshot";
+import { type CollectionTopologyEventV1, selectCollectionForCapture } from "../library/collections";
 import { type PrepareCaptureRegistrationInput, prepareCaptureRegistration } from "./registration";
 
 export class CaptureRuntimeError extends Error {
@@ -38,6 +40,10 @@ export interface CaptureRuntimePorts {
     command: CapturePageCommandV1,
     preflight: CapturePreflight,
   ): Promise<CaptureMetadataV1>;
+  collectionContext(): Promise<{
+    readonly items: readonly LibraryItemV1[];
+    readonly topology: readonly CollectionTopologyEventV1[];
+  }>;
   prepareRegistration(input: PrepareCaptureRegistrationInput): Promise<AtomicRegistrationV1>;
   uuid(): string;
   now(): string;
@@ -96,6 +102,7 @@ export class CaptureRuntime {
       await saveRunning("Screenshot");
       const screenshot = await this.ports.acquireScreenshot(preflight.tabId);
       const metadata = await this.ports.collectMetadata(command, preflight);
+      const collectionContext = await this.ports.collectionContext();
       const capturedAt = metadata.capturedAt;
       const warnings: readonly CaptureWarningId[] = screenshot.warnings;
       await saveRunning("Commit");
@@ -107,13 +114,19 @@ export class CaptureRuntime {
         bundleId: this.ports.uuid(),
         bundleObjectId: this.ports.uuid(),
         eventId: this.ports.uuid(),
+        collectionId: selectCollectionForCapture(
+          collectionContext.items,
+          collectionContext.topology,
+          metadata.originalUrl,
+          () => this.ports.uuid(),
+        ),
         capturedAt,
         metadata,
         mhtml,
-        ...(screenshot.pngBytes === undefined ? {} : { screenshot: screenshot.pngBytes }),
-        ...(screenshot.thumbnailPngBytes === undefined
+        ...(screenshot.webpBytes === undefined ? {} : { screenshot: screenshot.webpBytes }),
+        ...(screenshot.thumbnailWebpBytes === undefined
           ? {}
-          : { thumbnailPng: screenshot.thumbnailPngBytes }),
+          : { thumbnailWebp: screenshot.thumbnailWebpBytes }),
         warnings,
         clientVersion: this.ports.clientVersion,
       });

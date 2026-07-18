@@ -30,6 +30,7 @@ export interface ScreenshotTile {
 export interface ScreenshotPlan {
   readonly outputWidth: number;
   readonly outputHeight: number;
+  readonly truncated: boolean;
   readonly tiles: readonly ScreenshotTile[];
 }
 
@@ -49,17 +50,15 @@ export interface ScreenshotHost {
 }
 
 export interface ScreenshotResult {
-  readonly pngBytes?: Uint8Array;
-  readonly thumbnailPngBytes?: Uint8Array;
+  readonly webpBytes?: Uint8Array;
+  readonly thumbnailWebpBytes?: Uint8Array;
   readonly warnings: readonly CaptureWarningId[];
 }
 
 export interface StitchedScreenshot {
-  readonly pngBytes: Uint8Array;
-  readonly thumbnailPngBytes?: Uint8Array;
+  readonly webpBytes: Uint8Array;
+  readonly thumbnailWebpBytes?: Uint8Array;
 }
-
-class ScreenshotTooLargeError extends Error {}
 
 function positiveFinite(value: number): boolean {
   return Number.isFinite(value) && value > 0;
@@ -75,21 +74,28 @@ export function computeTilePlan(dimensions: PageDimensions): ScreenshotPlan {
   ];
   if (!values.every(positiveFinite)) throw new Error("invalid screenshot dimensions");
 
-  const outputWidth = Math.round(dimensions.documentWidth * dimensions.devicePixelRatio);
-  const outputHeight = Math.round(dimensions.documentHeight * dimensions.devicePixelRatio);
-  if (outputWidth > MAX_CANVAS_DIMENSION || outputHeight > MAX_CANVAS_DIMENSION) {
-    throw new ScreenshotTooLargeError("page exceeds safe screenshot dimensions");
-  }
+  const fullWidth = Math.round(dimensions.documentWidth * dimensions.devicePixelRatio);
+  const fullHeight = Math.round(dimensions.documentHeight * dimensions.devicePixelRatio);
+  const outputWidth = Math.min(fullWidth, MAX_CANVAS_DIMENSION);
+  const outputHeight = Math.min(fullHeight, MAX_CANVAS_DIMENSION);
+  const truncated = outputWidth < fullWidth || outputHeight < fullHeight;
 
   const tiles: ScreenshotTile[] = [];
   for (let y = 0; y < dimensions.documentHeight; y += dimensions.viewportHeight) {
     for (let x = 0; x < dimensions.documentWidth; x += dimensions.viewportWidth) {
-      const width = Math.min(dimensions.viewportWidth, dimensions.documentWidth - x);
-      const height = Math.min(dimensions.viewportHeight, dimensions.documentHeight - y);
       const pixelX = Math.round(x * dimensions.devicePixelRatio);
       const pixelY = Math.round(y * dimensions.devicePixelRatio);
-      const pixelRight = Math.round((x + width) * dimensions.devicePixelRatio);
-      const pixelBottom = Math.round((y + height) * dimensions.devicePixelRatio);
+      if (pixelX >= outputWidth || pixelY >= outputHeight) continue;
+      const width = Math.min(dimensions.viewportWidth, dimensions.documentWidth - x);
+      const height = Math.min(dimensions.viewportHeight, dimensions.documentHeight - y);
+      const pixelRight = Math.min(
+        outputWidth,
+        Math.round((x + width) * dimensions.devicePixelRatio),
+      );
+      const pixelBottom = Math.min(
+        outputHeight,
+        Math.round((y + height) * dimensions.devicePixelRatio),
+      );
       const scrollX = Math.min(x, Math.max(0, dimensions.documentWidth - dimensions.viewportWidth));
       const scrollY = Math.min(
         y,
@@ -112,7 +118,7 @@ export function computeTilePlan(dimensions: PageDimensions): ScreenshotPlan {
       });
     }
   }
-  return { outputWidth, outputHeight, tiles };
+  return { outputWidth, outputHeight, truncated, tiles };
 }
 
 export async function acquireBestEffortScreenshot(host: ScreenshotHost): Promise<ScreenshotResult> {
@@ -136,10 +142,9 @@ export async function acquireBestEffortScreenshot(host: ScreenshotHost): Promise
     }
     stage = "stitch";
     const stitched = await host.stitch(plan, captured);
-    if (stitched.pngBytes.byteLength === 0) throw new Error("empty screenshot");
-    return { ...stitched, warnings: [] };
-  } catch (error) {
-    if (error instanceof ScreenshotTooLargeError) return { warnings: ["SCREENSHOT_TOO_LARGE"] };
+    if (stitched.webpBytes.byteLength === 0) throw new Error("empty screenshot");
+    return { ...stitched, warnings: plan.truncated ? ["SCREENSHOT_TRUNCATED"] : [] };
+  } catch {
     return {
       warnings: [stage === "measure" ? "SCREENSHOT_UNAVAILABLE" : "SCREENSHOT_CAPTURE_FAILED"],
     };

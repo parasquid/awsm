@@ -5,11 +5,12 @@ export interface BundleRegisteredProjectionEventV1 {
   readonly eventType: "BundleRegistered";
   readonly bundleId: string;
   readonly bundleObjectId: string;
+  readonly collectionId: string;
   readonly title: string;
   readonly originalUrl: string;
   readonly capturedAt: string;
   readonly screenshotPresent: boolean;
-  readonly thumbnailPng?: Uint8Array;
+  readonly thumbnailWebp?: Uint8Array;
   readonly warnings: readonly CaptureWarningId[];
 }
 
@@ -25,10 +26,21 @@ export interface CapturesRestoredProjectionEventV1 {
   readonly bundleIds: readonly string[];
 }
 
+export interface CapturesMovedProjectionEventV1 {
+  readonly eventId: string;
+  readonly eventType: "CapturesMoved";
+  readonly moves: readonly {
+    readonly bundleId: string;
+    readonly fromCollectionId: string;
+    readonly toCollectionId: string;
+  }[];
+}
+
 export type LibraryProjectionEventV1 =
   | BundleRegisteredProjectionEventV1
   | CapturesDeletedProjectionEventV1
-  | CapturesRestoredProjectionEventV1;
+  | CapturesRestoredProjectionEventV1
+  | CapturesMovedProjectionEventV1;
 
 export function reduceLibraryProjection(
   events: readonly LibraryProjectionEventV1[],
@@ -46,17 +58,26 @@ export function reduceLibraryProjection(
       }
       continue;
     }
+    if (event.eventType === "CapturesMoved") {
+      for (const move of event.moves) {
+        const item = items.get(move.bundleId);
+        if (item?.assignedCollectionId !== move.fromCollectionId) continue;
+        items.set(move.bundleId, { ...item, assignedCollectionId: move.toCollectionId });
+      }
+      continue;
+    }
     if (items.has(event.bundleId)) continue;
     items.set(event.bundleId, {
       version: 1,
       bundleId: event.bundleId,
       bundleObjectId: event.bundleObjectId,
+      assignedCollectionId: event.collectionId,
       title: event.title,
       originalUrl: event.originalUrl,
       capturedAt: event.capturedAt,
       screenshotPresent: event.screenshotPresent,
       status: "Active",
-      ...(event.thumbnailPng === undefined ? {} : { thumbnailPng: event.thumbnailPng }),
+      ...(event.thumbnailWebp === undefined ? {} : { thumbnailWebp: event.thumbnailWebp }),
       warnings: event.warnings,
     });
   }

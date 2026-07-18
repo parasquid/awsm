@@ -9,6 +9,7 @@ import { DomainValidationError } from "../../domain/errors";
 import { boolean, bytes, integer, literal, record, timestamp, uuid } from "../../domain/validation";
 import type {
   CommandOutcomeV1,
+  StoredCollectionProjectionV1,
   StoredEventV1,
   StoredObjectType,
   StoredObjectV1,
@@ -68,6 +69,15 @@ export function decodeStoredProjection(value: unknown): StoredProjectionV1 {
     version: literal(input.version, 1, "projection.version"),
     bundleId: uuid(input.bundleId, "projection.bundleId"),
     envelopeBytes: bytes(input.envelopeBytes, undefined, "projection.envelopeBytes"),
+  };
+}
+
+export function decodeStoredCollectionProjection(value: unknown): StoredCollectionProjectionV1 {
+  const input = record(value, "collectionProjection");
+  return {
+    version: literal(input.version, 1, "collectionProjection.version"),
+    projectionId: uuid(input.projectionId, "collectionProjection.projectionId"),
+    envelopeBytes: bytes(input.envelopeBytes, undefined, "collectionProjection.envelopeBytes"),
   };
 }
 

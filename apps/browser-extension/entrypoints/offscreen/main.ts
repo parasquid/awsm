@@ -1,6 +1,9 @@
 import { browser } from "wxt/browser";
 import type { ScreenshotPlan, ScreenshotTile } from "../../src/hosts/chrome/screenshot";
 
+const SCREENSHOT_WEBP_QUALITY = 0.72;
+const THUMBNAIL_WEBP_QUALITY = 0.78;
+
 interface SerializedTile {
   readonly geometry: ScreenshotTile;
   readonly imageBase64: string;
@@ -41,8 +44,8 @@ async function thumbnailBlob(
   sourceWidth: number,
   sourceHeight: number,
 ): Promise<Blob> {
-  const width = 320;
-  const height = 180;
+  const width = 640;
+  const height = 360;
   const targetRatio = width / height;
   const sourceRatio = sourceWidth / sourceHeight;
   const cropWidth = sourceRatio > targetRatio ? sourceHeight * targetRatio : sourceWidth;
@@ -52,7 +55,7 @@ async function thumbnailBlob(
   const context = canvas.getContext("2d");
   if (context === null) throw new Error("A thumbnail canvas is unavailable.");
   context.drawImage(source, sourceX, 0, cropWidth, cropHeight, 0, 0, width, height);
-  return canvas.convertToBlob({ type: "image/png" });
+  return canvas.convertToBlob({ type: "image/webp", quality: THUMBNAIL_WEBP_QUALITY });
 }
 
 async function blobBase64(blob: Blob): Promise<string> {
@@ -61,7 +64,7 @@ async function blobBase64(blob: Blob): Promise<string> {
 
 async function stitch(
   request: StitchRequest,
-): Promise<{ readonly pngBase64: string; readonly thumbnailBase64: string }> {
+): Promise<{ readonly webpBase64: string; readonly thumbnailBase64: string }> {
   const canvas = new OffscreenCanvas(request.plan.outputWidth, request.plan.outputHeight);
   const context = canvas.getContext("2d");
   if (context === null) throw new Error("A 2D canvas is unavailable.");
@@ -86,9 +89,9 @@ async function stitch(
       bitmap.close();
     }
   }
-  const blob = await canvas.convertToBlob({ type: "image/png" });
+  const blob = await canvas.convertToBlob({ type: "image/webp", quality: SCREENSHOT_WEBP_QUALITY });
   const thumbnail = await thumbnailBlob(canvas, canvas.width, canvas.height);
-  return { pngBase64: await blobBase64(blob), thumbnailBase64: await blobBase64(thumbnail) };
+  return { webpBase64: await blobBase64(blob), thumbnailBase64: await blobBase64(thumbnail) };
 }
 
 browser.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {

@@ -8,6 +8,7 @@ export type {
   AtomicRegistrationV1,
   CommandOutcomeV1,
   StoreCounts,
+  StoredCollectionProjectionV1,
   StoredEventV1,
   StoredObjectType,
   StoredObjectV1,

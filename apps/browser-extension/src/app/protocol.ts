@@ -17,6 +17,24 @@ export type AppRequestV1 =
   | { readonly version: 1; readonly type: "ListDeleted" }
   | { readonly version: 1; readonly type: "DeleteCaptures"; readonly bundleIds: readonly string[] }
   | { readonly version: 1; readonly type: "RestoreCaptures"; readonly bundleIds: readonly string[] }
+  | {
+      readonly version: 1;
+      readonly type: "MergeCollections";
+      readonly destinationCollectionId: string;
+      readonly sourceCollectionIds: readonly string[];
+    }
+  | {
+      readonly version: 1;
+      readonly type: "MoveCaptures";
+      readonly bundleIds: readonly string[];
+      readonly destinationCollectionId: string;
+    }
+  | { readonly version: 1; readonly type: "ExtractCaptures"; readonly bundleIds: readonly string[] }
+  | {
+      readonly version: 1;
+      readonly type: "UndoLibraryOperation";
+      readonly operationEventId: string;
+    }
   | { readonly version: 1; readonly type: "VacuumVault" }
   | { readonly version: 1; readonly type: "GetVacuumEstimate" }
   | { readonly version: 1; readonly type: "GetLibraryDetail"; readonly bundleId: string };
@@ -47,9 +65,10 @@ export interface LibraryDetailMessageV1 {
 }
 
 export interface LibraryPageGroupMessageV1 {
-  readonly pageKey: string;
+  readonly collectionId: string;
   readonly title: string;
   readonly originalUrl: string;
+  readonly knownUrls: readonly string[];
   readonly latest: LibraryItemV1;
   readonly captures: readonly LibraryItemV1[];
   readonly captureThumbnails: readonly LibraryCaptureThumbnailV1[];
@@ -60,10 +79,17 @@ export interface LibraryCaptureThumbnailV1 {
   readonly thumbnailBase64?: string;
 }
 
+export interface LibraryOperationReceiptV1 {
+  readonly version: 1;
+  readonly operationEventId: string;
+  readonly destinationCollectionId: string;
+}
+
 export type AppValueV1 =
   | AppStateV1
   | readonly LibraryPageGroupMessageV1[]
   | LibraryDetailMessageV1
+  | LibraryOperationReceiptV1
   | { readonly bundleId: string }
   | { readonly version: 1; readonly deletedCaptureCount: number; readonly reclaimedBytes: number }
   | { readonly version: 1; readonly deletedCaptureCount: number; readonly reclaimableBytes: number }

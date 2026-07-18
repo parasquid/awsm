@@ -2,11 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { CaptureMetadataV1 } from "../../src/domain/bundle";
 import type { StoredObjectV1, StoredProjectionV1 } from "../../src/drivers/indexeddb";
 import { prepareCaptureRegistration } from "../../src/runtime/capture/registration";
-import {
-  groupLibraryItems,
-  type LibraryRepository,
-  LibraryService,
-} from "../../src/runtime/library/service";
+import { groupCollectionItems } from "../../src/runtime/library/collections";
+import { type LibraryRepository, LibraryService } from "../../src/runtime/library/service";
 
 const id = (suffix: number): string =>
   `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
@@ -42,11 +39,12 @@ async function fixture(): Promise<{
     bundleId: id(4),
     bundleObjectId: id(5),
     eventId: id(6),
+    collectionId: id(7),
     capturedAt,
     metadata,
     mhtml: new TextEncoder().encode("MIME-Version: 1.0\r\nOffline body"),
     screenshot: new Uint8Array([137, 80, 78, 71]),
-    thumbnailPng: new Uint8Array([137, 80, 78, 71, 1]),
+    thumbnailWebp: new Uint8Array([137, 80, 78, 71, 1]),
     warnings: [],
     clientVersion: "0.1.0",
   });
@@ -56,16 +54,18 @@ async function fixture(): Promise<{
 function repository(projection: StoredProjectionV1, object: StoredObjectV1): LibraryRepository {
   return {
     listEncryptedProjections: async () => [projection],
+    getCollectionProjection: async () => undefined,
     getStoredObject: async (objectId) => (objectId === object.objectId ? object : undefined),
   };
 }
 
 describe("offline encrypted library", () => {
-  it("groups repeated captures of a normalized page URL as newest-first history", () => {
+  it("groups repeated captures by stable Collection identity as newest-first history", () => {
     const item = {
       version: 1 as const,
       bundleId: id(21),
       bundleObjectId: id(22),
+      assignedCollectionId: id(30),
       title: "First title",
       originalUrl: "https://fixture.test/article#old-fragment",
       capturedAt: "2026-07-16T16:00:00.000Z",
@@ -83,11 +83,12 @@ describe("offline encrypted library", () => {
       screenshotPresent: true,
     };
 
-    expect(groupLibraryItems([item, latest])).toEqual([
+    expect(groupCollectionItems([item, latest], [], "Active")).toEqual([
       {
-        pageKey: "https://fixture.test/article",
+        collectionId: id(30),
         title: "Latest title",
         originalUrl: latest.originalUrl,
+        knownUrls: [latest.originalUrl, item.originalUrl],
         latest,
         captures: [latest, item],
       },
@@ -104,7 +105,7 @@ describe("offline encrypted library", () => {
       expect.objectContaining({
         title: "Offline fixture",
         screenshotPresent: true,
-        thumbnailPng: new Uint8Array([137, 80, 78, 71, 1]),
+        thumbnailWebp: new Uint8Array([137, 80, 78, 71, 1]),
       }),
     ]);
     const detail = await service.detail(id(4));
@@ -132,6 +133,7 @@ describe("offline encrypted library", () => {
     const service = new LibraryService(
       {
         listEncryptedProjections: async () => [data.projection],
+        getCollectionProjection: async () => undefined,
         getStoredObject: async () => undefined,
       },
       data.rootKey,

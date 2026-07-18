@@ -134,6 +134,8 @@ multipart/related
 
 image/png
 
+image/webp
+
 text/plain
 
 application/pdf

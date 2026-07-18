@@ -185,9 +185,9 @@ This profile requires:
 - one non-empty MHTML Artifact with Kind `CAPTURE`, Role `PRIMARY`, and MIME type `multipart/related`
 - required capture metadata
 
-The profile requests a full-page PNG as a best-effort Artifact with Kind `IMAGE`, Role `SCREENSHOT_FULL`, and MIME type `image/png`.
+The profile requests a lossy full-page WebP as a best-effort Artifact with Kind `IMAGE`, Role `SCREENSHOT_FULL`, and MIME type `image/webp`. MHTML remains the mandatory high-fidelity representation; the screenshot is a space-efficient visual preview.
 
-Failure to produce the PNG SHALL record a typed warning but SHALL NOT invalidate otherwise valid required MHTML.
+Failure to produce the WebP SHALL record a typed warning but SHALL NOT invalidate otherwise valid required MHTML.
 
 ---
 
@@ -199,6 +199,8 @@ The Runtime SHOULD capture:
 - full-page screenshot (when supported)
 
 Large pages MAY require stitched captures.
+
+When the native-resolution bitmap exceeds the Host's safe canvas dimension, the Chrome Host SHALL retain the top-left region at native resolution up to 16,384 pixels on each axis, persist that valid partial screenshot, and record `SCREENSHOT_TRUNCATED`. It SHALL NOT discard an otherwise valid partial image or downscale it to fit.
 
 The initial Chrome Host SHALL implement full-page capture by scrolling, throttling visible-tab captures, stitching tiles in a trusted extension context, and restoring page scroll and temporary styles even after failure.
 
@@ -240,6 +242,8 @@ Persistence MUST complete before emitting BundleRegistered.
 Successful capture SHALL emit:
 
 - BundleRegistered
+
+`BundleRegistered` MUST include the assigned Collection ID. Before registration, the Runtime selects the newest Active Collection containing an exact fragmentless match for the captured URL, with query parameters significant and ascending Collection ID as the final tie-breaker. If none matches, it generates a new Collection ID. Hosts and storage Drivers MUST NOT decide this routing policy.
 
 Failures MAY emit diagnostic Runtime Events.
 

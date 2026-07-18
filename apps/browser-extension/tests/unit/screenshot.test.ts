@@ -77,16 +77,16 @@ describe("full-page screenshot geometry", () => {
     });
   });
 
-  it("rejects dimensions beyond the safe canvas bound", () => {
-    expect(() =>
-      computeTilePlan({
-        documentWidth: 20_000,
-        documentHeight: 600,
-        viewportWidth: 800,
-        viewportHeight: 600,
-        devicePixelRatio: 1,
-      }),
-    ).toThrowError(/safe screenshot dimensions/u);
+  it("truncates oversized dimensions at native resolution", () => {
+    const plan = computeTilePlan({
+      documentWidth: 20_000,
+      documentHeight: 600,
+      viewportWidth: 800,
+      viewportHeight: 600,
+      devicePixelRatio: 1,
+    });
+    expect(plan).toMatchObject({ outputWidth: 16_384, outputHeight: 600, truncated: true });
+    expect(plan.tiles.at(-1)).toMatchObject({ pixelX: 16_000, pixelWidth: 384 });
   });
 });
 
@@ -103,8 +103,8 @@ function host(overrides: Partial<ScreenshotHost> = {}): ScreenshotHost {
     prepareTile: vi.fn(async () => undefined),
     captureVisible: vi.fn(async () => new Uint8Array([1, 2, 3])),
     stitch: vi.fn(async () => ({
-      pngBytes: new Uint8Array([137, 80, 78, 71]),
-      thumbnailPngBytes: new Uint8Array([1, 2, 3]),
+      webpBytes: new Uint8Array([82, 73, 70, 70]),
+      thumbnailWebpBytes: new Uint8Array([1, 2, 3]),
     })),
     restore: vi.fn(async () => undefined),
     now: () => now,
@@ -119,8 +119,8 @@ describe("best-effort screenshot lifecycle", () => {
   it("mitigates repeated fixed content, throttles captures, stitches, and restores", async () => {
     const fake = host();
     await expect(acquireBestEffortScreenshot(fake)).resolves.toEqual({
-      pngBytes: new Uint8Array([137, 80, 78, 71]),
-      thumbnailPngBytes: new Uint8Array([1, 2, 3]),
+      webpBytes: new Uint8Array([82, 73, 70, 70]),
+      thumbnailWebpBytes: new Uint8Array([1, 2, 3]),
       warnings: [],
     });
     expect(fake.prepareTile).toHaveBeenNthCalledWith(
@@ -148,7 +148,7 @@ describe("best-effort screenshot lifecycle", () => {
     },
   );
 
-  it("maps unsafe dimensions to SCREENSHOT_TOO_LARGE and restores", async () => {
+  it("persists a native-resolution truncated screenshot with a warning", async () => {
     const fake = host({
       measure: vi.fn(async () => ({
         documentWidth: 20_000,
@@ -159,9 +159,11 @@ describe("best-effort screenshot lifecycle", () => {
       })),
     });
     await expect(acquireBestEffortScreenshot(fake)).resolves.toEqual({
-      warnings: ["SCREENSHOT_TOO_LARGE"],
+      webpBytes: new Uint8Array([82, 73, 70, 70]),
+      thumbnailWebpBytes: new Uint8Array([1, 2, 3]),
+      warnings: ["SCREENSHOT_TRUNCATED"],
     });
-    expect(fake.captureVisible).not.toHaveBeenCalled();
+    expect(fake.captureVisible).toHaveBeenCalled();
     expect(fake.restore).toHaveBeenCalledOnce();
   });
 });

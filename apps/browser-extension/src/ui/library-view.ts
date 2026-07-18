@@ -6,6 +6,28 @@ interface CaptureGroup {
   readonly captures: readonly CaptureIdentity[];
 }
 
+interface PointerPosition {
+  readonly clientX: number;
+  readonly clientY: number;
+}
+
+interface ElementBounds {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+export function dragImageHotspot(
+  pointer: PointerPosition,
+  bounds: ElementBounds,
+): { readonly x: number; readonly y: number } {
+  return {
+    x: Math.min(bounds.width, Math.max(0, pointer.clientX - bounds.left)),
+    y: Math.min(bounds.height, Math.max(0, pointer.clientY - bounds.top)),
+  };
+}
+
 export type LibraryGroupDestination =
   | { readonly screen: "detail"; readonly bundleId: string }
   | { readonly screen: "history" };
@@ -19,6 +41,32 @@ export function libraryGroupDestination(group: CaptureGroup): LibraryGroupDestin
 
 export function collectionLayerBundleIds(group: CaptureGroup): readonly string[] {
   return group.captures.slice(0, 3).map((capture) => capture.bundleId);
+}
+
+export function mergeDropRequest(sourceCollectionId: string, destinationCollectionId: string) {
+  if (sourceCollectionId === destinationCollectionId) return undefined;
+  return {
+    version: 1 as const,
+    type: "MergeCollections" as const,
+    destinationCollectionId,
+    sourceCollectionIds: [sourceCollectionId],
+  };
+}
+
+export function captureDropRequest(
+  bundleIds: readonly string[],
+  destinationCollectionId: string | "new",
+) {
+  const canonicalIds = [...new Set(bundleIds)].toSorted();
+  if (canonicalIds.length === 0) return undefined;
+  return destinationCollectionId === "new"
+    ? { version: 1 as const, type: "ExtractCaptures" as const, bundleIds: canonicalIds }
+    : {
+        version: 1 as const,
+        type: "MoveCaptures" as const,
+        bundleIds: canonicalIds,
+        destinationCollectionId,
+      };
 }
 
 export function formatByteSize(bytes: number): string {

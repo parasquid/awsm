@@ -24,7 +24,7 @@ Vault Vacuum is not Projection compaction, key rotation, cryptographic erasure, 
 
 `CapturesDeleted` moves explicit Bundle IDs from Active to Deleted. `CapturesRestored` moves explicit Bundle IDs from Deleted to Active. Deleted Captures MUST remain authenticatable, viewable, downloadable, and restorable until Vacuum activates a successor generation.
 
-Collection deletion and restoration MUST resolve the current collection to explicit Bundle IDs before the Command is accepted. Later or concurrent Captures of the same page are not affected.
+Collection deletion and restoration MUST resolve the current Collection to explicit Bundle IDs before the Command is accepted. Later or concurrent Captures of the same page are not affected. Collection identity and membership follow `docs/specifications/vault/collection.md`.
 
 ## 3. Vault Generation
 
@@ -36,7 +36,7 @@ A successor MAY record its predecessor generation ID as lineage metadata. That s
 
 The active generation head is operational coordination state. In addition to the immutable manifest root, it records canonical sorted opaque Object and Event identifiers appended since that manifest was created. Every authoritative append updates this tail in the same transaction. Complete active reachability is the union of the immutable manifest and this append tail; Vacuum MUST verify that union exactly covers authoritative storage and folds all retained tail entries into the successor manifest. Synchronization exposes only the opaque generation root/number and its normal cursor, not the local tail list. Activation MUST compare-and-swap the head observed at Vacuum preflight.
 
-The local browser slice serializes authoritative writes by acquiring a persisted opaque Vacuum lease before taking its snapshot. Capture, delete, and restore commits MUST check that no lease exists in the same transaction as their authoritative writes. A lease abandoned before activation is safe to discard on restart because the browser slice activates and collects in one transaction; a committed activation deletes its lease in that transaction.
+The local browser slice serializes authoritative writes by acquiring a persisted opaque Vacuum lease before taking its snapshot. Capture, delete, restore, Merge, Move, Extract, and Undo commits MUST check that no lease exists in the same transaction as their authoritative writes. A lease abandoned before activation is safe to discard on restart because the browser slice activates and collects in one transaction; a committed activation deletes its lease in that transaction.
 
 ## 4. Vacuum algorithm
 
@@ -54,6 +54,8 @@ Vacuum SHALL:
 10. report deleted Capture count and actual reclaimed bytes without plaintext content in diagnostics.
 
 After successful Vacuum, every pre-Vacuum Active Capture MUST remain Active and authenticatable, Deleted MUST be empty, and no active reference may point to an omitted Object.
+
+Vacuum MUST retain or rewrite `CollectionsMerged`, `CapturesMoved`, and `CollectionMergeReverted` whenever they affect a retained Capture's effective Collection. It MAY omit facts concerning only reclaimed Captures or identities with no retained members. A mixed `CapturesMoved` Event MUST be rewritten under a new Event ID with only retained moves. Verification MUST prove that each retained Capture remains in the same effective Collection.
 
 ## 5. Failure and cancellation
 
@@ -77,6 +79,7 @@ Vacuum does not inspect or remove exports, old Backup Sets, or offline replicas.
 - Deleted Captures are recoverable before activation and unavailable afterward.
 - Retained Captures survive Vacuum byte-for-byte.
 - Unknown dependencies fail closed.
+- Retained Captures preserve their effective Collection membership.
 
 ## References
 
@@ -86,3 +89,4 @@ Vacuum does not inspect or remove exports, old Backup Sets, or offline replicas.
 - `docs/specifications/runtime/jobs.md`
 - `docs/specifications/runtime/storage.md`
 - `docs/specifications/runtime/synchronization.md`
+- `docs/specifications/vault/collection.md`

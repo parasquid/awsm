@@ -272,7 +272,7 @@ page.mhtml
 
 page.html
 
-screenshot.png
+screenshot.webp
 
 favicon.ico
 

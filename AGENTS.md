@@ -69,6 +69,12 @@ Explicitly approved plans supersede stale Draft documentation; reconcile every a
 - Put platform-specific behavior behind Hosts or Drivers; Runtime Services communicate through defined Commands, Events, and interfaces.
 - When changing a foundational term or contract, follow dependencies outward and update architecture, specifications, testing implications, and operations together.
 
+## CLARIFICATION POLICY
+
+- Ask the user for clarification before implementing when the requested intent is uncertain or admits materially different interpretations.
+- For visual and interaction feedback, identify the exact element, state, and timing being changed. Do not assume which element the user means when terms such as “card,” “preview,” “item,” or “dragged element” could refer to multiple parts of the interface.
+- Keep clarification questions narrow and concrete. Continue without asking only when the intended behavior is unambiguous or the choice is safely reversible and cannot materially diverge from the request.
+
 ## ANTI-PATTERNS (THIS PROJECT)
 
 - Never move plaintext, unwrapped Vault keys, content inference, or search to the server boundary.

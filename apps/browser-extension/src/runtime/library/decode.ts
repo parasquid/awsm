@@ -33,14 +33,15 @@ export function decodeLibraryItem(value: unknown): LibraryItemV1 {
     version: literal(input.version, 1, "libraryItem.version"),
     bundleId: uuid(input.bundleId, "libraryItem.bundleId"),
     bundleObjectId: uuid(input.bundleObjectId, "libraryItem.bundleObjectId"),
+    assignedCollectionId: uuid(input.assignedCollectionId, "libraryItem.assignedCollectionId"),
     title: string(input.title, "libraryItem.title"),
     originalUrl: httpUrl(input.originalUrl, "libraryItem.originalUrl"),
     capturedAt: timestamp(input.capturedAt, "libraryItem.capturedAt"),
     screenshotPresent: boolean(input.screenshotPresent, "libraryItem.screenshotPresent"),
     status: input.status,
-    ...(input.thumbnailPng === undefined
+    ...(input.thumbnailWebp === undefined
       ? {}
-      : { thumbnailPng: bytes(input.thumbnailPng, undefined, "libraryItem.thumbnailPng") }),
+      : { thumbnailWebp: bytes(input.thumbnailWebp, undefined, "libraryItem.thumbnailWebp") }),
     warnings,
   };
 }

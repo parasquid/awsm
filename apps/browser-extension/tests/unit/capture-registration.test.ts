@@ -11,6 +11,7 @@ const bundleId = "00000000-0000-4000-8000-000000000003";
 const bundleObjectId = "00000000-0000-4000-8000-000000000004";
 const eventId = "00000000-0000-4000-8000-000000000005";
 const commandId = "00000000-0000-4000-8000-000000000006";
+const collectionId = "00000000-0000-4000-8000-000000000007";
 const capturedAt = "2026-07-16T17:00:00.000Z";
 
 const metadata: CaptureMetadataV1 = {
@@ -43,11 +44,12 @@ describe("encrypted capture registration", () => {
       bundleId,
       bundleObjectId,
       eventId,
+      collectionId,
       capturedAt,
       metadata,
       mhtml: new TextEncoder().encode("MIME-Version: 1.0\r\nSecret body"),
       screenshot: new Uint8Array([137, 80, 78, 71]),
-      thumbnailPng: new Uint8Array([137, 80, 78, 71, 1]),
+      thumbnailWebp: new Uint8Array([137, 80, 78, 71, 1]),
       warnings: [],
       clientVersion: "0.1.0",
     });
@@ -88,6 +90,7 @@ describe("encrypted capture registration", () => {
       eventType: "BundleRegistered",
       correlationId: commandId,
       bundleId,
+      collectionId,
     });
 
     const projectionKey = await deriveContextKeyFromCryptoKey(key, {
@@ -105,8 +108,9 @@ describe("encrypted capture registration", () => {
       ),
     ).toMatchObject({
       title: "Private page title",
+      assignedCollectionId: collectionId,
       screenshotPresent: true,
-      thumbnailPng: new Uint8Array([137, 80, 78, 71, 1]),
+      thumbnailWebp: new Uint8Array([137, 80, 78, 71, 1]),
     });
   });
 
@@ -119,11 +123,12 @@ describe("encrypted capture registration", () => {
       bundleId,
       bundleObjectId,
       eventId,
+      collectionId,
       capturedAt,
       metadata,
       mhtml: new TextEncoder().encode("UNIQUE_MHTML_SECRET"),
       screenshot: new TextEncoder().encode("UNIQUE_SCREENSHOT_SECRET"),
-      thumbnailPng: new TextEncoder().encode("UNIQUE_THUMBNAIL_SECRET"),
+      thumbnailWebp: new TextEncoder().encode("UNIQUE_THUMBNAIL_SECRET"),
       warnings: ["OPTIONAL_METADATA_UNAVAILABLE"],
       clientVersion: "0.1.0",
     });

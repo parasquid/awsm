@@ -11,10 +11,12 @@ function requiredElement(selector: string): HTMLElement {
 
 const app = requiredElement("#app");
 const announcer = requiredElement("#announcer");
+const popupLifetime = browser.runtime.connect({ name: "awsm:popup-lifetime:v1" });
 let visibleRecentCaptureJobId: string | undefined;
 
 function dismissSeenCapture(jobId: string): Promise<AppStateV1> {
   if (visibleRecentCaptureJobId === jobId) visibleRecentCaptureJobId = undefined;
+  popupLifetime.postMessage({ jobId: null });
   return sendRequest<AppStateV1>({
     version: 1,
     type: "DismissRecentCapture",
@@ -68,6 +70,7 @@ async function refresh(error?: string): Promise<void> {
 function render(state: AppStateV1, transientError?: string): void {
   const view = popupView(state);
   visibleRecentCaptureJobId = view.screen === "ready" ? view.recentCapture?.jobId : undefined;
+  popupLifetime.postMessage({ jobId: visibleRecentCaptureJobId ?? null });
   const content = document.createDocumentFragment();
   content.append(
     heading(view.screen === "onboarding" ? "Create your local Vault" : "Archive this page"),
@@ -178,7 +181,7 @@ function render(state: AppStateV1, transientError?: string): void {
       card.append(title);
       if (recentCapture.screenshotBase64 !== undefined) {
         const thumbnail = element("img", undefined, "recent-capture__thumbnail");
-        thumbnail.src = `data:image/png;base64,${recentCapture.screenshotBase64}`;
+        thumbnail.src = `data:image/webp;base64,${recentCapture.screenshotBase64}`;
         thumbnail.alt = `Screenshot thumbnail for ${recentCapture.title}`;
         card.append(thumbnail);
       }
@@ -236,8 +239,3 @@ function render(state: AppStateV1, transientError?: string): void {
 }
 
 void refresh();
-
-window.addEventListener("pagehide", () => {
-  const jobId = visibleRecentCaptureJobId;
-  if (jobId !== undefined) void dismissSeenCapture(jobId).catch(() => undefined);
-});

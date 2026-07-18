@@ -16,11 +16,12 @@ export interface PrepareCaptureRegistrationInput {
   readonly bundleId: string;
   readonly bundleObjectId: string;
   readonly eventId: string;
+  readonly collectionId: string;
   readonly capturedAt: string;
   readonly metadata: CaptureMetadataV1;
   readonly mhtml: Uint8Array;
   readonly screenshot?: Uint8Array;
-  readonly thumbnailPng?: Uint8Array;
+  readonly thumbnailWebp?: Uint8Array;
   readonly warnings: readonly CaptureWarningId[];
   readonly clientVersion: string;
 }
@@ -72,6 +73,8 @@ export async function prepareCaptureRegistration(
     correlationId: input.commandId,
     bundleId: input.bundleId,
     bundleObjectId: input.bundleObjectId,
+    collectionId: input.collectionId,
+    screenshotPresent: input.screenshot !== undefined,
     captureProfileId: "ChromeWebPage-v1",
     captureMetadata: input.metadata,
     warnings: input.warnings,
@@ -87,11 +90,12 @@ export async function prepareCaptureRegistration(
       eventType: "BundleRegistered",
       bundleId: input.bundleId,
       bundleObjectId: input.bundleObjectId,
+      collectionId: input.collectionId,
       title: input.metadata.title,
       originalUrl: input.metadata.originalUrl,
       capturedAt: input.capturedAt,
       screenshotPresent: input.screenshot !== undefined,
-      ...(input.thumbnailPng === undefined ? {} : { thumbnailPng: input.thumbnailPng }),
+      ...(input.thumbnailWebp === undefined ? {} : { thumbnailWebp: input.thumbnailWebp }),
       warnings: input.warnings,
     },
   ])[0];

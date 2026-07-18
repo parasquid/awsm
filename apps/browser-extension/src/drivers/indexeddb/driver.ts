@@ -4,6 +4,7 @@ import { deleteDatabase, openDatabase, requestValue, transactionDone } from "./d
 import {
   decodeCaptureJob,
   decodeCommandOutcome,
+  decodeStoredCollectionProjection,
   decodeStoredEvent,
   decodeStoredObject,
   decodeStoredProjection,
@@ -126,11 +127,41 @@ export class IndexedDbDriver {
 
   async clearLibraryProjection(): Promise<void> {
     const database = await this.databasePromise;
-    const transaction = database.transaction(STORES.libraryProjection, "readwrite");
+    const transaction = database.transaction(
+      [STORES.libraryProjection, STORES.collectionProjection],
+      "readwrite",
+    );
     transaction.objectStore(STORES.libraryProjection).clear();
+    transaction.objectStore(STORES.collectionProjection).clear();
     try {
       await transactionDone(transaction);
     } catch (error) {
+      throw storageError(error);
+    }
+  }
+
+  async replaceLibraryProjections(
+    projections: readonly import("./schema").StoredProjectionV1[],
+    collectionProjection: import("./schema").StoredCollectionProjectionV1,
+  ): Promise<void> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(
+      [STORES.libraryProjection, STORES.collectionProjection, STORES.vacuumJobs],
+      "readwrite",
+    );
+    try {
+      if ((await requestValue(transaction.objectStore(STORES.vacuumJobs).count())) !== 0) {
+        throw new Error("Vault Vacuum is in progress. Retry the Projection rebuild.");
+      }
+      const itemStore = transaction.objectStore(STORES.libraryProjection);
+      itemStore.clear();
+      for (const projection of projections) itemStore.add(projection, projection.bundleId);
+      const collectionStore = transaction.objectStore(STORES.collectionProjection);
+      collectionStore.clear();
+      collectionStore.add(collectionProjection, "active");
+      await transactionDone(transaction);
+    } catch (error) {
+      abortTransaction(transaction);
       throw storageError(error);
     }
   }
@@ -158,6 +189,53 @@ export class IndexedDbDriver {
       for (const projection of projections) projectionStore.put(projection, projection.bundleId);
       headStore.put(
         { ...head, appendedEventIds: [...head.appendedEventIds, event.eventId].toSorted() },
+        "active",
+      );
+      await transactionDone(transaction);
+    } catch (error) {
+      abortTransaction(transaction);
+      throw storageError(error);
+    }
+  }
+
+  async commitCollectionOperation(input: {
+    readonly event: import("./schema").StoredEventV1;
+    readonly projections: readonly import("./schema").StoredProjectionV1[];
+    readonly collectionProjection?: import("./schema").StoredCollectionProjectionV1;
+  }): Promise<void> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(
+      [
+        STORES.events,
+        STORES.libraryProjection,
+        STORES.collectionProjection,
+        STORES.vacuumJobs,
+        STORES.vaultHead,
+      ],
+      "readwrite",
+    );
+    try {
+      if ((await requestValue(transaction.objectStore(STORES.vacuumJobs).count())) !== 0) {
+        throw new Error("Vault Vacuum is in progress. Retry the Collection change.");
+      }
+      const headStore = transaction.objectStore(STORES.vaultHead);
+      const head = (await requestValue(headStore.get("active"))) as
+        | import("./schema").StoredVaultHeadV1
+        | undefined;
+      if (head === undefined) throw new Error("The active Vault Generation is missing.");
+      transaction.objectStore(STORES.events).add(input.event, input.event.eventId);
+      const itemStore = transaction.objectStore(STORES.libraryProjection);
+      for (const projection of input.projections) itemStore.put(projection, projection.bundleId);
+      if (input.collectionProjection !== undefined) {
+        transaction
+          .objectStore(STORES.collectionProjection)
+          .put(input.collectionProjection, "active");
+      }
+      headStore.put(
+        {
+          ...head,
+          appendedEventIds: [...head.appendedEventIds, input.event.eventId].toSorted(),
+        },
         "active",
       );
       await transactionDone(transaction);
@@ -239,6 +317,18 @@ export class IndexedDbDriver {
     return values.map(decodeStoredProjection);
   }
 
+  async getCollectionProjection(): Promise<
+    import("./schema").StoredCollectionProjectionV1 | undefined
+  > {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.collectionProjection, "readonly");
+    const value = await requestValue(
+      transaction.objectStore(STORES.collectionProjection).get("active"),
+    );
+    await transactionDone(transaction);
+    return value === undefined ? undefined : decodeStoredCollectionProjection(value);
+  }
+
   async getStoredObject(objectId: string): Promise<StoredObjectV1 | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.objects, "readonly");
@@ -264,6 +354,14 @@ export class IndexedDbDriver {
     const values = await requestValue(transaction.objectStore(STORES.events).getAll());
     await done;
     return values.map(decodeStoredEvent);
+  }
+
+  async getStoredEvent(eventId: string): Promise<StoredEventV1 | undefined> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.events, "readonly");
+    const value = await requestValue(transaction.objectStore(STORES.events).get(eventId));
+    await transactionDone(transaction);
+    return value === undefined ? undefined : decodeStoredEvent(value);
   }
 
   async commitVacuum(input: {

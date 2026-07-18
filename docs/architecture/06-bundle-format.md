@@ -177,7 +177,7 @@ Examples:
 ```
 page.mhtml
 
-screenshot-full.png
+screenshot-full.webp
 
 favicon.ico
 

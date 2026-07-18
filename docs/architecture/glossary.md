@@ -58,6 +58,12 @@ A destructive Runtime Job that replaces authoritative history with a verified su
 
 The logical Capture state in which content is absent from the main Library but remains retained, inspectable, and restorable until Vault Vacuum.
 
+## Collection
+
+A stable logical identity grouping Captures that the user considers versions of one page.
+
+Collection membership and redirects are derived by replaying immutable Events. A Collection is not an authoritative Object or mutable container.
+
 ---
 
 ## Bundle

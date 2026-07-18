@@ -271,9 +271,9 @@ The platform should tolerate unavailable fields.
 
 The first implementation profile is `ChromeWebPage-v1`.
 
-The profile requires an HTTP(S) target, required capture metadata, and a valid MHTML `PRIMARY` Artifact. It requests a full-page PNG `SCREENSHOT_FULL` Artifact on a best-effort basis.
+The profile requires an HTTP(S) target, required capture metadata, and a valid high-fidelity MHTML `PRIMARY` Artifact. It requests a lossy full-page WebP `SCREENSHOT_FULL` preview on a best-effort basis.
 
-Failure to acquire MHTML fails before Bundle persistence. Failure to acquire the PNG records a warning and preserves the valid MHTML Bundle.
+Failure to acquire MHTML fails before Bundle persistence. Failure to encode the WebP records a warning and preserves the valid MHTML Bundle.
 
 Live page acquisition is not automatically resumed after Runtime interruption because the external page may have changed. Recovery either recognizes an already committed Command outcome or requires a new user-initiated capture.
 

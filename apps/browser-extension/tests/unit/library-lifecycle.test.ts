@@ -10,6 +10,7 @@ function item(suffix: number, status: "Active" | "Deleted"): LibraryItemV1 {
     version: 1,
     bundleId: id(suffix),
     bundleObjectId: id(suffix + 100),
+    assignedCollectionId: id(suffix + 200),
     title: `Capture ${String(suffix)}`,
     originalUrl: "https://fixture.test/",
     capturedAt: "2026-07-18T00:00:00.000Z",

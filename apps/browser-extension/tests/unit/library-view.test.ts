@@ -1,14 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
+  captureDropRequest,
   collectionLayerBundleIds,
+  dragImageHotspot,
   formatByteSize,
   libraryGroupDestination,
   libraryStateConfirmation,
+  mergeDropRequest,
 } from "../../src/ui/library-view";
 
 const capture = (suffix: string) => ({ bundleId: `00000000-0000-4000-8000-${suffix}` });
 
 describe("Library collection navigation", () => {
+  it("keeps the grabbed point under the pointer in the drag ghost", () => {
+    expect(
+      dragImageHotspot(
+        { clientX: 260, clientY: 340 },
+        { left: 100, top: 200, width: 320, height: 280 },
+      ),
+    ).toEqual({ x: 160, y: 140 });
+    expect(
+      dragImageHotspot(
+        { clientX: 500, clientY: 100 },
+        { left: 100, top: 200, width: 320, height: 280 },
+      ),
+    ).toEqual({ x: 320, y: 0 });
+  });
+
   it("formats retained and reclaimable storage in readable binary units", () => {
     expect(formatByteSize(824)).toBe("824 B");
     expect(formatByteSize(12_697)).toBe("12.4 KiB");
@@ -42,5 +60,30 @@ describe("Library collection navigation", () => {
         "Deleted captures remain accessible and restorable in Deleted.\n\n" +
         "They continue using storage until you run Vault Vacuum.",
     );
+  });
+
+  it("uses the collection drop target as the merge destination", () => {
+    expect(mergeDropRequest("source-id", "destination-id")).toEqual({
+      version: 1,
+      type: "MergeCollections",
+      destinationCollectionId: "destination-id",
+      sourceCollectionIds: ["source-id"],
+    });
+    expect(mergeDropRequest("same-id", "same-id")).toBeUndefined();
+  });
+
+  it("maps selected capture drops to Move or Extract requests", () => {
+    expect(captureDropRequest(["b", "a"], "destination-id")).toEqual({
+      version: 1,
+      type: "MoveCaptures",
+      bundleIds: ["a", "b"],
+      destinationCollectionId: "destination-id",
+    });
+    expect(captureDropRequest(["b", "a"], "new")).toEqual({
+      version: 1,
+      type: "ExtractCaptures",
+      bundleIds: ["a", "b"],
+    });
+    expect(captureDropRequest([], "new")).toBeUndefined();
   });
 });

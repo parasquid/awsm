@@ -189,6 +189,10 @@ This list is informative rather than exhaustive.
 
 `DeleteCaptures` and `RestoreCaptures` name a non-empty, duplicate-free canonical list of explicit Bundle IDs. They reject the entire request when any Bundle is absent from the expected Active or Deleted state. Accepted requests produce `CapturesDeleted` and `CapturesRestored` respectively.
 
+`MergeCollections` redirects explicit source Collection identities into the user-selected destination and produces `CollectionsMerged`. `MoveCaptures` assigns explicit Bundle IDs to an existing Collection. `ExtractCaptures` assigns explicit Bundle IDs to one newly generated Collection. Both membership Commands produce `CapturesMoved`.
+
+`UndoLibraryOperation` names the Event receipt returned by the latest reversible Collection operation. It produces an inverse `CapturesMoved` or `CollectionMergeReverted` only when the original effect is still current; otherwise it fails atomically with `LIBRARY_STATE_CHANGED`.
+
 `VacuumVault` is a local destructive Runtime Job request. It never synchronizes as a Command and processes the Deleted snapshot established after acquiring the active-generation fence.
 
 ---

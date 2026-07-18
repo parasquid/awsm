@@ -6,12 +6,26 @@ import { acquireMandatoryMhtml, preflightCapture } from "../hosts/chrome/capture
 import { acquireBestEffortScreenshot } from "../hosts/chrome/screenshot";
 import { CaptureRuntime, defaultPrepareRegistration } from "../runtime/capture/service";
 import { prepareLibraryStateChange, selectLibraryItems } from "../runtime/library/lifecycle";
+import {
+  decodeCollectionOperationEvent,
+  invertCaptureMoves,
+  planCaptureMove,
+  planCollectionMerge,
+  prepareCollectionOperation,
+} from "../runtime/library/management";
+import { LibraryProjectionRebuilder } from "../runtime/library/rebuild";
 import { LibraryService } from "../runtime/library/service";
 import { VaultVacuumService } from "../runtime/library/vacuum";
 import { VaultService } from "../runtime/vault";
 import { RUNTIME_VERSION } from "../runtime/version";
+import { recentCaptureMatchesActiveUrl } from "../ui/popup-view";
 import { bytesToBase64 } from "./base64";
-import type { AppRequestV1, AppResponseV1, AppStateV1 } from "./protocol";
+import type {
+  AppRequestV1,
+  AppResponseV1,
+  AppStateV1,
+  LibraryOperationReceiptV1,
+} from "./protocol";
 
 const driver = new IndexedDbDriver();
 const vaultRepository = new IndexedDbVaultRepository();
@@ -36,6 +50,7 @@ function safeError(error: unknown): AppResponseV1 {
     BUNDLE_INVALID: "The archived capture is missing or corrupt.",
     CRYPTO_AUTHENTICATION_FAILED: "Local Vault encryption could not be initialized.",
     WRONG_PASSPHRASE: "The Vault could not be unlocked.",
+    LIBRARY_STATE_CHANGED: "The Library changed. Refresh it and try again.",
   };
   return {
     version: 1,
@@ -46,7 +61,7 @@ function safeError(error: unknown): AppResponseV1 {
 
 async function state(): Promise<AppStateV1> {
   const records = await vaultRepository.load();
-  const latestJob = await driver.latestCaptureJob();
+  let latestJob = await driver.latestCaptureJob();
   let latestWarnings: AppStateV1["latestWarnings"];
   let recentCapture: AppStateV1["recentCapture"];
   if (
@@ -63,16 +78,22 @@ async function state(): Promise<AppStateV1> {
         records.metadata.vaultId,
       );
       const detail = await libraryService.detail(outcome.bundleId);
-      latestWarnings = detail.item.warnings;
-      recentCapture = {
-        jobId: latestJob.jobId,
-        bundleId: detail.item.bundleId,
-        title: detail.item.title,
-        warnings: detail.item.warnings,
-        ...(detail.item.thumbnailPng === undefined
-          ? {}
-          : { screenshotBase64: bytesToBase64(detail.item.thumbnailPng) }),
-      };
+      const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+      if (recentCaptureMatchesActiveUrl(detail.item.originalUrl, activeTab?.url)) {
+        latestWarnings = detail.item.warnings;
+        recentCapture = {
+          jobId: latestJob.jobId,
+          bundleId: detail.item.bundleId,
+          title: detail.item.title,
+          warnings: detail.item.warnings,
+          ...(detail.item.thumbnailWebp === undefined
+            ? {}
+            : { screenshotBase64: bytesToBase64(detail.item.thumbnailWebp) }),
+        };
+      } else {
+        await driver.dismissCaptureNotice(latestJob.jobId);
+        latestJob = { ...latestJob, noticeDismissed: true };
+      }
     }
   }
   return {
@@ -86,10 +107,36 @@ async function state(): Promise<AppStateV1> {
   };
 }
 
+browser.runtime.onConnect.addListener((port) => {
+  if (port.name !== "awsm:popup-lifetime:v1") return;
+  let visibleJobId: string | undefined;
+  port.onMessage.addListener((message: unknown) => {
+    if (typeof message !== "object" || message === null || !("jobId" in message)) return;
+    const jobId = message.jobId;
+    visibleJobId = typeof jobId === "string" ? jobId : undefined;
+  });
+  port.onDisconnect.addListener(() => {
+    if (visibleJobId !== undefined)
+      void driver.dismissCaptureNotice(visibleJobId).catch(() => undefined);
+  });
+});
+
 async function library(): Promise<LibraryService> {
   const records = await vaultRepository.load();
   if (records === undefined) throw Object.assign(new Error("Vault locked"), { id: "VAULT_LOCKED" });
-  return new LibraryService(driver, vault.requireRootKey(), records.metadata.vaultId);
+  const service = new LibraryService(driver, vault.requireRootKey(), records.metadata.vaultId);
+  const [projections, events] = await Promise.all([
+    driver.listEncryptedProjections(),
+    driver.listStoredEvents(),
+  ]);
+  if (projections.length === 0 && events.length > 0) {
+    await new LibraryProjectionRebuilder(
+      driver,
+      vault.requireRootKey(),
+      records.metadata.vaultId,
+    ).execute();
+  }
+  return service;
 }
 
 async function libraryGroups(
@@ -102,9 +149,9 @@ async function libraryGroups(
       const captureThumbnails = await Promise.all(
         group.captures.map(async (capture) => ({
           bundleId: capture.bundleId,
-          ...(capture.thumbnailPng === undefined
+          ...(capture.thumbnailWebp === undefined
             ? {}
-            : { thumbnailBase64: bytesToBase64(capture.thumbnailPng) }),
+            : { thumbnailBase64: bytesToBase64(capture.thumbnailWebp) }),
         })),
       );
       return {
@@ -212,12 +259,110 @@ async function captureActivePage(tabId?: number): Promise<{ readonly bundleId: s
         new Date().toISOString(),
         browser.runtime.getManifest().version,
       ),
+    collectionContext: async () => {
+      const service = await library();
+      const [items, topology] = await Promise.all([service.list(), service.topology()]);
+      return { items, topology };
+    },
     prepareRegistration: defaultPrepareRegistration,
     uuid: () => crypto.randomUUID(),
     now: () => new Date().toISOString(),
   });
   const outcome = await runtime.execute(command);
   return { bundleId: outcome.bundleId };
+}
+
+type CollectionManagementRequest = Extract<
+  AppRequestV1,
+  {
+    readonly type: "MergeCollections" | "MoveCaptures" | "ExtractCaptures" | "UndoLibraryOperation";
+  }
+>;
+
+async function manageCollections(
+  request: CollectionManagementRequest,
+): Promise<LibraryOperationReceiptV1> {
+  const records = await vaultRepository.load();
+  if (records === undefined) throw Object.assign(new Error("Vault locked"), { id: "VAULT_LOCKED" });
+  const service = await library();
+  const [items, topology] = await Promise.all([service.list(), service.topology()]);
+  const eventId = crypto.randomUUID();
+  const timestamp = new Date().toISOString();
+  let fact: Parameters<typeof prepareCollectionOperation>[0]["fact"];
+  let destinationCollectionId: string;
+  if (request.type === "MergeCollections") {
+    fact = planCollectionMerge(
+      items,
+      topology,
+      request.destinationCollectionId,
+      request.sourceCollectionIds,
+      eventId,
+    );
+    destinationCollectionId = fact.destinationCollectionId;
+  } else if (request.type === "MoveCaptures") {
+    const moves = planCaptureMove(
+      items,
+      topology,
+      request.bundleIds,
+      request.destinationCollectionId,
+    );
+    fact = { eventType: "CapturesMoved", moves };
+    destinationCollectionId = moves[0]?.toCollectionId ?? request.destinationCollectionId;
+  } else if (request.type === "ExtractCaptures") {
+    destinationCollectionId = crypto.randomUUID();
+    const moves = planCaptureMove(items, topology, request.bundleIds, destinationCollectionId, {
+      allowNewDestination: true,
+    });
+    fact = { eventType: "CapturesMoved", moves };
+  } else {
+    const original = await driver.getStoredEvent(request.operationEventId);
+    if (original === undefined) {
+      throw Object.assign(new Error("Library operation missing"), {
+        id: "LIBRARY_STATE_CHANGED",
+      });
+    }
+    const decoded = await decodeCollectionOperationEvent(
+      original,
+      vault.requireRootKey(),
+      records.metadata.vaultId,
+    );
+    if (decoded.eventType === "CapturesMoved") {
+      const moves = invertCaptureMoves(items, topology, decoded.moves);
+      fact = { eventType: "CapturesMoved", moves, revertsEventId: original.eventId };
+      destinationCollectionId = moves[0]?.toCollectionId ?? records.metadata.vaultId;
+    } else {
+      const activeMerge = topology.some(
+        (candidate) =>
+          candidate.eventType === "CollectionsMerged" && candidate.eventId === original.eventId,
+      );
+      const alreadyReverted = topology.some(
+        (candidate) =>
+          candidate.eventType === "CollectionMergeReverted" &&
+          candidate.mergeEventId === original.eventId,
+      );
+      if (!activeMerge || alreadyReverted) {
+        throw Object.assign(new Error("Merge state changed"), { id: "LIBRARY_STATE_CHANGED" });
+      }
+      fact = {
+        eventId,
+        eventType: "CollectionMergeReverted",
+        mergeEventId: original.eventId,
+      };
+      destinationCollectionId = decoded.sourceCollectionIds[0] ?? decoded.destinationCollectionId;
+    }
+  }
+  const prepared = await prepareCollectionOperation({
+    rootKey: vault.requireRootKey(),
+    vaultId: records.metadata.vaultId,
+    deviceId: records.metadata.deviceId,
+    eventId,
+    timestamp,
+    items,
+    topology,
+    fact,
+  });
+  await driver.commitCollectionOperation(prepared);
+  return { version: 1, operationEventId: eventId, destinationCollectionId };
 }
 
 async function handle(request: AppRequestV1): Promise<AppResponseV1> {
@@ -255,6 +400,11 @@ async function handle(request: AppRequestV1): Promise<AppResponseV1> {
       case "RestoreCaptures":
         await changeLibraryState(request.bundleIds, "Restore");
         return { version: 1, ok: true, value: null };
+      case "MergeCollections":
+      case "MoveCaptures":
+      case "ExtractCaptures":
+      case "UndoLibraryOperation":
+        return { version: 1, ok: true, value: await manageCollections(request) };
       case "VacuumVault": {
         const records = await vaultRepository.load();
         if (records === undefined) {
