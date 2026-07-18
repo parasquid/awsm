@@ -1,11 +1,16 @@
 import { browser } from "wxt/browser";
 import type { RuntimeErrorId } from "../domain/contracts";
 import {
+  encodeStructuredContentSequence,
+  normalizedTextFromBlocks,
+} from "../domain/structured-content";
+import {
   IndexedDbDriver,
   IndexedDbVaultRepository,
   IndexedDbWorkspaceRepository,
 } from "../drivers/indexeddb";
 import { ChromeCaptureHost, ChromeScreenshotHost } from "../hosts/chrome/api";
+import { ChromeArtifactStore } from "../hosts/chrome/artifact-store";
 import { acquireMandatoryMhtml, preflightCapture } from "../hosts/chrome/capture";
 import { ChromeVaultExportHost } from "../hosts/chrome/export";
 import { acquireBestEffortScreenshot } from "../hosts/chrome/screenshot";
@@ -21,7 +26,12 @@ import {
 } from "../runtime/library/management";
 import { LibraryProjectionRebuilder } from "../runtime/library/rebuild";
 import { LibraryService } from "../runtime/library/service";
-import { type VacuumRepository, VaultVacuumService } from "../runtime/library/vacuum";
+import {
+  objectIdsForBundles,
+  storedObjectByteLength,
+  type VacuumRepository,
+  VaultVacuumService,
+} from "../runtime/library/vacuum";
 import { VaultService, WorkspaceContextManager, WorkspaceService } from "../runtime/vault";
 import { recentCaptureMatchesActiveUrl } from "../ui/popup-view";
 import { bytesToBase64 } from "./base64";
@@ -50,14 +60,54 @@ const contexts = new WorkspaceContextManager({
   notify: notifyAppStateChanged,
 });
 const captureHost = new ChromeCaptureHost();
+const artifactStore = new ChromeArtifactStore();
 const exportHost = new ChromeVaultExportHost();
 const exportControllers = new Map<string, AbortController>();
+const ARTIFACT_MESSAGE_CHUNK_BYTES = 256 * 1024;
+interface ArtifactSession {
+  readonly vaultId: string;
+  readonly bundleId: string;
+  readonly role: import("../domain/artifact-graph").ArtifactRole;
+  readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+  pending?: Uint8Array;
+}
+const artifactSessions = new Map<string, ArtifactSession>();
+
+async function cancelArtifactSessions(): Promise<void> {
+  const sessions = [...artifactSessions.values()];
+  artifactSessions.clear();
+  await Promise.all(sessions.map((session) => session.reader.cancel().catch(() => undefined)));
+}
+
+function artifactFilename(
+  bundleId: string,
+  role: import("../domain/artifact-graph").ArtifactRole,
+): string {
+  const extension =
+    role === "PRIMARY"
+      ? "mhtml"
+      : role === "TEXT_EXTRACTED"
+        ? "txt"
+        : role === "CONTENT_STRUCTURED"
+          ? "cborseq"
+          : "webp";
+  return `awsm-${bundleId.slice(0, 8)}-${role.toLowerCase().replaceAll("_", "-")}.${extension}`;
+}
 
 const startup = contexts.initialize().then(async () => {
   const context = contexts.active();
   if (context === undefined) return;
   await context.driver.reconcileInterruptedVacuum();
   await context.driver.reconcileInterruptedJobs(new Date().toISOString());
+  const authoritativeObjects = await context.driver.listStoredObjects();
+  await artifactStore.reconcile(
+    context.vaultId,
+    new Set(
+      authoritativeObjects
+        .filter((object) => object.objectType === "Artifact")
+        .map((object) => object.objectId),
+    ),
+  );
   const interruptedExport = await context.driver.latestExportJob();
   if (await context.driver.reconcileInterruptedExports(new Date().toISOString())) {
     if (interruptedExport?.state === "Created" || interruptedExport?.state === "Running") {
@@ -78,7 +128,6 @@ function safeError(error: unknown): AppResponse {
     PERMISSION_DENIED: "Chrome did not grant capture permission.",
     MHTML_UNAVAILABLE: "This Chrome installation cannot capture MHTML.",
     MHTML_CAPTURE_FAILED: "Chrome could not archive this page as MHTML.",
-    CAPTURE_TOO_LARGE: "The page is larger than the 100 MiB capture limit.",
     CAPTURE_INTERRUPTED: "Capture was interrupted. Retry it manually.",
     BUNDLE_INVALID: "The archived capture is missing or corrupt.",
     CRYPTO_AUTHENTICATION_FAILED: "Local Vault encryption could not be initialized.",
@@ -120,6 +169,7 @@ async function state(): Promise<AppState> {
         context.driver,
         context.vault.requireRootKey(),
         records.metadata.vaultId,
+        artifactStore,
       );
       const detail = await libraryService.detail(outcome.bundleId);
       const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
@@ -219,6 +269,7 @@ async function exportVault(
       context.driver,
       context.vault,
       context.vaultId,
+      artifactStore,
     ).prepare({
       packageId,
       createdAt,
@@ -301,6 +352,7 @@ async function library(expectedVaultId: string): Promise<LibraryService> {
     context.driver,
     context.vault.requireRootKey(),
     records.metadata.vaultId,
+    artifactStore,
   );
   const [projections, events] = await Promise.all([
     context.driver.listEncryptedProjections(),
@@ -311,6 +363,7 @@ async function library(expectedVaultId: string): Promise<LibraryService> {
       context.driver,
       context.vault.requireRootKey(),
       records.metadata.vaultId,
+      artifactStore,
     ).execute();
   }
   return service;
@@ -378,13 +431,21 @@ async function vacuumEstimate(expectedVaultId: string): Promise<{
   const context = contexts.snapshot(expectedVaultId);
   const service = await library(expectedVaultId);
   const deleted = await service.listDeleted();
-  const objectIds = new Set(deleted.map((item) => item.bundleObjectId));
-  const objects = await context.driver.listStoredObjects();
+  const [objects, events] = await Promise.all([
+    context.driver.listStoredObjects(),
+    context.driver.listStoredEvents(),
+  ]);
+  const objectIds = await objectIdsForBundles(
+    events,
+    new Set(deleted.map((item) => item.bundleId)),
+    context.vault.requireRootKey(),
+    context.vaultId,
+  );
   return {
     deletedCaptureCount: deleted.length,
     reclaimableBytes: objects
       .filter((object) => objectIds.has(object.objectId))
-      .reduce((total, object) => total + object.envelopeBytes.byteLength, 0),
+      .reduce((total, object) => total + storedObjectByteLength(object), 0),
   };
 }
 
@@ -435,6 +496,20 @@ async function captureActivePage(
     },
     preflight: () => preflightCapture(selectedHost, context.vault.isUnlocked()),
     acquireMhtml: (tabId) => acquireMandatoryMhtml(captureHost, tabId),
+    collectContent: async (tabId) => {
+      try {
+        const blocks = await captureHost.collectStructuredContent(tabId);
+        return {
+          structured: encodeStructuredContentSequence(blocks),
+          normalizedText: normalizedTextFromBlocks(blocks),
+          warnings: [],
+        };
+      } catch {
+        return {
+          warnings: ["STRUCTURED_CONTENT_EXTRACTION_FAILED", "TEXT_EXTRACTION_FAILED"] as const,
+        };
+      }
+    },
     acquireScreenshot: async (tabId) => {
       try {
         return await acquireBestEffortScreenshot(await ChromeScreenshotHost.create(tabId));
@@ -455,6 +530,31 @@ async function captureActivePage(
       return { items, topology };
     },
     prepareRegistration: defaultPrepareRegistration,
+    prepareArtifact: (objectId, plaintext) =>
+      artifactStore.prepare({
+        vaultId: records.metadata.vaultId,
+        objectId,
+        rootKey: context.vault.requireRootKey(),
+        plaintext: (async function* () {
+          if (plaintext instanceof Blob) {
+            const reader = plaintext.stream().getReader();
+            try {
+              for (;;) {
+                const next = await reader.read();
+                if (next.done) break;
+                yield next.value;
+              }
+            } finally {
+              reader.releaseLock();
+            }
+          } else {
+            const size = 1024 * 1024;
+            for (let offset = 0; offset < plaintext.byteLength; offset += size)
+              yield plaintext.subarray(offset, Math.min(offset + size, plaintext.byteLength));
+          }
+        })(),
+      }),
+    removeArtifact: (objectId) => artifactStore.remove(records.metadata.vaultId, objectId),
     uuid: () => crypto.randomUUID(),
     now: () => new Date().toISOString(),
   });
@@ -569,6 +669,7 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         await contexts.create(request);
         return { ok: true, value: await state() };
       case "SelectActiveVault":
+        await cancelArtifactSessions();
         await contexts.select(request);
         return { ok: true, value: await state() };
       case "RenameVault":
@@ -580,6 +681,7 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         return { ok: true, value: await state() };
       }
       case "LockVault": {
+        await cancelArtifactSessions();
         const context = contexts.snapshot(request.expectedVaultId);
         await context.vault.lock();
         await notifyAppStateChanged();
@@ -652,6 +754,7 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           context.vault.requireRootKey(),
           records.metadata.vaultId,
           records.metadata.deviceId,
+          artifactStore,
         ).execute();
         return { ok: true, value: result };
       }
@@ -676,12 +779,61 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           value: {
             item: detail.item,
             metadata: detail.metadata,
-            mhtmlBase64: bytesToBase64(detail.mhtml),
-            ...(detail.screenshot === undefined
-              ? {}
-              : { screenshotBase64: bytesToBase64(detail.screenshot) }),
+            artifacts: detail.artifacts,
           },
         };
+      }
+      case "OpenArtifact": {
+        const service = await library(request.expectedVaultId);
+        const opened = await service.openArtifact(request.bundleId, request.role);
+        const sessionId = crypto.randomUUID();
+        artifactSessions.set(sessionId, {
+          vaultId: request.expectedVaultId,
+          bundleId: request.bundleId,
+          role: request.role,
+          reader: opened.stream.getReader(),
+        });
+        return {
+          ok: true,
+          value: {
+            sessionId,
+            role: request.role,
+            mimeType: opened.reference.mimeType,
+            byteLength: opened.reference.plaintextByteLength,
+            filename: artifactFilename(request.bundleId, request.role),
+          },
+        };
+      }
+      case "ReadArtifactChunk": {
+        contexts.snapshot(request.expectedVaultId);
+        const session = artifactSessions.get(request.sessionId);
+        if (session === undefined || session.vaultId !== request.expectedVaultId)
+          throw Object.assign(new Error("Artifact session missing"), {
+            id: "VAULT_CONTEXT_CHANGED",
+          });
+        let chunk = session.pending;
+        if (chunk === undefined) {
+          const next = await session.reader.read();
+          if (next.done) {
+            artifactSessions.delete(request.sessionId);
+            session.reader.releaseLock();
+            return { ok: true, value: { done: true } };
+          }
+          chunk = next.value;
+        }
+        const outgoing = chunk.subarray(0, ARTIFACT_MESSAGE_CHUNK_BYTES);
+        if (outgoing.byteLength === chunk.byteLength) delete session.pending;
+        else session.pending = chunk.subarray(outgoing.byteLength);
+        return {
+          ok: true,
+          value: { done: false, chunkBase64: bytesToBase64(outgoing) },
+        };
+      }
+      case "CancelArtifactSession": {
+        const session = artifactSessions.get(request.sessionId);
+        artifactSessions.delete(request.sessionId);
+        if (session !== undefined) await session.reader.cancel().catch(() => undefined);
+        return { ok: true, value: null };
       }
     }
   } catch (error) {

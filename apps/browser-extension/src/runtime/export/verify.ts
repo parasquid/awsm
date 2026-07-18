@@ -1,11 +1,16 @@
+import { readArtifactEnvelope } from "../../crypto/artifact-envelope";
 import { decodeEncryptedEnvelopeBytes, decryptEnvelope } from "../../crypto/envelope";
 import { deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
 import { wipe } from "../../crypto/sodium";
-import { readBundle } from "../../domain/bundle";
-import { decodeCanonicalCbor, encodeCanonicalCbor } from "../../domain/cbor";
-import { bytesEqual, sha256 } from "../../domain/hash";
+import { type BundleDescriptorV1, decodeBundleDescriptor } from "../../domain/artifact-graph";
+import { decodeCanonicalCbor } from "../../domain/cbor";
+import type { CaptureWarningId } from "../../domain/contracts";
+import { bytesEqual } from "../../domain/hash";
 import {
-  bytes,
+  decodeStructuredContentSequence,
+  normalizedTextFromBlocks,
+} from "../../domain/structured-content";
+import {
   canonicalRecord,
   integer,
   literal,
@@ -20,6 +25,7 @@ import {
   decodeStoredVaultGeneration,
 } from "../../drivers/indexeddb/decode";
 import type { StoredEvent, StoredVaultHeadV1 } from "../../drivers/indexeddb/schema";
+import { decodeBundleRegisteredPayload, validateArtifactWarnings } from "../capture/contracts";
 import { assertCanonicalEventFields } from "../library/vacuum";
 import { verifyVaultGeneration } from "../vault/generation";
 import { normalizeVaultName } from "../vault/name";
@@ -27,11 +33,9 @@ import type { ExportManifestV1 } from "./contracts";
 
 interface Registration {
   readonly bundleId: string;
-  readonly objectId: string;
-  readonly byteLength: number;
-  readonly checksum: Uint8Array;
-  readonly captureMetadata: Record<string, unknown>;
-  readonly screenshotPresent: boolean;
+  readonly descriptorObjectId: string;
+  readonly artifactObjectIds: readonly string[];
+  readonly warnings: readonly CaptureWarningId[];
 }
 
 function idArray(value: unknown, field: string): readonly string[] {
@@ -94,6 +98,7 @@ export async function verifyAuthoritativeVaultPackage(input: {
   readonly manifest: ExportManifestV1;
   readonly rootKey: CryptoKey;
   readonly read: (path: string, maximum: number) => Promise<Uint8Array>;
+  readonly openArtifact: (objectId: string) => Promise<ReadableStream<Uint8Array>>;
 }): Promise<void> {
   const { manifest, rootKey, read } = input;
   const generation = decodeStoredVaultGeneration(
@@ -175,36 +180,16 @@ export async function verifyAuthoritativeVaultPackage(input: {
         vaultCreated = true;
       } else if (!vaultCreated) throw new Error("Vault Rename precedes creation");
     } else if (eventType === "BundleRegistered") {
-      literal(payload.protocolVersion, 1, "event.protocolVersion");
-      uuid(payload.correlationId, "event.correlationId");
-      const bundleId = uuid(payload.bundleId, "event.bundleId");
-      const objectId = uuid(payload.bundleObjectId, "event.bundleObjectId");
-      const collectionId = uuid(payload.collectionId, "event.collectionId");
-      literal(payload.captureProfileId, "ChromeWebPage-v1", "event.captureProfileId");
-      if (typeof payload.screenshotPresent !== "boolean")
-        throw new Error("Bundle screenshot state is invalid");
-      const captureMetadata = record(payload.captureMetadata, "event.captureMetadata");
-      if (!Array.isArray(payload.warnings)) throw new Error("Bundle warnings are invalid");
-      if (
-        knownBundles.has(bundleId) ||
-        registrations.has(objectId) ||
-        !sameIds(stored.referencedObjectIds, [objectId])
-      ) {
+      const registration = decodeBundleRegisteredPayload(payload, stored.referencedObjectIds);
+      const { bundleId, descriptorObjectId, artifactObjectIds, collectionId } = registration;
+      if (knownBundles.has(bundleId) || registrations.has(descriptorObjectId)) {
         throw new Error("Bundle registration is not one-to-one");
       }
-      const integrity = canonicalRecord(payload.integrity, "event.integrity", [
-        "algorithm",
-        "checksum",
-        "byteLength",
-      ]);
-      literal(integrity.algorithm, "hash:sha256:v1", "event.integrity.algorithm");
-      registrations.set(objectId, {
+      registrations.set(descriptorObjectId, {
         bundleId,
-        objectId,
-        byteLength: integer(integrity.byteLength, "event.integrity.byteLength"),
-        checksum: bytes(integrity.checksum, 32, "event.integrity.checksum"),
-        captureMetadata,
-        screenshotPresent: payload.screenshotPresent,
+        descriptorObjectId,
+        artifactObjectIds,
+        warnings: registration.warnings,
       });
       knownBundles.add(bundleId);
       bundleStates.set(bundleId, "Active");
@@ -250,50 +235,143 @@ export async function verifyAuthoritativeVaultPackage(input: {
   if (!vaultCreated) throw new Error("Vault creation Event is missing");
   if (!sameIds([...referencedObjects].toSorted(), expectedObjectIds))
     throw new Error("Object references do not match reachability");
-  if (!sameIds([...registrations.keys()].toSorted(), expectedObjectIds))
-    throw new Error("Every Object must have one Bundle registration");
-
+  const objects = new Map<string, ReturnType<typeof decodeStoredObject>>();
   for (const descriptor of objectDescriptors) {
     const stored = decodeStoredObject(
       decodeCanonicalCbor(await read(descriptor.path, descriptor.byteLength)),
     );
-    const registration = registrations.get(stored.objectId);
-    if (
-      stored.objectId !== descriptor.recordId ||
-      stored.objectType !== "Bundle" ||
-      registration === undefined
-    )
+    if (stored.objectId !== descriptor.recordId || objects.has(stored.objectId))
       throw new Error("Stored Object identity mismatch");
+    objects.set(stored.objectId, stored);
+  }
+  const reachableFromRegistrations = [...registrations.values()]
+    .flatMap((registration) => [registration.descriptorObjectId, ...registration.artifactObjectIds])
+    .toSorted();
+  if (!sameIds(reachableFromRegistrations, expectedObjectIds))
+    throw new Error("Every Object must belong to one registration closure");
+
+  const payloadDescriptors = new Map(
+    manifest.entries
+      .filter((entry) => entry.recordType === "ArtifactPayload")
+      .map((entry) => [entry.recordId, entry]),
+  );
+  const omissionById = new Map(manifest.omissions.map((entry) => [entry.artifactObjectId, entry]));
+  for (const registration of registrations.values()) {
+    const stored = objects.get(registration.descriptorObjectId);
+    if (stored?.objectType !== "BundleDescriptor") throw new Error("Descriptor Object missing");
     const key = await deriveContextKeyFromCryptoKey(rootKey, {
       vaultId: manifest.originatingVaultId,
-      domain: "vault:bundle:v1",
+      domain: "vault:bundle-descriptor:v1",
       contextId: registration.bundleId,
       keyVersion: 1,
     });
+    let bundleDescriptor: BundleDescriptorV1;
     try {
       const envelope = decodeEncryptedEnvelopeBytes(stored.envelopeBytes);
-      if (envelope.objectType !== "Bundle" || envelope.objectId !== stored.objectId)
-        throw new Error("Bundle envelope mismatch");
-      const plaintext = await decryptEnvelope(envelope, key);
-      if (
-        plaintext.byteLength !== registration.byteLength ||
-        !bytesEqual(await sha256(plaintext), registration.checksum)
-      ) {
-        throw new Error("Bundle registration integrity mismatch");
-      }
-      const bundle = await readBundle(plaintext);
-      if (
-        bundle.manifest.bundleId !== registration.bundleId ||
-        !bytesEqual(
-          encodeCanonicalCbor(bundle.metadata),
-          encodeCanonicalCbor(registration.captureMetadata),
-        ) ||
-        bundle.artifacts.has("SCREENSHOT_FULL") !== registration.screenshotPresent
-      ) {
-        throw new Error("Bundle content does not match its registration Event");
-      }
+      if (envelope.objectType !== "BundleDescriptor" || envelope.objectId !== stored.objectId)
+        throw new Error("Descriptor envelope mismatch");
+      bundleDescriptor = decodeBundleDescriptor(await decryptEnvelope(envelope, key));
     } finally {
       await wipe(key);
+    }
+    if (
+      bundleDescriptor.bundleId !== registration.bundleId ||
+      !sameIds(
+        bundleDescriptor.artifacts.map((artifact) => artifact.artifactObjectId),
+        registration.artifactObjectIds,
+      )
+    )
+      throw new Error("Descriptor does not match Event closure");
+    validateArtifactWarnings(
+      bundleDescriptor.artifacts.map((artifact) => artifact.role),
+      registration.warnings,
+    );
+    const decodedPayloads = new Map<string, Uint8Array>();
+    for (const reference of bundleDescriptor.artifacts) {
+      const artifact = objects.get(reference.artifactObjectId);
+      if (artifact?.objectType !== "Artifact") throw new Error("Artifact Object missing");
+      const payload = payloadDescriptors.get(reference.artifactObjectId);
+      const omission = omissionById.get(reference.artifactObjectId);
+      if ((payload === undefined) === (omission === undefined))
+        throw new Error("Artifact must be exactly present or omitted");
+      if (omission !== undefined) {
+        if (reference.role !== "PRIMARY" && reference.role !== "SCREENSHOT_FULL")
+          throw new Error("Compact Artifact cannot be omitted");
+        if (
+          omission.envelopeByteLength !== artifact.envelopeByteLength ||
+          !bytesEqual(omission.envelopeChecksum, artifact.envelopeChecksum)
+        )
+          throw new Error("Artifact omission does not match Object record");
+        continue;
+      }
+      if (
+        payload?.byteLength !== artifact.envelopeByteLength ||
+        !bytesEqual(payload.checksum, artifact.envelopeChecksum)
+      )
+        throw new Error("Artifact payload descriptor does not match Object record");
+      const artifactKey = await deriveContextKeyFromCryptoKey(rootKey, {
+        vaultId: manifest.originatingVaultId,
+        domain: "vault:artifact:v1",
+        contextId: artifact.objectId,
+        keyVersion: 1,
+      });
+      try {
+        const compact =
+          reference.role === "TEXT_EXTRACTED" || reference.role === "CONTENT_STRUCTURED";
+        if (compact && reference.plaintextByteLength > 16 * 1024 * 1024)
+          throw new Error("Compact Artifact exceeds validation bound");
+        const chunks: Uint8Array[] = [];
+        const prefix = new Uint8Array(16);
+        let prefixLength = 0;
+        const summary = await readArtifactEnvelope({
+          expectedObjectId: artifact.objectId,
+          key: artifactKey,
+          encrypted: await input.openArtifact(artifact.objectId),
+          write: (chunk: Uint8Array) => {
+            if (compact) chunks.push(Uint8Array.from(chunk));
+            if (prefixLength < prefix.byteLength) {
+              const length = Math.min(prefix.byteLength - prefixLength, chunk.byteLength);
+              prefix.set(chunk.subarray(0, length), prefixLength);
+              prefixLength += length;
+            }
+          },
+        });
+        if (
+          summary.envelopeByteLength !== artifact.envelopeByteLength ||
+          !bytesEqual(summary.envelopeChecksum, artifact.envelopeChecksum)
+        )
+          throw new Error("Artifact wrapper does not match Object record");
+        if (
+          summary.plaintextByteLength !== reference.plaintextByteLength ||
+          !bytesEqual(summary.plaintextChecksum, reference.plaintextChecksum)
+        )
+          throw new Error("Artifact plaintext does not match descriptor reference");
+        if (reference.role === "SCREENSHOT_FULL" || reference.role === "THUMBNAIL") {
+          const header = new TextDecoder().decode(prefix.subarray(0, 12));
+          if (!header.startsWith("RIFF") || !header.endsWith("WEBP"))
+            throw new Error("Image Artifact is not WebP");
+        }
+        if (reference.role === "PRIMARY" && prefixLength === 0)
+          throw new Error("MHTML Artifact is empty");
+        const plaintext = new Uint8Array(
+          chunks.reduce((total, chunk) => total + chunk.byteLength, 0),
+        );
+        let offset = 0;
+        for (const chunk of chunks) {
+          plaintext.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        if (compact) decodedPayloads.set(reference.role, plaintext);
+      } finally {
+        await wipe(artifactKey);
+      }
+    }
+    const structured = decodedPayloads.get("CONTENT_STRUCTURED");
+    const text = decodedPayloads.get("TEXT_EXTRACTED");
+    if (structured !== undefined) {
+      const blocks = decodeStructuredContentSequence(structured);
+      if (text !== undefined && !bytesEqual(text, normalizedTextFromBlocks(blocks)))
+        throw new Error("Normalized text does not match structured content");
     }
   }
 }

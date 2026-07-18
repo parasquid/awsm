@@ -29,7 +29,8 @@ export async function hkdfSha256(input: HkdfInput): Promise<Uint8Array> {
 }
 
 export type KeyDomain =
-  | "vault:bundle:v1"
+  | "vault:bundle-descriptor:v1"
+  | "vault:artifact:v1"
   | "vault:event:v1"
   | "vault:projection:v1"
   | "vault:generation:v1"

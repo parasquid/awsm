@@ -1,14 +1,22 @@
 import { decodeEncryptedEnvelopeBytes, decryptEnvelope } from "../../crypto/envelope";
 import { deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
 import { wipe } from "../../crypto/sodium";
-import { readBundle } from "../../domain/bundle";
+import {
+  type ArtifactKind,
+  type ArtifactReferenceV1,
+  type ArtifactRole,
+  type BundleDescriptorV1,
+  type CaptureMetadataV1,
+  decodeBundleDescriptor,
+} from "../../domain/artifact-graph";
 import { decodeCanonicalCbor } from "../../domain/cbor";
-import type { LibraryItemV1, RuntimeErrorId } from "../../domain/contracts";
+import type { CaptureWarningId, LibraryItemV1, RuntimeErrorId } from "../../domain/contracts";
 import type {
   StoredCollectionProjectionV1,
   StoredObjectV1,
   StoredProjectionV1,
 } from "../../drivers/indexeddb";
+import type { ArtifactStore } from "../artifact";
 import {
   decodeLibraryCollectionState,
   groupCollectionItems,
@@ -24,9 +32,59 @@ export interface LibraryRepository {
 
 export interface LibraryDetailV1 {
   readonly item: LibraryItemV1;
-  readonly metadata: Readonly<Record<string, unknown>>;
-  readonly mhtml: Uint8Array;
-  readonly screenshot?: Uint8Array;
+  readonly metadata: CaptureMetadataV1;
+  readonly artifacts: readonly ArtifactDetailItem[];
+}
+
+export interface ArtifactDetailItem {
+  readonly role: ArtifactRole;
+  readonly state: "Present" | "NotProduced" | "Failed";
+  readonly kind: ArtifactKind;
+  readonly mimeType: string;
+  readonly byteLength?: number;
+  readonly acquiredAt?: string;
+  readonly warning?: CaptureWarningId;
+  readonly canPreview: boolean;
+  readonly canInspect: boolean;
+  readonly canDownload: boolean;
+}
+
+export interface OpenArtifactResult {
+  readonly item: LibraryItemV1;
+  readonly reference: ArtifactReferenceV1;
+  readonly stream: ReadableStream<Uint8Array>;
+}
+
+const ROLE_DEFINITION: Readonly<
+  Record<ArtifactRole, { readonly kind: ArtifactKind; readonly mimeType: string }>
+> = {
+  PRIMARY: { kind: "CAPTURE", mimeType: "multipart/related" },
+  SCREENSHOT_FULL: { kind: "IMAGE", mimeType: "image/webp" },
+  THUMBNAIL: { kind: "IMAGE", mimeType: "image/webp" },
+  TEXT_EXTRACTED: { kind: "TEXT", mimeType: "text/plain;charset=utf-8" },
+  CONTENT_STRUCTURED: {
+    kind: "STRUCTURED_CONTENT",
+    mimeType: "application/cbor-seq",
+  },
+};
+
+const ROLES = Object.keys(ROLE_DEFINITION) as readonly ArtifactRole[];
+
+function roleWarning(
+  role: ArtifactRole,
+  warnings: readonly CaptureWarningId[],
+): CaptureWarningId | undefined {
+  if (role === "SCREENSHOT_FULL")
+    return warnings.find(
+      (warning) => warning === "SCREENSHOT_CAPTURE_FAILED" || warning === "SCREENSHOT_UNAVAILABLE",
+    );
+  if (role === "THUMBNAIL")
+    return warnings.find((warning) => warning === "THUMBNAIL_CAPTURE_FAILED");
+  if (role === "TEXT_EXTRACTED")
+    return warnings.find((warning) => warning === "TEXT_EXTRACTION_FAILED");
+  if (role === "CONTENT_STRUCTURED")
+    return warnings.find((warning) => warning === "STRUCTURED_CONTENT_EXTRACTION_FAILED");
+  return undefined;
 }
 
 export type LibraryPageGroupV1 = LibraryCollectionGroupV1;
@@ -45,11 +103,18 @@ export class LibraryService {
   readonly repository: LibraryRepository;
   readonly rootKey: CryptoKey;
   readonly vaultId: string;
+  readonly artifactStore: ArtifactStore;
 
-  constructor(repository: LibraryRepository, rootKey: CryptoKey, vaultId: string) {
+  constructor(
+    repository: LibraryRepository,
+    rootKey: CryptoKey,
+    vaultId: string,
+    artifactStore: ArtifactStore,
+  ) {
     this.repository = repository;
     this.rootKey = rootKey;
     this.vaultId = vaultId;
+    this.artifactStore = artifactStore;
   }
 
   async list(): Promise<readonly LibraryItemV1[]> {
@@ -103,36 +168,93 @@ export class LibraryService {
 
   async detail(bundleId: string): Promise<LibraryDetailV1> {
     try {
-      const item = (await this.list()).find((candidate) => candidate.bundleId === bundleId);
-      if (item === undefined) throw new Error("Missing Projection");
-      const record = await this.repository.getStoredObject(item.bundleObjectId);
-      if (record === undefined || record.objectType !== "Bundle") throw new Error("Missing Object");
-      const key = await deriveContextKeyFromCryptoKey(this.rootKey, {
-        vaultId: this.vaultId,
-        domain: "vault:bundle:v1",
-        contextId: item.bundleId,
-        keyVersion: 1,
-      });
-      try {
-        const envelope = decodeEncryptedEnvelopeBytes(record.envelopeBytes);
-        if (envelope.objectId !== record.objectId || envelope.objectType !== "Bundle") {
-          throw new Error("Object envelope mismatch");
-        }
-        const bundle = await readBundle(await decryptEnvelope(envelope, key));
-        const mhtml = bundle.artifacts.get("PRIMARY");
-        if (mhtml === undefined) throw new Error("Missing MHTML");
-        const screenshot = bundle.artifacts.get("SCREENSHOT_FULL");
-        return {
-          item,
-          metadata: bundle.metadata,
-          mhtml,
-          ...(screenshot === undefined ? {} : { screenshot }),
-        };
-      } finally {
-        await wipe(key);
+      const { item, descriptor } = await this.loadDescriptor(bundleId);
+      const references = new Map(
+        descriptor.artifacts.map((reference) => [reference.role, reference]),
+      );
+      for (const reference of descriptor.artifacts) {
+        const object = await this.repository.getStoredObject(reference.artifactObjectId);
+        if (object?.objectType !== "Artifact") throw new Error("Missing Artifact");
       }
+      return {
+        item,
+        metadata: descriptor.metadata,
+        artifacts: ROLES.map((role) => {
+          const definition = ROLE_DEFINITION[role];
+          const reference = references.get(role);
+          const warning = roleWarning(role, item.warnings);
+          const state =
+            reference !== undefined ? "Present" : warning === undefined ? "NotProduced" : "Failed";
+          return {
+            role,
+            state,
+            kind: definition.kind,
+            mimeType: definition.mimeType,
+            ...(reference === undefined
+              ? {}
+              : {
+                  byteLength: reference.plaintextByteLength,
+                  acquiredAt: reference.acquiredAt,
+                }),
+            ...(warning === undefined ? {} : { warning }),
+            canPreview:
+              reference !== undefined && (role === "SCREENSHOT_FULL" || role === "THUMBNAIL"),
+            canInspect:
+              reference !== undefined &&
+              (role === "TEXT_EXTRACTED" || role === "CONTENT_STRUCTURED"),
+            canDownload: reference !== undefined,
+          };
+        }),
+      };
     } catch {
       throw new LibraryError("BUNDLE_INVALID", "The archived capture is missing or corrupt.");
+    }
+  }
+
+  async openArtifact(bundleId: string, role: ArtifactRole): Promise<OpenArtifactResult> {
+    try {
+      const { item, descriptor } = await this.loadDescriptor(bundleId);
+      const reference = descriptor.artifacts.find((artifact) => artifact.role === role);
+      if (reference === undefined) throw new Error("Artifact was not produced");
+      const object = await this.repository.getStoredObject(reference.artifactObjectId);
+      if (object?.objectType !== "Artifact") throw new Error("Missing Artifact");
+      return {
+        item,
+        reference,
+        stream: await this.artifactStore.openPlaintext({
+          vaultId: this.vaultId,
+          object,
+          reference,
+          rootKey: this.rootKey,
+        }),
+      };
+    } catch {
+      throw new LibraryError("BUNDLE_INVALID", "The Artifact is missing or corrupt.");
+    }
+  }
+
+  private async loadDescriptor(
+    bundleId: string,
+  ): Promise<{ readonly item: LibraryItemV1; readonly descriptor: BundleDescriptorV1 }> {
+    const item = (await this.list()).find((candidate) => candidate.bundleId === bundleId);
+    if (item === undefined) throw new Error("Missing Projection");
+    const record = await this.repository.getStoredObject(item.descriptorObjectId);
+    if (record?.objectType !== "BundleDescriptor") throw new Error("Missing descriptor");
+    const key = await deriveContextKeyFromCryptoKey(this.rootKey, {
+      vaultId: this.vaultId,
+      domain: "vault:bundle-descriptor:v1",
+      contextId: item.bundleId,
+      keyVersion: 1,
+    });
+    try {
+      const envelope = decodeEncryptedEnvelopeBytes(record.envelopeBytes);
+      if (envelope.objectId !== record.objectId || envelope.objectType !== "BundleDescriptor")
+        throw new Error("Descriptor envelope mismatch");
+      const descriptor = decodeBundleDescriptor(await decryptEnvelope(envelope, key));
+      if (descriptor.bundleId !== bundleId) throw new Error("Descriptor Bundle mismatch");
+      return { item, descriptor };
+    } finally {
+      await wipe(key);
     }
   }
 

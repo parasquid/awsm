@@ -39,7 +39,7 @@ Derived State
 Authoritative data consists of immutable Objects whose Object Types are defined by their specifications, including:
 
 - Event Log Segment Objects
-- Bundle Objects
+- Bundle Descriptor and Artifact Objects
 - Wrapped Key Objects
 - Vault Metadata Objects
 

@@ -369,7 +369,8 @@ The storage layer should optimize for:
 - streaming downloads
 - minimal memory usage
 
-Storage should avoid loading entire Bundles into memory whenever possible.
+Storage SHALL avoid loading large Artifacts into memory. The Artifact Store streams encrypted
+frames and keeps memory bounded independently of Artifact or Vault size.
 
 ---
 
@@ -391,7 +392,9 @@ Corrupted Blocks:
 
 Redownload.
 
-Partial Bundles are never committed.
+Partial Bundle graphs are never committed. Prepared external wrappers are not authoritative until
+their descriptor and Artifact records commit atomically; startup reconciliation removes orphan
+preparations. A committed record with a missing or corrupt wrapper is corruption.
 
 ---
 
@@ -415,9 +418,9 @@ Commodity object storage provides durability, scalability, and operational simpl
 
 ---
 
-## Why Reference Counting?
+## Why Graph Reachability?
 
-Reference-based deletion allows efficient storage reclamation without scanning Bundle contents.
+Descriptor-to-Artifact reachability allows exact storage reclamation without interpreting payloads.
 
 ---
 

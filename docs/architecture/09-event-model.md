@@ -139,7 +139,9 @@ Bundle Imported
 
 Bundle Removed
 
-`BundleRegistered` is the canonical first-slice Event name. It records that an immutable Bundle Object was accepted into Vault history. Host-level capture completion is operational state and does not introduce a separate synchronized `BundleCreated` Event.
+`BundleRegistered` is the canonical first-slice Event name. It records that an exact immutable
+Bundle Descriptor and Artifact Object closure was accepted into Vault history. Host-level capture
+completion is operational state and does not introduce a separate synchronized Event.
 
 `BundleRegistered` also records the Capture's initial assigned Collection identity. `CollectionsMerged` records stable identity redirects, `CapturesMoved` records exact assignment changes, and `CollectionMergeReverted` deactivates a named merge fact. These Events preserve user-directed grouping without mutating Bundles or earlier Events.
 

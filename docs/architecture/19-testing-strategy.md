@@ -363,6 +363,17 @@ Before the first release, tests cover only the current canonical:
 
 Tests and fixtures for discarded pre-release representations must be removed.
 
+Artifact graph coverage SHALL include descriptor/Event exact closure, Role and warning invariants,
+canonical structured-content vectors, adversarial frame parsing, empty/final frames, wrapper and
+plaintext checksum failures, Artifact Store orphan reconciliation, rollback at every authoritative
+write, Projection rebuild, and Vault Vacuum reachability.
+
+Vault Package coverage SHALL independently recover Complete packages, validate permitted Selective
+omissions, reject compact-Artifact omission and false coverage, force ZIP64 on small fixtures, and
+exercise counters beyond 4 GiB without proportional memory use. Browser tests SHALL keep at least
+two surfaces open for invalidation and visually inspect Artifact resting, loading, success, failure,
+focus, and narrow states.
+
 ---
 
 # Continuous Integration

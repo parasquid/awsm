@@ -339,6 +339,19 @@ No server interaction is required.
 
 ---
 
+# Capture Source Artifacts
+
+The initial Capture pipeline creates `TEXT_EXTRACTED` and `CONTENT_STRUCTURED` as immutable source
+Artifacts from one ordered live-DOM semantic block stream. Projection Builders consume those
+Artifacts to rebuild Search Projection Materializations without decrypting MHTML or screenshots.
+The source Artifacts remain authoritative; the Search Materialization remains local, disposable,
+and unsynchronized.
+
+An optional extraction failure reduces Search coverage and is visible as a typed Capture warning.
+It never invalidates mandatory `PRIMARY` preservation.
+
+---
+
 # Offline Operation
 
 All Search Projection Materializations reside locally.

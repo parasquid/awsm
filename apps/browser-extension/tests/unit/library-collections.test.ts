@@ -20,12 +20,12 @@ function item(
   return {
     version: 1,
     bundleId: id(bundle),
-    bundleObjectId: id(bundle + 100),
+    descriptorObjectId: id(bundle + 100),
     assignedCollectionId: id(collection),
     title: `Capture ${String(bundle)}`,
     originalUrl,
     capturedAt,
-    screenshotPresent: false,
+    artifactRoles: ["PRIMARY"],
     status,
     warnings: [],
   };

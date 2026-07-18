@@ -15,6 +15,8 @@ import type {
   StoredVaultHeadV1,
   StoredVaultNameProjectionV1,
 } from "../../drivers/indexeddb";
+import type { ArtifactStore } from "../artifact";
+import { decodeBundleRegisteredPayload } from "../capture/contracts";
 import { prepareVaultGeneration, verifyVaultGeneration } from "../vault/generation";
 import { decodeVaultNameEvent, decryptVaultNameProjection } from "../vault/name-crypto";
 import { reduceVaultNameProjection, type VaultNameEventV1 } from "../vault/name-projection";
@@ -64,13 +66,11 @@ const EVENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
     "protocolVersion",
     "correlationId",
     "bundleId",
-    "bundleObjectId",
+    "descriptorObjectId",
+    "artifactObjectIds",
     "collectionId",
-    "screenshotPresent",
     "captureProfileId",
-    "captureMetadata",
     "warnings",
-    "integrity",
   ],
   CapturesDeleted: [...COMMON_EVENT_FIELDS, "bundleIds", "rewrite"],
   CapturesRestored: [...COMMON_EVENT_FIELDS, "bundleIds", "rewrite"],
@@ -115,6 +115,29 @@ async function eventPayload(
   } finally {
     await wipe(key);
   }
+}
+
+export async function objectIdsForBundles(
+  events: readonly StoredEvent[],
+  bundleIds: ReadonlySet<string>,
+  rootKey: CryptoKey,
+  vaultId: string,
+): Promise<ReadonlySet<string>> {
+  const objectIds = new Set<string>();
+  for (const event of events) {
+    const payload = await eventPayload(event, rootKey, vaultId);
+    if (payload.eventType !== "BundleRegistered") continue;
+    const registration = decodeBundleRegisteredPayload(payload, event.referencedObjectIds);
+    if (bundleIds.has(registration.bundleId))
+      for (const objectId of event.referencedObjectIds) objectIds.add(objectId);
+  }
+  return objectIds;
+}
+
+export function storedObjectByteLength(object: StoredObjectV1): number {
+  return object.objectType === "BundleDescriptor"
+    ? object.envelopeBytes.byteLength
+    : object.envelopeByteLength;
 }
 
 async function rewrittenEvent(
@@ -204,6 +227,7 @@ export class VaultVacuumService {
     readonly rootKey: CryptoKey,
     readonly vaultId: string,
     readonly deviceId: string,
+    readonly artifactStore: ArtifactStore,
   ) {}
 
   async execute(): Promise<VacuumResult> {
@@ -276,16 +300,11 @@ export class VaultVacuumService {
     );
 
     const deletedBundleIds = new Set(deleted.map((item) => item.bundleId));
-    const deletedObjectIds = new Set(deleted.map((item) => item.bundleObjectId));
+    const deletedObjectIds = new Set<string>();
     const activeBundleIds = new Set(
       items.filter((item) => item.status === "Active").map((item) => item.bundleId),
     );
     const replayState = new Map<string, "Active" | "Deleted">();
-    for (const object of objects) {
-      if (object.objectType !== "Bundle") {
-        throw new Error(`Unsupported Object type during Vault Vacuum: ${object.objectType}`);
-      }
-    }
     const eventIds: string[] = [];
     const eventsToAdd: StoredEvent[] = [];
     const vaultNameEvents: VaultNameEventV1[] = [];
@@ -305,8 +324,10 @@ export class VaultVacuumService {
         continue;
       }
       if (eventType === "BundleRegistered") {
-        const bundleId = string(payload.bundleId, "event.bundleId");
+        const registration = decodeBundleRegisteredPayload(payload, event.referencedObjectIds);
+        const bundleId = registration.bundleId;
         if (deletedBundleIds.has(bundleId)) {
+          for (const objectId of event.referencedObjectIds) deletedObjectIds.add(objectId);
           eventIds.push(event.eventId);
           eventBytes += event.envelopeBytes.byteLength;
           continue;
@@ -333,7 +354,7 @@ export class VaultVacuumService {
             event,
             payload,
             retainedIds,
-            first.bundleObjectId,
+            first.descriptorObjectId,
             this.rootKey,
             this.vaultId,
           );
@@ -370,7 +391,7 @@ export class VaultVacuumService {
             event,
             payload,
             retainedMoves,
-            first.bundleObjectId,
+            first.descriptorObjectId,
             this.rootKey,
             this.vaultId,
           );
@@ -416,7 +437,7 @@ export class VaultVacuumService {
     }
     const objectBytes = objects
       .filter((object) => deletedObjectIds.has(object.objectId))
-      .reduce((total, object) => total + object.envelopeBytes.byteLength, 0);
+      .reduce((total, object) => total + storedObjectByteLength(object), 0);
     const generationId = crypto.randomUUID();
     const generationNumber = currentHead.generationNumber + 1;
     const retainedObjectIds = objects
@@ -454,6 +475,12 @@ export class VaultVacuumService {
       generation,
       head,
     });
+    const deletedArtifacts = objects.filter(
+      (object) => object.objectType === "Artifact" && deletedObjectIds.has(object.objectId),
+    );
+    await Promise.all(
+      deletedArtifacts.map((object) => this.artifactStore.remove(this.vaultId, object.objectId)),
+    );
     didCommit();
     return {
       deletedCaptureCount: deleted.length,

@@ -58,7 +58,7 @@ Master Secret
 
 Vault Root Key
 
-├── Bundle Key Domain
+├── Bundle Descriptor Key Domain
 ├── Event Key Domain
 ├── Artifact Key Domain
 ├── Metadata Key Domain
@@ -89,7 +89,7 @@ Context identifiers MAY include Bundle ID, Event ID, Artifact ID, Device ID, or 
 Initial domain labels include:
 
 ```text
-vault:bundle:v1
+vault:bundle-descriptor:v1
 vault:event:v1
 vault:artifact:v1
 vault:metadata:v1
@@ -102,17 +102,18 @@ Domain labels MUST NOT be reused for different semantics.
 
 ---
 
-# 7. Bundle Keys
+# 7. Bundle Descriptor Keys
 
-Bundle keys protect serialized Bundle contents.
+Bundle Descriptor keys protect compact serialized Bundle Descriptors.
 
 The derivation context SHALL include:
 
 - Vault ID
 - Bundle ID
-- Bundle key version
+- Bundle Descriptor key version
 
-The initial implementation SHALL derive Bundle keys with HKDF-SHA256. It SHALL NOT generate or persist a separate random wrapped Bundle key.
+The initial implementation SHALL derive Bundle Descriptor keys with HKDF-SHA256. It SHALL NOT
+generate or persist a separate random wrapped key.
 
 ---
 
@@ -134,12 +135,12 @@ The initial implementation SHALL derive one Event key per Event ID.
 
 # 9. Artifact Keys
 
-Artifact keys protect Artifact payloads when Artifacts are encrypted independently from their containing Bundle or storage Object.
+Artifact keys protect independently framed Artifact payloads.
 
 The derivation context SHALL include:
 
 - Vault ID
-- Artifact ID
+- Artifact Object ID
 - Artifact key version
 
 ---

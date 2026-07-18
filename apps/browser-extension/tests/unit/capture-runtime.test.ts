@@ -1,13 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { CaptureMetadataV1 } from "../../src/domain/bundle";
+import type { CaptureMetadataV1 } from "../../src/domain/artifact-graph";
 import type { CapturePageCommandV1, LibraryItemV1 } from "../../src/domain/contracts";
 import type { AtomicRegistrationV1, CommandOutcomeV1 } from "../../src/drivers/indexeddb";
 import { CaptureHostError } from "../../src/hosts/chrome/capture";
-import {
-  CaptureRuntime,
-  CaptureRuntimeError,
-  type CaptureRuntimePorts,
-} from "../../src/runtime/capture/service";
+import { CaptureRuntime, type CaptureRuntimePorts } from "../../src/runtime/capture/service";
 
 const ids = Array.from(
   { length: 20 },
@@ -51,7 +47,7 @@ function outcome(): CommandOutcomeV1 {
     commandId: command.commandId,
     status: "Succeeded",
     bundleId: fixedId(3),
-    bundleObjectId: fixedId(4),
+    descriptorObjectId: fixedId(4),
     eventId: fixedId(5),
   };
 }
@@ -59,17 +55,33 @@ function outcome(): CommandOutcomeV1 {
 function registration(): AtomicRegistrationV1 {
   const result = outcome();
   return {
-    object: {
-      version: 1,
-      objectId: result.bundleObjectId,
-      objectType: "Bundle",
-      envelopeBytes: new Uint8Array([1]),
+    objects: [
+      {
+        version: 1 as const,
+        objectId: result.descriptorObjectId,
+        objectType: "BundleDescriptor",
+        envelopeBytes: new Uint8Array([1]),
+      },
+      {
+        version: 1,
+        objectId: fixedId(19),
+        objectType: "Artifact" as const,
+        envelopeFormat: "artifact:xchacha20poly1305-chunked:v1" as const,
+        envelopeByteLength: 10,
+        envelopeChecksumAlgorithm: "hash:sha256:v1" as const,
+        envelopeChecksum: new Uint8Array(32),
+      },
+    ],
+    graph: {
+      bundleId: result.bundleId,
+      descriptorObjectId: result.descriptorObjectId,
+      artifactObjectIds: [fixedId(19)],
     },
     event: {
       version: 1,
       vaultId: fixedId(10),
       eventId: result.eventId,
-      referencedObjectIds: [result.bundleObjectId],
+      referencedObjectIds: [result.descriptorObjectId, fixedId(19)].toSorted(),
       orderingTimestamp: timestamp,
       envelopeBytes: new Uint8Array([2]),
     },
@@ -90,14 +102,33 @@ function ports(overrides: Partial<CaptureRuntimePorts> = {}): CaptureRuntimePort
     saveJob: vi.fn(async () => undefined),
     commitRegistration: vi.fn(async (value) => value.outcome),
     preflight: vi.fn(async () => ({ tabId: 7, url: command.observedUrl })),
-    acquireMhtml: vi.fn(async () => new TextEncoder().encode("MIME-Version: 1.0")),
+    acquireMhtml: vi.fn(async () => new Blob(["MIME-Version: 1.0"])),
     acquireScreenshot: vi.fn(async () => ({
-      webpBytes: new Uint8Array([137, 80, 78, 71]),
+      webpBlob: new Blob([new Uint8Array([137, 80, 78, 71])]),
+      warnings: [],
+    })),
+    collectContent: vi.fn(async () => ({
+      structured: new Uint8Array([1]),
+      normalizedText: new Uint8Array([2]),
       warnings: [],
     })),
     collectMetadata: vi.fn(async () => metadata),
     collectionContext: vi.fn(async () => ({ items: [], topology: [] })),
     prepareRegistration: vi.fn(async () => registration()),
+    prepareArtifact: vi.fn(async (objectId) => ({
+      object: {
+        version: 1 as const,
+        objectId,
+        objectType: "Artifact" as const,
+        envelopeFormat: "artifact:xchacha20poly1305-chunked:v1" as const,
+        envelopeByteLength: 10,
+        envelopeChecksumAlgorithm: "hash:sha256:v1" as const,
+        envelopeChecksum: new Uint8Array(32),
+      },
+      plaintextByteLength: 1,
+      plaintextChecksum: new Uint8Array(32),
+    })),
+    removeArtifact: vi.fn(async () => undefined),
     uuid: () => fixedId(idIndex++),
     now: () => timestamp,
     ...overrides,
@@ -112,6 +143,7 @@ describe("capture Runtime job", () => {
     expect(vi.mocked(fake.saveJob).mock.calls.map(([job]) => [job.state, job.stage])).toEqual([
       ["Created", "Preflight"],
       ["Running", "MHTML"],
+      ["Running", "Content"],
       ["Running", "Screenshot"],
       ["Running", "Commit"],
       ["Succeeded", "Commit"],
@@ -162,7 +194,26 @@ describe("capture Runtime job", () => {
     expect(fake.prepareRegistration).toHaveBeenCalledWith(
       expect.objectContaining({ warnings: ["SCREENSHOT_CAPTURE_FAILED"] }),
     );
-    expect(vi.mocked(fake.prepareRegistration).mock.calls[0]?.[0]).not.toHaveProperty("screenshot");
+    expect(vi.mocked(fake.prepareRegistration).mock.calls[0]?.[0].artifacts).toHaveLength(3);
+    expect(fake.commitRegistration).toHaveBeenCalledOnce();
+  });
+
+  it("records an independent optional Artifact failure and still commits the complete produced graph", async () => {
+    let prepareCalls = 0;
+    const base = ports();
+    const prepareArtifact = vi.fn(
+      async (...args: Parameters<CaptureRuntimePorts["prepareArtifact"]>) => {
+        prepareCalls += 1;
+        if (prepareCalls === 2) throw new Error("structured storage failed");
+        return base.prepareArtifact(...args);
+      },
+    );
+    const fake = ports({ prepareArtifact });
+    await new CaptureRuntime(fake).execute(command);
+    expect(fake.prepareRegistration).toHaveBeenCalledWith(
+      expect.objectContaining({ warnings: ["STRUCTURED_CONTENT_EXTRACTION_FAILED"] }),
+    );
+    expect(vi.mocked(fake.prepareRegistration).mock.calls[0]?.[0].artifacts).toHaveLength(3);
     expect(fake.commitRegistration).toHaveBeenCalledOnce();
   });
 
@@ -170,12 +221,12 @@ describe("capture Runtime job", () => {
     const existing: LibraryItemV1 = {
       version: 1,
       bundleId: fixedId(12),
-      bundleObjectId: fixedId(13),
+      descriptorObjectId: fixedId(13),
       assignedCollectionId: fixedId(14),
       title: "Earlier",
       originalUrl: `${metadata.originalUrl}#earlier`,
       capturedAt: "2026-07-16T16:00:00.000Z",
-      screenshotPresent: false,
+      artifactRoles: ["PRIMARY"],
       status: "Active",
       warnings: [],
     };
@@ -186,18 +237,6 @@ describe("capture Runtime job", () => {
     expect(fake.prepareRegistration).toHaveBeenCalledWith(
       expect.objectContaining({ collectionId: existing.assignedCollectionId }),
     );
-  });
-
-  it("maps an oversized Bundle to CAPTURE_TOO_LARGE and never opens the commit", async () => {
-    const fake = ports({
-      prepareRegistration: vi.fn(async () =>
-        Promise.reject(new CaptureRuntimeError("CAPTURE_TOO_LARGE", "safe")),
-      ),
-    });
-    await expect(new CaptureRuntime(fake).execute(command)).rejects.toMatchObject({
-      id: "CAPTURE_TOO_LARGE",
-    });
-    expect(fake.commitRegistration).not.toHaveBeenCalled();
   });
 
   it("leaves a Running Commit job if termination occurs after atomic commit", async () => {

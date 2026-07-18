@@ -430,21 +430,21 @@ Use one IndexedDB database. Prefix every Vault-owned record key with Vault ID.
 
 Canonical out-of-line keys:
 
-| Store | Key |
-|---|---|
-| `vault_metadata` | `[vaultId, "metadata"]` |
-| `key_slots` | `[vaultId, slotKind]` |
-| `device_keys` | `[vaultId, "device"]` |
-| `objects` | `[vaultId, objectId]` |
-| `events` | `[vaultId, eventId]` |
-| `library_projection` | `[vaultId, bundleId]` |
+| Store                   | Key                       |
+| ----------------------- | ------------------------- |
+| `vault_metadata`        | `[vaultId, "metadata"]`   |
+| `key_slots`             | `[vaultId, slotKind]`     |
+| `device_keys`           | `[vaultId, "device"]`     |
+| `objects`               | `[vaultId, objectId]`     |
+| `events`                | `[vaultId, eventId]`      |
+| `library_projection`    | `[vaultId, bundleId]`     |
 | `collection_projection` | `[vaultId, projectionId]` |
-| `vault_name_projection` | `[vaultId, "active"]` |
-| `capture_jobs` | `[vaultId, jobId]` |
-| `command_outcomes` | `[vaultId, commandId]` |
-| `vault_generations` | `[vaultId, generationId]` |
-| `vault_head` | `[vaultId, "active"]` |
-| `vacuum_jobs` | `[vaultId, jobId]` |
+| `vault_name_projection` | `[vaultId, "active"]`     |
+| `capture_jobs`          | `[vaultId, jobId]`        |
+| `command_outcomes`      | `[vaultId, commandId]`    |
+| `vault_generations`     | `[vaultId, generationId]` |
+| `vault_head`            | `[vaultId, "active"]`     |
+| `vacuum_jobs`           | `[vaultId, jobId]`        |
 
 Create one Driver helper for exact keys and one for Vault-prefix `IDBKeyRange`. All Driver enumeration, count, clear, rebuild, and recovery methods must use those helpers. Do not call `clear()` on a shared Vault-owned store.
 
@@ -466,7 +466,7 @@ interface StoredEvent {
 ```
 
 - `VaultCreated` and `VaultRenamed` use an empty dependency list.
-- `BundleRegistered` references its Bundle Object ID.
+- `BundleRegistered` references its Bundle Descriptor Object ID and exact Artifact Object closure.
 - Capture lifecycle and Collection Events retain their current applicable Bundle dependencies as canonical sorted unique lists.
 - Update Vacuum and decoders to consume the list; do not invent a placeholder Object for Vault Events.
 

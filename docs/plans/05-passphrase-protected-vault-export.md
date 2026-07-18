@@ -8,6 +8,11 @@
 `docs/plans/04-library-centered-vault-rename.md`, and the architecture and specifications reconciled
 by this plan
 
+**Current package authority:**
+`docs/plans/06-independent-artifact-vault-graph-and-selective-export.md`. Plan 06 retains the
+passphrase and ZIP64 decisions while replacing package inventory, coverage, Artifact payload, and
+validation contracts. Use the current Import and Export Specification for implementation.
+
 ---
 
 # 1. Purpose and Roadmap Context
@@ -218,8 +223,8 @@ numbering according to the repository policy.
 
 Add exact dependency `@zip.js/zip.js@2.8.31` for Vault Package ZIP64 streaming. Its documented
 ZIP64 and Web Streams support is required because a Vault may exceed classic ZIP's 4 GiB archive
-boundary. Keep `fflate` for the existing size-bounded Bundle ZIP format; changing Bundle
-serialization is out of scope.
+boundary. Artifact wrappers and Bundle Descriptors remain independent authoritative Objects; Vault
+Package writing SHALL stream them without a nested Bundle container.
 
 Configure the Vault Package writer and validator as follows:
 
@@ -424,7 +429,8 @@ Before writing any package bytes, the Export Service must:
 7. verify each stored Event's Vault ID, Event ID, ordering timestamp, and dependency list against
    authenticated Event contents;
 8. replay supported Vault, Library, lifecycle, and Collection Events successfully;
-9. map every `BundleRegistered` fact to exactly one Bundle Object;
+9. map every `BundleRegistered` fact to exactly one descriptor and its exact Artifact Object
+   closure;
 10. decrypt, decode, and verify every Bundle and Artifact checksum, including Deleted Captures; and
 11. prove every referenced Object is reachable and every reachable Object is referenced by valid
     authoritative history.
@@ -522,9 +528,11 @@ closes after acceptance.
 Add the persisted operational record:
 
 ```ts
-type ExportJobState = "Created" | "Running" | "Succeeded" | "Failed" | "Cancelled";
+type ExportJobState =
+  "Created" | "Running" | "Succeeded" | "Failed" | "Cancelled";
 
-type ExportJobStage = "Preflight" | "Snapshot" | "Verify" | "Package" | "Download";
+type ExportJobStage =
+  "Preflight" | "Snapshot" | "Verify" | "Package" | "Download";
 
 interface ExportJob {
   readonly version: 1;

@@ -12,6 +12,12 @@
 
 **Implementation evidence:** `docs/plans/02-chrome-extension-capture-vertical-slice-tdd-evidence.md`
 
+**Current Capture-format authority:**
+`docs/plans/06-independent-artifact-vault-graph-and-selective-export.md`. That plan replaces this
+plan's monolithic Bundle, storage, thumbnail, detail-read, Vacuum-size, and Export assumptions. Use
+the current formal specifications for implementation; the superseded contract details below are
+not executable guidance.
+
 ---
 
 # 1. Purpose
@@ -113,7 +119,7 @@ Do not use `any`, type-suppression directives, unchecked type assertions at stor
 Runtime dependencies:
 
 - `libsodium-wrappers-sumo`: XChaCha20-Poly1305 and Argon2id.
-- `fflate`: ZIP creation and reading.
+- `@zip.js/zip.js`: streaming ZIP64 Vault Package creation and validation.
 - `cborg`: canonical CBOR.
 
 Development dependencies:
@@ -129,7 +135,7 @@ Do not add:
 
 - a state-management library;
 - a database wrapper;
-- a ZIP abstraction beyond `fflate`;
+- another ZIP implementation;
 - an ID library;
 - a UI framework;
 - a logging framework; or
@@ -271,7 +277,7 @@ The successful command produces exactly one `BundleRegisteredV1` Event with:
 - protocol version;
 - correlation ID equal to the capture command ID;
 - Bundle ID;
-- Bundle Object ID;
+- Bundle Descriptor Object ID and exact Artifact Object ID closure;
 - capture profile ID;
 - encrypted user-visible capture metadata; and
 - integrity metadata.
@@ -283,11 +289,11 @@ The successful command produces exactly one `BundleRegisteredV1` Event with:
 `LibraryItemV1` is a rebuildable Projection row containing:
 
 - Bundle ID;
-- Bundle Object ID;
+- Bundle Descriptor Object ID;
 - title;
 - original URL;
 - capture timestamp;
-- screenshot-present flag; and
+- Artifact Role presence and typed absence state; and
 - capture warning identifiers.
 
 Persist each row encrypted. The Projection is never authoritative and can be rebuilt by replaying `BundleRegistered` Events.
@@ -301,7 +307,6 @@ Use typed errors with stable identifiers:
 - `PERMISSION_DENIED`
 - `MHTML_UNAVAILABLE`
 - `MHTML_CAPTURE_FAILED`
-- `CAPTURE_TOO_LARGE`
 - `CAPTURE_INTERRUPTED`
 - `BUNDLE_INVALID`
 - `CRYPTO_AUTHENTICATION_FAILED`
@@ -348,11 +353,12 @@ independent user-created Vault Packages and is specified by the Import and Expor
 
 ## 6.4 Derived keys
 
-Do not generate or persist random per-Bundle keys in v1.
+Do not generate or persist random per-Object content keys.
 
 Derive 32-byte context keys with HKDF-SHA256 from the Vault Root Key:
 
-- Bundle Object: domain `vault:bundle:v1`, context Vault ID + Bundle ID.
+- Bundle Descriptor Object: domain `vault:bundle-descriptor:v1`, context Vault ID + Bundle ID.
+- Artifact Object: domain `vault:artifact:v1`, context Vault ID + Artifact Object ID.
 - Event Object: domain `vault:event:v1`, context Vault ID + Event ID.
 - Projection row: domain `vault:projection:v1`, context Vault ID + projection type + Bundle ID.
 
@@ -397,72 +403,9 @@ The profile succeeds when MHTML and required metadata are valid. Screenshot fail
 
 ## 7.2 ZIP layout
 
-The canonical plaintext Bundle representation is a ZIP archive:
-
-```text
-manifest.cbor
-metadata.cbor
-artifacts/
-├── primary.mhtml
-└── screenshot-full.webp  # omitted when unavailable
-```
-
-Rules:
-
-- UTF-8 paths exactly as shown.
-- Entries sorted lexicographically by complete path.
-- No directory entries.
-- Fixed ZIP timestamp of 1980-01-01 00:00:00.
-- Fixed compression level selected once in code and named in the serialization version.
-- No platform-specific extra fields, comments, or nondeterministic attributes.
-- ZIP serialization identifier `bundle:zip:v1`.
-- Canonical CBOR identifier `cbor:canonical:v1`.
-- Same logical inputs and versions must produce byte-identical ZIP output.
-
-## 7.3 Manifest and metadata
-
-`manifest.cbor` is canonical CBOR and contains:
-
-- Manifest version;
-- Bundle specification version;
-- serialization identifiers;
-- Bundle ID;
-- creation timestamp;
-- creating client version;
-- Capture Profile ID;
-- Capture Adapter version;
-- ordered Artifact references; and
-- required validation metadata.
-
-Each Artifact reference contains:
-
-- Artifact ID;
-- Artifact schema version;
-- Kind;
-- Role;
-- MIME type;
-- byte length;
-- SHA-256 checksum bytes;
-- checksum algorithm identifier `hash:sha256:v1`; and
-- canonical path.
-
-`metadata.cbor` contains the user-sensitive capture metadata from `CaptureResultV1`. It is inside the encrypted Bundle and must not be copied into plaintext storage records.
-
-Artifact identifiers are assigned deterministically within the Bundle:
-
-- `A000001`: primary MHTML.
-- `A000002`: full screenshot when present.
-
-Readers locate Artifacts by Role and ID, not filename or order.
-
-## 7.4 Limits and validation
-
-- Maximum complete plaintext ZIP size: 100 MiB.
-- Abort before authoritative persistence if the limit is exceeded.
-- Verify required fields, unique Artifact IDs, unique Roles required by the profile, lengths, SHA-256 checksums, paths, versions, and MHTML non-emptiness.
-- Validate the complete Bundle before encryption.
-- Validate envelope authentication and Artifact checksums before offline use.
-- Unknown optional Manifest fields are accepted and preserved by any future reserialization; unknown mandatory versions are rejected.
+The current Bundle Descriptor, Artifact reference, chunked wrapper, storage, limit, and validation
+contracts are defined by plan 06 and the Bundle, Artifact, Object Encryption, and Object Store
+specifications. There is no whole-Bundle container or whole-Bundle byte limit.
 
 ---
 
@@ -529,7 +472,7 @@ If the MV3 worker stops during live acquisition:
 - show a manual Retry action that creates a new command/job; and
 - use the original command ID/idempotency record to detect whether authoritative commit had already succeeded.
 
-No interrupted job may leave a partial Bundle Object or Event.
+No interrupted job may leave a partial authoritative Bundle graph or Event.
 
 ---
 
@@ -557,7 +500,8 @@ Storage behavior:
 - `PutObject` rejects replacement of an existing Object ID unless the bytes are identical.
 - `GetObject` verifies stored checksum and AEAD before returning plaintext upward.
 - Encryption, Bundle validation, and Event creation happen before opening the commit transaction.
-- One IndexedDB read-write transaction writes the Bundle Object, Event, Projection row, and command outcome.
+- One IndexedDB read-write transaction writes the descriptor and Artifact records, Event, Projection
+  row, and command outcome after every external wrapper is prepared and validated.
 - Transaction abort leaves all four absent.
 - Job state is operational and updated separately after authoritative commit.
 - If authoritative commit succeeded but the worker stopped before job completion was recorded, startup reconciliation uses `command_outcomes` to mark the job succeeded without duplicating the Event.
@@ -787,7 +731,9 @@ Verify:
 
 RED:
 
-- Integration tests cover successful atomic commit, screenshot warning commit, mandatory MHTML failure, 100 MiB limit, interruption before commit, interruption after commit, and repeated command IDs.
+- Integration tests cover successful exact-closure atomic commit, optional Artifact warning commit,
+  mandatory MHTML failure, large streamed Artifacts, interruption before and after commit, and
+  repeated command IDs.
 - Event replay tests prove duplicate Events do not duplicate library rows.
 
 GREEN:
@@ -860,7 +806,8 @@ The slice is complete only when all are true:
 5. Lossy full-page WebP is attempted without `debugger`; failure is a visible warning, not data loss.
 6. The resulting deterministic Bundle validates before encryption.
 7. Sensitive Bundle, Event, and Projection data is encrypted at rest.
-8. Registration atomically persists one Bundle Object, one `BundleRegistered` Event, one Projection row, and one command outcome.
+8. Registration atomically persists one Bundle Descriptor record, every referenced Artifact record,
+   one `BundleRegistered` Event, one Projection row, and one command outcome.
 9. Retrying the same command cannot duplicate authoritative state.
 10. Terminating the worker cannot persist an incomplete Bundle.
 11. With networking disabled, the user can list the capture, view its screenshot and metadata, and download its MHTML.
@@ -1042,7 +989,9 @@ Required behavior:
 4. Deleted captures retain their encrypted Bundle, full detail view, bounded thumbnail, original-site link, MHTML download, title, URL, timestamp, and collection grouping.
 5. `Restore capture` restores one explicit Bundle ID. `Restore collection` restores the explicit deleted Bundle IDs shown at confirmation time.
 6. Restored captures immediately leave Deleted, return to the main Library, and are ineligible for the next Vacuum.
-7. Deleted shows capture count, exact retained Bundle bytes where known, and a conservative reclaimable-byte estimate. All user-visible byte counts use compact human-readable binary units such as `824 B`, `12.4 KiB`, or `3.1 MiB`; raw byte integers remain available only in typed Runtime results. Shared bytes count as reclaimable only when no retained Object references them.
+7. Deleted shows capture count and an exact reclaimable-byte estimate over unreachable descriptor
+   records and external Artifact wrappers. All user-visible byte counts use compact human-readable
+   binary units such as `824 B`, `12.4 KiB`, or `3.1 MiB`; counters remain safe beyond 4 GiB.
 8. Deleted contains the only `Vacuum Vault` control. One run processes every capture in Deleted at the Job's snapshot boundary; there is no per-item or per-collection Vacuum in this version.
 9. Vacuum never runs automatically. When the Storage Driver reports meaningful device storage pressure and reclaimable deleted bytes, AWSM may show a non-blocking suggestion linking to Deleted. Cross-platform policy chooses what is meaningful; no architecture-wide fixed byte threshold is required.
 
@@ -1099,7 +1048,10 @@ They also carry the standard Event header, Vault ID, Device ID, timestamp, and i
 
 Extend `LibraryItemV1` with canonical logical state `status: "Active" | "Deleted"`. Projection replay applies `BundleRegistered`, `CapturesDeleted`, and `CapturesRestored` sequentially. Repeating an already accepted Event ID is idempotent; contradictory state requested by a new Command is rejected rather than silently ignored. Main Library lists Active rows; Deleted lists Deleted rows. Detail lookup accepts both states and returns the state so the UI exposes the correct actions.
 
-Commit each delete/restore Event and all affected encrypted Projection rows in one IndexedDB transaction. A crash may expose either the complete old state or complete new state, never a partial collection transition. Bundle Objects and registration Events remain immutable and present until Vault Vacuum activates a successor generation.
+Commit each delete/restore Event and all affected encrypted Projection rows in one IndexedDB
+transaction. A crash may expose either the complete old state or complete new state, never a partial
+collection transition. Bundle Descriptor and Artifact Objects plus registration Events remain
+immutable and present until Vault Vacuum activates a successor generation.
 
 ## 15.4 Vault Generation format
 
@@ -1648,7 +1600,8 @@ Write failing Runtime tests proving:
 - Undo Move/Extract appends one inverse Event and restores exact assignments;
 - Undo Merge appends `CollectionMergeReverted` and restores source identities;
 - a conflicting later operation makes Undo fail with `LIBRARY_STATE_CHANGED` and changes nothing; and
-- original Events and immutable Bundle Objects remain present after every operation and Undo.
+- original Events and immutable Bundle Descriptor and Artifact Objects remain present after every
+  operation and Undo.
 
 ### Phase C: storage and crash atomicity
 

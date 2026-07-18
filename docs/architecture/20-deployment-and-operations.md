@@ -307,6 +307,12 @@ Logs must not include:
 - decrypted archive content
 - Vault keys
 - plaintext metadata
+- Artifact plaintext, plaintext checksums, or decrypted Bundle Descriptor metadata
+
+Local diagnostics may report opaque Object IDs, wrapper lengths/checksums, Job stage, and typed
+errors. They SHALL NOT report derived content meaning. Temporary Vault Package files and prepared
+Artifact wrappers require startup cleanup; authoritative Artifact records with unavailable wrappers
+are integrity failures and must not be silently discarded.
 
 ---
 

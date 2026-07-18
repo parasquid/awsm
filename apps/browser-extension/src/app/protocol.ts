@@ -1,3 +1,4 @@
+import type { ArtifactRole, CaptureMetadataV1 } from "../domain/artifact-graph";
 import type {
   CaptureJob,
   CaptureWarningId,
@@ -5,6 +6,7 @@ import type {
   RuntimeErrorId,
 } from "../domain/contracts";
 import type { ExportJobV1 } from "../drivers/indexeddb/schema";
+import type { ArtifactDetailItem } from "../runtime/library/service";
 import type { WorkspaceState } from "../runtime/vault/workspace-service";
 
 type ExpectedVault = { readonly expectedVaultId: string };
@@ -52,7 +54,14 @@ export type AppRequest =
   | ({ readonly type: "GetVacuumEstimate" } & ExpectedVault)
   | ({ readonly type: "ExportVault"; readonly passphrase: string } & ExpectedVault)
   | ({ readonly type: "CancelVaultExport"; readonly jobId: string } & ExpectedVault)
-  | ({ readonly type: "GetLibraryDetail"; readonly bundleId: string } & ExpectedVault);
+  | ({ readonly type: "GetLibraryDetail"; readonly bundleId: string } & ExpectedVault)
+  | ({
+      readonly type: "OpenArtifact";
+      readonly bundleId: string;
+      readonly role: ArtifactRole;
+    } & ExpectedVault)
+  | ({ readonly type: "ReadArtifactChunk"; readonly sessionId: string } & ExpectedVault)
+  | ({ readonly type: "CancelArtifactSession"; readonly sessionId: string } & ExpectedVault);
 
 const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "GetState",
@@ -77,6 +86,9 @@ const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "ExportVault",
   "CancelVaultExport",
   "GetLibraryDetail",
+  "OpenArtifact",
+  "ReadArtifactChunk",
+  "CancelArtifactSession",
 ]);
 
 export function isAppRequest(value: unknown): value is AppRequest {
@@ -87,10 +99,26 @@ export function isAppRequest(value: unknown): value is AppRequest {
     typeof value.type === "string" &&
     APP_REQUEST_TYPES.has(value.type as AppRequest["type"]);
   if (!recognized) return false;
+  if ("expectedVaultId" in value && typeof value.expectedVaultId !== "string") return false;
   if (value.type === "CreateVault" && "passphrase" in value) return false;
   if (
     value.type === "ExportVault" &&
     (!("passphrase" in value) || typeof value.passphrase !== "string")
+  )
+    return false;
+  if (
+    value.type === "OpenArtifact" &&
+    (!("bundleId" in value) ||
+      typeof value.bundleId !== "string" ||
+      !("role" in value) ||
+      !["PRIMARY", "SCREENSHOT_FULL", "THUMBNAIL", "TEXT_EXTRACTED", "CONTENT_STRUCTURED"].includes(
+        String(value.role),
+      ))
+  )
+    return false;
+  if (
+    (value.type === "ReadArtifactChunk" || value.type === "CancelArtifactSession") &&
+    (!("sessionId" in value) || typeof value.sessionId !== "string")
   )
     return false;
   if (
@@ -124,9 +152,21 @@ export interface AppStateChanged {
 
 export interface LibraryDetailMessage {
   readonly item: LibraryItemV1;
-  readonly metadata: Readonly<Record<string, unknown>>;
-  readonly mhtmlBase64: string;
-  readonly screenshotBase64?: string;
+  readonly metadata: CaptureMetadataV1;
+  readonly artifacts: readonly ArtifactDetailItem[];
+}
+
+export interface OpenArtifactMessage {
+  readonly sessionId: string;
+  readonly role: ArtifactRole;
+  readonly mimeType: string;
+  readonly byteLength: number;
+  readonly filename: string;
+}
+
+export interface ArtifactChunkMessage {
+  readonly done: boolean;
+  readonly chunkBase64?: string;
 }
 
 export interface LibraryPageGroupMessage {
@@ -154,6 +194,8 @@ export type AppValue =
   | readonly LibraryPageGroupMessage[]
   | LibraryDetailMessage
   | LibraryOperationReceipt
+  | OpenArtifactMessage
+  | ArtifactChunkMessage
   | { readonly name: string }
   | { readonly bundleId: string }
   | { readonly jobId: string; readonly filename: string }

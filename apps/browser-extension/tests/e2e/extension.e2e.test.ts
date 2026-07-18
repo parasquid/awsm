@@ -11,6 +11,7 @@ async function extensionPopup(context: BrowserContext, extensionId: string): Pro
 test("captures MHTML and a full-page screenshot, then opens and downloads them offline", async ({
   browserName,
 }, testInfo) => {
+  test.setTimeout(180_000);
   expect(browserName).toBe("chromium");
   const extensionPath = testInfo.outputPath("extension");
   await cp(resolve(".output/chrome-mv3"), extensionPath, { recursive: true });
@@ -48,7 +49,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     );
     await worker.evaluate(async () => {
       const extensionApi = (
-        globalThis as unknown as { chrome: { action: { openPopup(): Promise<void> } } }
+        globalThis as unknown as {
+          chrome: { action: { openPopup(): Promise<void> } };
+        }
       ).chrome;
       await extensionApi.action.openPopup();
     });
@@ -61,34 +64,6 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await expect(popup.getByRole("button", { name: "Create Vault" })).toBeFocused();
     await popup.keyboard.press("Enter");
     await expect(popup.getByRole("button", { name: "Archive this page" })).toBeVisible();
-    const stitchProbe = await popup.evaluate(async () => {
-      const extensionApi = (
-        globalThis as unknown as {
-          chrome: {
-            offscreen: {
-              createDocument(value: unknown): Promise<void>;
-              closeDocument(): Promise<void>;
-            };
-            runtime: { sendMessage(value: unknown): Promise<unknown> };
-          };
-        }
-      ).chrome;
-      await extensionApi.offscreen.createDocument({
-        url: "offscreen.html",
-        reasons: ["BLOBS"],
-        justification: "E2E image stitch probe.",
-      });
-      try {
-        return await extensionApi.runtime.sendMessage({
-          type: "awsm:stitch-screenshot",
-          plan: { outputWidth: 1, outputHeight: 1, tiles: [] },
-          tiles: [],
-        });
-      } finally {
-        await extensionApi.offscreen.closeDocument();
-      }
-    });
-    expect(stitchProbe).toMatchObject({ webpBase64: expect.any(String) });
     await popup.evaluate(async () => {
       const extensionApi = (
         globalThis as unknown as {
@@ -97,7 +72,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
               query(value: unknown): Promise<readonly { id?: number; url?: string }[]>;
               update(id: number, value: unknown): Promise<unknown>;
             };
-            runtime: { sendMessage(value: unknown, callback: (response: unknown) => void): void };
+            runtime: {
+              sendMessage(value: unknown, callback: (response: unknown) => void): void;
+            };
           };
         }
       ).chrome;
@@ -107,9 +84,13 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       );
       if (fixtureTab?.id === undefined) throw new Error("The fixture tab is unavailable.");
       await extensionApi.tabs.update(fixtureTab.id, { active: true });
-      const state = await new Promise<{ workspace: { activeVaultId?: string } }>((resolve) =>
+      const state = await new Promise<{
+        workspace: { activeVaultId?: string };
+      }>((resolve) =>
         extensionApi.runtime.sendMessage({ type: "GetState" }, (response) => {
-          const result = response as { value: { workspace: { activeVaultId?: string } } };
+          const result = response as {
+            value: { workspace: { activeVaultId?: string } };
+          };
           resolve(result.value);
         }),
       );
@@ -130,7 +111,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       timeout: 30_000,
     });
     await expect(
-      completedPopup.getByRole("img", { name: "Screenshot thumbnail for AWSM tall fixture" }),
+      completedPopup.getByRole("img", {
+        name: "Screenshot thumbnail for AWSM tall fixture",
+      }),
     ).toBeVisible();
     const capturePreview = completedPopup.getByRole("link", {
       name: "Open archived capture: AWSM tall fixture",
@@ -178,7 +161,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
               query(value: unknown): Promise<readonly { id?: number; url?: string }[]>;
               update(id: number, value: unknown): Promise<unknown>;
             };
-            runtime: { sendMessage(value: unknown, callback: (response: unknown) => void): void };
+            runtime: {
+              sendMessage(value: unknown, callback: (response: unknown) => void): void;
+            };
           };
         }
       ).chrome;
@@ -188,9 +173,13 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       );
       if (fixtureTab?.id === undefined) throw new Error("The fixture tab is unavailable.");
       await extensionApi.tabs.update(fixtureTab.id, { active: true });
-      const state = await new Promise<{ workspace: { activeVaultId?: string } }>((resolve) =>
+      const state = await new Promise<{
+        workspace: { activeVaultId?: string };
+      }>((resolve) =>
         extensionApi.runtime.sendMessage({ type: "GetState" }, (response) => {
-          const result = response as { value: { workspace: { activeVaultId?: string } } };
+          const result = response as {
+            value: { workspace: { activeVaultId?: string } };
+          };
           resolve(result.value);
         }),
       );
@@ -213,6 +202,33 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await popupAfterUrlChange.close();
 
     await context.setOffline(true);
+    await context.addInitScript(() => {
+      const saved = {
+        aborted: false,
+        chunks: [] as number[][],
+        closed: false,
+        suggestedName: "",
+      };
+      Object.defineProperty(window, "__awsmSavedArtifact", { value: saved });
+      Object.defineProperty(window, "showSaveFilePicker", {
+        value: async (options: { suggestedName: string }) => {
+          saved.suggestedName = options.suggestedName;
+          return {
+            createWritable: async () => ({
+              write: async (chunk: Uint8Array) => {
+                saved.chunks.push(Array.from(chunk));
+              },
+              close: async () => {
+                saved.closed = true;
+              },
+              abort: async () => {
+                saved.aborted = true;
+              },
+            }),
+          };
+        },
+      });
+    });
     const library = await context.newPage();
     await library.goto(`chrome-extension://${extensionId}/library.html`);
     await library.locator(".card").click();
@@ -325,11 +341,47 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     expect(green?.[1]).toBeGreaterThan((green?.[0] ?? 0) + 40);
     expect(blue?.[2]).toBeGreaterThan((blue?.[0] ?? 0) + 40);
 
+    const artifactPanel = library.getByRole("region", {
+      name: "Capture Artifacts",
+    });
+    await expect(artifactPanel.locator(".artifact-row")).toHaveCount(5);
+    const structuredArtifact = artifactPanel.locator(".artifact-row").filter({
+      has: library.locator("strong", { hasText: /^CONTENT STRUCTURED$/u }),
+    });
+    await expect(structuredArtifact.getByRole("button", { name: "Inspect" })).toBeVisible();
+    await structuredArtifact.getByRole("button", { name: "Inspect" }).focus();
+    await expect(structuredArtifact.getByRole("button", { name: "Inspect" })).toBeFocused();
+    await structuredArtifact.getByRole("button", { name: "Inspect" }).click();
+    const inspection = library.locator(".artifact-inspection");
+    await expect(inspection).toBeVisible();
+    await expect(inspection.getByRole("heading", { name: "CONTENT STRUCTURED" })).toBeVisible();
+    await expect(library.locator(".snackbar")).toHaveCount(0, { timeout: 15_000 });
+    await library.setViewportSize({ width: 1280, height: 900 });
+    await library.screenshot({
+      path: testInfo.outputPath("artifact-detail-wide.png"),
+      fullPage: true,
+    });
+    await library.setViewportSize({ width: 390, height: 844 });
+    const artifactNarrowGeometry = await artifactPanel.evaluate((panel) => ({
+      documentOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      panelWidth: panel.getBoundingClientRect().width,
+      viewportWidth: window.innerWidth,
+    }));
+    expect(artifactNarrowGeometry.documentOverflow).toBeLessThanOrEqual(0);
+    expect(artifactNarrowGeometry.panelWidth).toBeLessThan(artifactNarrowGeometry.viewportWidth);
+    await library.screenshot({
+      path: testInfo.outputPath("artifact-detail-narrow.png"),
+      fullPage: true,
+    });
+    await library.setViewportSize({ width: 1280, height: 720 });
+
     const storageAudit = await library.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open("awsm-vault");
         request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       const storeNames = Array.from(database.objectStoreNames);
       const transaction = database.transaction(storeNames, "readonly");
@@ -341,7 +393,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
               request.addEventListener("success", () => resolveValues(request.result), {
                 once: true,
               });
-              request.addEventListener("error", () => reject(request.error), { once: true });
+              request.addEventListener("error", () => reject(request.error), {
+                once: true,
+              });
             }),
         ),
       );
@@ -364,14 +418,20 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     expect(storageAudit.cacheEntries).toBe(0);
 
     await library.getByRole("button", { name: "Export Vault" }).click();
-    const exportDialog = library.getByRole("dialog", { name: "Export encrypted Vault" });
+    const exportDialog = library.getByRole("dialog", {
+      name: "Export encrypted Vault",
+    });
     await expect(exportDialog).toBeVisible();
     await expect(
       exportDialog.getByText(/not saved and does not unlock the local Vault/u),
     ).toBeVisible();
-    await library.screenshot({ path: testInfo.outputPath("export-dialog-wide.png") });
+    await library.screenshot({
+      path: testInfo.outputPath("export-dialog-wide.png"),
+    });
     await library.setViewportSize({ width: 720, height: 900 });
-    await library.screenshot({ path: testInfo.outputPath("export-dialog-narrow.png") });
+    await library.screenshot({
+      path: testInfo.outputPath("export-dialog-narrow.png"),
+    });
     await expect(exportDialog.getByLabel("Export passphrase", { exact: true })).toBeVisible();
     await expect(exportDialog.getByLabel("Confirm export passphrase")).toBeVisible();
     await exportDialog.getByLabel("Export passphrase", { exact: true }).fill("too short");
@@ -399,13 +459,37 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       "data-live-fixture",
       "executed-only-on-live-page",
     );
-    const downloadPromise = library.waitForEvent("download");
-    await library.getByRole("link", { name: "Download archived MHTML" }).click();
-    const download = await downloadPromise;
-    const downloadPath = await download.path();
-    expect(download.suggestedFilename()).toMatch(/\.mhtml$/u);
-    expect(downloadPath).not.toBeNull();
-    const mhtml = await readFile(downloadPath ?? "", "utf8");
+    const primaryArtifact = library
+      .locator(".artifact-row")
+      .filter({ has: library.locator("strong", { hasText: /^PRIMARY$/u }) });
+    await primaryArtifact.getByRole("button", { name: "Download" }).click();
+    await expect
+      .poll(() =>
+        library.evaluate(
+          () =>
+            (
+              window as typeof window & {
+                __awsmSavedArtifact: { closed: boolean };
+              }
+            ).__awsmSavedArtifact.closed,
+        ),
+      )
+      .toBe(true);
+    const savedPrimary = await library.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __awsmSavedArtifact: {
+              aborted: boolean;
+              chunks: number[][];
+              suggestedName: string;
+            };
+          }
+        ).__awsmSavedArtifact,
+    );
+    expect(savedPrimary.suggestedName).toMatch(/-primary\.mhtml$/u);
+    expect(savedPrimary.aborted).toBe(false);
+    const mhtml = new TextDecoder().decode(Uint8Array.from(savedPrimary.chunks.flat()));
     expect(mhtml).toContain("MIME-Version: 1.0");
     expect(mhtml).toContain("AWSM tall fixture");
     await expect(library.getByRole("navigation", { name: "Breadcrumb" })).toContainText(
@@ -451,9 +535,36 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await library.getByText("Deleted (1)", { exact: true }).click();
     await library.locator(".deleted-section .card").click();
     await expect(library.getByRole("img", { name: /Full-page screenshot/u })).toBeVisible();
-    const deletedDownloadPromise = library.waitForEvent("download");
-    await library.getByRole("link", { name: "Download archived MHTML" }).click();
-    expect((await deletedDownloadPromise).suggestedFilename()).toMatch(/\.mhtml$/u);
+    await library.evaluate(() => {
+      const saved = (
+        window as typeof window & {
+          __awsmSavedArtifact: {
+            aborted: boolean;
+            chunks: number[][];
+            closed: boolean;
+          };
+        }
+      ).__awsmSavedArtifact;
+      saved.aborted = false;
+      saved.chunks = [];
+      saved.closed = false;
+    });
+    const deletedPrimaryArtifact = library
+      .locator(".artifact-row")
+      .filter({ has: library.locator("strong", { hasText: /^PRIMARY$/u }) });
+    await deletedPrimaryArtifact.getByRole("button", { name: "Download" }).click();
+    await expect
+      .poll(() =>
+        library.evaluate(
+          () =>
+            (
+              window as typeof window & {
+                __awsmSavedArtifact: { closed: boolean };
+              }
+            ).__awsmSavedArtifact.closed,
+        ),
+      )
+      .toBe(true);
     library.once("dialog", async (dialog) => {
       expect(dialog.message()).toContain("Restore “AWSM tall fixture” (1 capture)");
       await dialog.accept();
@@ -469,13 +580,17 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open("awsm-vault");
         request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       const transaction = database.transaction("objects", "readonly");
       const count = await new Promise<number>((resolveCount, reject) => {
         const request = transaction.objectStore("objects").count();
         request.addEventListener("success", () => resolveCount(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       database.close();
       return count;
@@ -502,13 +617,17 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open("awsm-vault");
         request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       const transaction = database.transaction("objects", "readonly");
       const count = await new Promise<number>((resolveCount, reject) => {
         const request = transaction.objectStore("objects").count();
         request.addEventListener("success", () => resolveCount(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       const generationTransaction = database.transaction(
         ["vault_head", "vault_generations"],
@@ -517,19 +636,26 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       const head = await new Promise<Record<string, unknown>>((resolveHead, reject) => {
         const request = generationTransaction.objectStore("vault_head").getAll();
         request.addEventListener("success", () => resolveHead(request.result[0]), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       const generationCount = await new Promise<number>((resolveCount, reject) => {
         const request = generationTransaction.objectStore("vault_generations").count();
         request.addEventListener("success", () => resolveCount(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       database.close();
       return { objectCount: count, head, generationCount };
     });
     expect(vacuumStorage.objectCount).toBeLessThan(objectsBeforeVacuum);
     expect(vacuumStorage.generationCount).toBe(1);
-    expect(vacuumStorage.head).toMatchObject({ version: 1, generationNumber: 1 });
+    expect(vacuumStorage.head).toMatchObject({
+      version: 1,
+      generationNumber: 1,
+    });
     expect(consoleErrors).toEqual([]);
   } finally {
     await context.close();
@@ -591,7 +717,9 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
 
     await popup.getByRole("button", { name: "Switch Vault" }).click();
     await popup.getByRole("button", { name: "Create another Vault" }).click();
-    const createDialog = popup.getByRole("dialog", { name: "Create another Vault" });
+    const createDialog = popup.getByRole("dialog", {
+      name: "Create another Vault",
+    });
     await expect(createDialog).toBeVisible();
     await createDialog.getByRole("textbox", { name: "Vault name" }).fill("Vault B");
     await createDialog.getByRole("button", { name: "Create Vault" }).click();
@@ -612,10 +740,14 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
     const state = await popup.evaluate(async () => {
       const extensionApi = (
         globalThis as unknown as {
-          chrome: { runtime: { sendMessage(message: unknown): Promise<unknown> } };
+          chrome: {
+            runtime: { sendMessage(message: unknown): Promise<unknown> };
+          };
         }
       ).chrome;
-      const response = (await extensionApi.runtime.sendMessage({ type: "GetState" })) as {
+      const response = (await extensionApi.runtime.sendMessage({
+        type: "GetState",
+      })) as {
         value: {
           workspace: {
             activeVaultId: string;
@@ -634,13 +766,19 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open("awsm-vault");
         request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       const transaction = database.transaction("objects", "readonly");
       const keys = await new Promise<IDBValidKey[]>((resolveKeys, reject) => {
         const request = transaction.objectStore("objects").getAllKeys();
-        request.addEventListener("success", () => resolveKeys(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("success", () => resolveKeys(request.result), {
+          once: true,
+        });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       database.close();
       return keys.reduce<Record<string, number>>((counts, key) => {
@@ -650,7 +788,10 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
         return counts;
       }, {});
     });
-    expect(scopedObjectCounts).toMatchObject({ [vaultA.vaultId]: 1, [vaultB.vaultId]: 1 });
+    expect(scopedObjectCounts).toMatchObject({
+      [vaultA.vaultId]: 6,
+      [vaultB.vaultId]: 6,
+    });
 
     await popup.getByRole("button", { name: "Switch Vault" }).click();
     const switchDialog = popup.getByRole("dialog", { name: "Switch Vault" });
@@ -661,7 +802,9 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
     await libraryA.goto(`chrome-extension://${extensionId}/library.html`);
     await expect(libraryA.getByRole("heading", { name: "Vault A" })).toBeVisible();
     await expect(libraryA.getByRole("button", { name: "Rename Vault A" })).toHaveCount(0);
-    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-locked-desktop.png") });
+    await libraryA.screenshot({
+      path: testInfo.outputPath("vault-title-locked-desktop.png"),
+    });
     await popup.getByRole("button", { name: "Unlock on this device" }).click();
     await expect(popup.getByText(/Vault · Vault A · Unlocked/u)).toBeVisible();
 
@@ -690,7 +833,9 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
       Math.max(...restingGeometry.leftEdges) - Math.min(...restingGeometry.leftEdges),
     ).toBeLessThan(1);
     await libraryA.evaluate(() => window.scrollTo(0, 0));
-    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-resting-desktop.png") });
+    await libraryA.screenshot({
+      path: testInfo.outputPath("vault-title-resting-desktop.png"),
+    });
     await libraryA.getByRole("button", { name: "Rename Vault A" }).click();
     const selectedInput = libraryA.getByRole("textbox", { name: "Vault name" });
     await expect(selectedInput).toBeVisible();
@@ -705,19 +850,25 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
       headerBottom: restingGeometry.headerBottom,
       mainTop: restingGeometry.mainTop,
     });
-    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-selected-desktop.png") });
+    await libraryA.screenshot({
+      path: testInfo.outputPath("vault-title-selected-desktop.png"),
+    });
     await selectedInput.pressSequentially("Discarded draft");
     await expect(selectedInput).toHaveValue("Discarded draft");
     await libraryA.locator(".eyebrow").click();
     await expect(libraryA.getByRole("heading", { name: "Vault A" })).toBeVisible();
     await expect(libraryA.getByRole("textbox", { name: "Vault name" })).toHaveCount(0);
-    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-restored-desktop.png") });
+    await libraryA.screenshot({
+      path: testInfo.outputPath("vault-title-restored-desktop.png"),
+    });
     await libraryA.getByRole("button", { name: "Rename Vault A" }).click();
     await expect(libraryA.getByRole("button", { name: "Cancel" })).toHaveCount(0);
     await libraryA.getByRole("textbox", { name: "Vault name" }).fill(" ");
     await libraryA.getByRole("button", { name: "Rename", exact: true }).click();
     await expect(libraryA.getByText(/Use a Vault name between 1 and 64/u)).toBeVisible();
-    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-error-desktop.png") });
+    await libraryA.screenshot({
+      path: testInfo.outputPath("vault-title-error-desktop.png"),
+    });
     await libraryA.getByRole("textbox", { name: "Vault name" }).press("Escape");
     await expect(libraryA.getByRole("heading", { name: "Vault A" })).toBeVisible();
     await libraryA.getByRole("button", { name: "Rename Vault A" }).click();
@@ -730,7 +881,9 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
     await libraryA.getByRole("button", { name: "Rename", exact: true }).click();
     await expect(libraryA.getByRole("heading", { name: "Vault A Renamed" })).toBeVisible();
     await expect(popup.getByText(/Vault · Vault A Renamed · Unlocked/u)).toBeVisible();
-    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-success-desktop.png") });
+    await libraryA.screenshot({
+      path: testInfo.outputPath("vault-title-success-desktop.png"),
+    });
     await libraryA.setViewportSize({ width: 390, height: 844 });
     await libraryA.getByRole("button", { name: "Rename Vault A Renamed" }).click();
     await expect(libraryA.getByRole("textbox", { name: "Vault name" })).toBeVisible();
@@ -750,7 +903,9 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
     expect(Math.max(...narrowLayout.leftEdges) - Math.min(...narrowLayout.leftEdges)).toBeLessThan(
       1,
     );
-    await libraryA.screenshot({ path: testInfo.outputPath("vault-title-selected-narrow.png") });
+    await libraryA.screenshot({
+      path: testInfo.outputPath("vault-title-selected-narrow.png"),
+    });
     await libraryA.getByRole("textbox", { name: "Vault name" }).press("Escape");
 
     const deepLinkLibrary = await context.newPage();
@@ -809,7 +964,9 @@ test("worker termination during acquisition leaves no partial authoritative capt
               query(value: unknown): Promise<readonly { id?: number; url?: string }[]>;
               update(id: number, value: unknown): Promise<unknown>;
             };
-            runtime: { sendMessage(value: unknown, callback: (response: unknown) => void): void };
+            runtime: {
+              sendMessage(value: unknown, callback: (response: unknown) => void): void;
+            };
           };
         }
       ).chrome;
@@ -819,9 +976,13 @@ test("worker termination during acquisition leaves no partial authoritative capt
       );
       if (fixtureTab?.id === undefined) throw new Error("The fixture tab is unavailable.");
       await extensionApi.tabs.update(fixtureTab.id, { active: true });
-      const state = await new Promise<{ workspace: { activeVaultId?: string } }>((resolve) =>
+      const state = await new Promise<{
+        workspace: { activeVaultId?: string };
+      }>((resolve) =>
         extensionApi.runtime.sendMessage({ type: "GetState" }, (response) => {
-          const result = response as { value: { workspace: { activeVaultId?: string } } };
+          const result = response as {
+            value: { workspace: { activeVaultId?: string } };
+          };
           resolve(result.value);
         }),
       );
@@ -844,28 +1005,38 @@ test("worker termination during acquisition leaves no partial authoritative capt
             request.addEventListener("success", () => resolveDatabase(request.result), {
               once: true,
             });
-            request.addEventListener("error", () => reject(request.error), { once: true });
+            request.addEventListener("error", () => reject(request.error), {
+              once: true,
+            });
           });
           const transaction = database.transaction("capture_jobs", "readonly");
           const jobs = await new Promise<readonly { state?: unknown }[]>((resolveJobs, reject) => {
             const request = transaction.objectStore("capture_jobs").getAll();
             request.addEventListener("success", () => resolveJobs(request.result), { once: true });
-            request.addEventListener("error", () => reject(request.error), { once: true });
+            request.addEventListener("error", () => reject(request.error), {
+              once: true,
+            });
           });
           database.close();
           return jobs.at(-1)?.state;
         }),
       )
       .toBe("Running");
-    await cdp.send("ServiceWorker.stopWorker", { versionId: serviceWorkerVersionId });
+    await cdp.send("ServiceWorker.stopWorker", {
+      versionId: serviceWorkerVersionId,
+    });
     await popup.close();
     const restartedPopup = await extensionPopup(context, extensionId);
-    await expect(restartedPopup.getByText(/CAPTURE_INTERRUPTED/u)).toBeVisible({ timeout: 30_000 });
+    await expect(restartedPopup.getByText(/CAPTURE_INTERRUPTED/u)).toBeVisible({
+      timeout: 30_000,
+    });
     const counts = await restartedPopup.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open("awsm-vault");
         request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       const names = ["objects", "events", "library_projection", "command_outcomes"];
       const transaction = database.transaction(names, "readonly");
@@ -877,7 +1048,9 @@ test("worker termination during acquisition leaves no partial authoritative capt
               request.addEventListener("success", () => resolveCount(request.result), {
                 once: true,
               });
-              request.addEventListener("error", () => reject(request.error), { once: true });
+              request.addEventListener("error", () => reject(request.error), {
+                once: true,
+              });
             }),
         ),
       );

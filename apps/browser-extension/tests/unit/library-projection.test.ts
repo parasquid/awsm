@@ -5,12 +5,12 @@ const event = {
   eventId: "00000000-0000-4000-8000-000000000001",
   eventType: "BundleRegistered" as const,
   bundleId: "00000000-0000-4000-8000-000000000002",
-  bundleObjectId: "00000000-0000-4000-8000-000000000003",
+  descriptorObjectId: "00000000-0000-4000-8000-000000000003",
   collectionId: "00000000-0000-4000-8000-000000000020",
   title: "Fixture",
   originalUrl: "https://fixture.test/",
   capturedAt: "2026-07-16T17:00:00.000Z",
-  screenshotPresent: true,
+  artifactRoles: ["PRIMARY", "SCREENSHOT_FULL"] as const,
   warnings: [],
 };
 
@@ -20,12 +20,12 @@ describe("Library Projection replay", () => {
       {
         version: 1,
         bundleId: event.bundleId,
-        bundleObjectId: event.bundleObjectId,
+        descriptorObjectId: event.descriptorObjectId,
         assignedCollectionId: event.collectionId,
         title: event.title,
         originalUrl: event.originalUrl,
         capturedAt: event.capturedAt,
-        screenshotPresent: true,
+        artifactRoles: ["PRIMARY", "SCREENSHOT_FULL"],
         status: "Active",
         warnings: [],
       },
@@ -36,9 +36,9 @@ describe("Library Projection replay", () => {
     expect(
       reduceLibraryProjection([
         event,
-        { ...event, title: "Mutated replay", screenshotPresent: false },
+        { ...event, title: "Mutated replay", artifactRoles: ["PRIMARY"] },
       ])[0],
-    ).toMatchObject({ title: "Fixture", screenshotPresent: true });
+    ).toMatchObject({ title: "Fixture", artifactRoles: ["PRIMARY", "SCREENSHOT_FULL"] });
   });
 
   it("moves explicit captures to Deleted and restores them through additive Events", () => {

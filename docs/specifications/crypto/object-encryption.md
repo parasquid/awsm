@@ -16,9 +16,10 @@
 
 # 1. Purpose
 
-This specification defines the canonical encrypted representation of all persisted objects.
+This specification defines the canonical encrypted representation of persisted Objects.
 
-All encrypted objects SHALL use a common envelope format.
+Compact encrypted Objects SHALL use the common envelope format. Artifact payloads SHALL use the
+chunk-framed format in section 15 so large payloads never require whole-Object buffering.
 
 ---
 
@@ -161,6 +162,25 @@ Headers are plaintext.
 Payloads are encrypted.
 
 Authentication precedes decryption.
+
+# 15. Artifact Wrapper Format
+
+An Artifact wrapper SHALL begin with ASCII magic `AWSMART1`, a big-endian 32-bit canonical-CBOR
+header length, and a canonical-CBOR header containing exactly the wrapper version, encryption
+algorithm, Artifact Object ID, MIME type, chunk size, base nonce, and plaintext checksum algorithm.
+The initial chunk size is 1 MiB and the algorithm is XChaCha20-Poly1305.
+
+The header bytes are authenticated by every frame. Each frame SHALL encode its monotonically
+increasing index, final flag, plaintext length, ciphertext, and 16-byte authentication tag. Frame
+nonces and AAD SHALL be derived deterministically from the authenticated header and frame index;
+nonce reuse is prohibited. An empty Artifact has one authenticated final frame with zero plaintext
+bytes.
+
+Readers SHALL reject unknown fields/versions, non-canonical headers, unexpected indices, invalid
+frame sizes, missing or repeated final frames, trailing bytes, authentication failure, and any
+mismatch in expected plaintext length/checksum or wrapper length/checksum. They SHALL expose no
+successful completion until all checks pass. Implementations SHALL stream with memory bounded to a
+small constant number of chunks.
 
 ---
 

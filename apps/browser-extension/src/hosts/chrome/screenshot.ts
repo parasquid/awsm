@@ -50,14 +50,14 @@ export interface ScreenshotHost {
 }
 
 export interface ScreenshotResult {
-  readonly webpBytes?: Uint8Array;
-  readonly thumbnailWebpBytes?: Uint8Array;
+  readonly webpBlob?: Blob;
+  readonly thumbnailWebpBlob?: Blob;
   readonly warnings: readonly CaptureWarningId[];
 }
 
 export interface StitchedScreenshot {
-  readonly webpBytes: Uint8Array;
-  readonly thumbnailWebpBytes?: Uint8Array;
+  readonly webpBlob: Blob;
+  readonly thumbnailWebpBlob?: Blob;
 }
 
 function positiveFinite(value: number): boolean {
@@ -142,7 +142,7 @@ export async function acquireBestEffortScreenshot(host: ScreenshotHost): Promise
     }
     stage = "stitch";
     const stitched = await host.stitch(plan, captured);
-    if (stitched.webpBytes.byteLength === 0) throw new Error("empty screenshot");
+    if (stitched.webpBlob.size === 0) throw new Error("empty screenshot");
     return { ...stitched, warnings: plan.truncated ? ["SCREENSHOT_TRUNCATED"] : [] };
   } catch {
     return {

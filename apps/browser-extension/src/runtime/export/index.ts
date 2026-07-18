@@ -5,7 +5,6 @@ export {
   type VaultPackageEntry,
   validateVaultPackage,
   writeVaultPackage,
-  writeVaultPackageBlob,
 } from "./container";
 export {
   decodeExportKeyEnvelope,

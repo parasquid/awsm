@@ -96,7 +96,7 @@ A Backup Set contains or references the authoritative Objects required by one Sn
 
 Backup Sets MAY contain:
 
-- Bundle Objects
+- Bundle Descriptor and Artifact Objects, including external Artifact wrappers
 - Event Log Segment Objects
 - Wrapped Key Objects
 - Vault Metadata Objects

@@ -8,9 +8,9 @@
 
 **Depends On:**
 
-* README.md
-* VISION.md
-* architecture/01-system-overview.md
+- README.md
+- VISION.md
+- architecture/01-system-overview.md
 
 ---
 
@@ -22,9 +22,9 @@ Every component in the system—Host, Runtime, Services, Coordination Server, cr
 
 This document deliberately separates:
 
-* business concepts
-* archival concepts
-* storage concepts
+- business concepts
+- archival concepts
+- storage concepts
 
 These layers should not be confused.
 
@@ -92,11 +92,11 @@ Represents an authenticated identity.
 
 Responsibilities:
 
-* login
-* billing
-* authentication
-* device ownership
-* vault membership
+- login
+- billing
+- authentication
+- device ownership
+- vault membership
 
 Users do **not** own captures.
 
@@ -110,17 +110,17 @@ Represents a trusted client.
 
 Examples:
 
-* Chrome Extension
-* Firefox Extension
-* Desktop App
-* Mobile App
+- Chrome Extension
+- Firefox Extension
+- Desktop App
+- Mobile App
 
 Each device possesses:
 
-* device identifier
-* encryption credentials
-* synchronization state
-* trusted status
+- device identifier
+- encryption credentials
+- synchronization state
+- trusted status
 
 Devices never own data.
 
@@ -134,24 +134,24 @@ A Vault is the primary ownership boundary.
 
 Everything inside a vault shares:
 
-* encryption keys
-* synchronization state
-* permissions
-* storage quota
+- encryption keys
+- synchronization state
+- permissions
+- storage quota
 
 A vault contains:
 
-* archives
-* folders
-* notes
-* settings
-* AI configuration
+- archives
+- folders
+- notes
+- settings
+- AI configuration
 
 Future:
 
-* team vaults
-* shared vaults
-* organization vaults
+- team vaults
+- shared vaults
+- organization vaults
 
 ---
 
@@ -225,11 +225,11 @@ A Capture represents a single immutable snapshot.
 
 Properties:
 
-* timestamp
-* source URL
-* capture method
-* browser version
-* extension version
+- timestamp
+- source URL
+- capture method
+- browser version
+- extension version
 
 Captures never change.
 
@@ -329,7 +329,6 @@ bundle_version: 1
 capture_time:
 
 browser:
-
   artifacts:
 
   processing_history:
@@ -339,7 +338,8 @@ checksums:
 encryption:
 ```
 
-The Manifest describes the Bundle. The initial serialized Manifest uses canonical CBOR inside the deterministic Bundle ZIP.
+The Bundle Descriptor describes the Bundle graph. It uses canonical CBOR, remains compact, and
+references each independently encrypted Artifact Object without embedding payload bytes.
 
 It does not contain large binary content.
 
@@ -350,19 +350,11 @@ It does not contain large binary content.
 The Bundle is transformed into storage objects.
 
 ```text
-Bundle
+Bundle Descriptor Object
 
-↓
+↓ references
 
-Encrypt
-
-↓
-
-Chunk
-
-↓
-
-Objects
+Independently encrypted Artifact Objects
 ```
 
 ---
@@ -373,16 +365,16 @@ Objects are immutable encrypted binary blobs.
 
 Properties:
 
-* object id
-* object hash
-* encrypted payload
-* object size
+- object id
+- object hash
+- encrypted payload
+- object size
 
 Objects know nothing about:
 
-* archives
-* captures
-* AI
+- archives
+- captures
+- AI
 
 Objects are storage primitives.
 
@@ -422,13 +414,13 @@ Object C
 
 Advantages:
 
-* resumable uploads
+- resumable uploads
 
-* partial downloads
+- partial downloads
 
-* deduplication
+- deduplication
 
-* corruption isolation
+- corruption isolation
 
 ---
 
@@ -620,10 +612,10 @@ Historical preservation.
 
 Allows:
 
-* scheduled recapture
-* timeline views
-* change detection
-* legal evidence
+- scheduled recapture
+- timeline views
+- change detection
+- legal evidence
 
 ---
 
@@ -653,11 +645,11 @@ Facts do not.
 
 Allows:
 
-* new storage engines
+- new storage engines
 
-* different synchronization protocols
+- different synchronization protocols
 
-* cloud providers
+- cloud providers
 
 without affecting users.
 
@@ -699,16 +691,16 @@ without changing the hierarchy.
 
 # Domain Glossary
 
-| Term     | Meaning                          |
-| -------- | -------------------------------- |
-| User     | Authenticated identity           |
-| Device   | Trusted client                   |
-| Vault    | Cryptographic ownership boundary |
-| Archive  | Logical knowledge item           |
-| Capture  | Immutable historical snapshot    |
-| Bundle   | Complete preserved capture       |
-| Artifact | Immutable Bundle payload, preserved or derived |
-| Manifest | Bundle metadata                  |
-| Object   | Encrypted immutable storage blob |
+| Term     | Meaning                                                                  |
+| -------- | ------------------------------------------------------------------------ |
+| User     | Authenticated identity                                                   |
+| Device   | Trusted client                                                           |
+| Vault    | Cryptographic ownership boundary                                         |
+| Archive  | Logical knowledge item                                                   |
+| Capture  | Immutable historical snapshot                                            |
+| Bundle   | Complete preserved capture                                               |
+| Artifact | Immutable authoritative payload Object referenced by a Bundle Descriptor |
+| Manifest | Bundle metadata                                                          |
+| Object   | Encrypted immutable storage blob                                         |
 
 This glossary is the canonical terminology for the project.

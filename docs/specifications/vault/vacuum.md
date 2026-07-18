@@ -44,13 +44,14 @@ Vacuum SHALL:
 
 1. require an unlocked Vault;
 2. snapshot all Captures currently in Deleted;
-3. authenticate every retained Bundle and authoritative Event;
+3. authenticate every retained Bundle Descriptor, Artifact wrapper, and authoritative Event;
 4. abort on an unsupported authoritative Object or Event type;
 5. compute retained and unreachable dependency closure;
 6. reuse unchanged immutable Objects and rewrite only affected immutable structures under new identifiers;
 7. create and encrypt the successor generation manifest;
 8. replay and verify retained logical state before activation;
-9. atomically activate the successor and remove unreachable local Objects, Events, Projection rows, and obsolete operational outcomes; and
+9. atomically activate the successor and remove unreachable local Object/Event records, Projection
+   rows, and obsolete operational outcomes before deleting their external Artifact wrapper files;
 10. report deleted Capture count and actual reclaimed bytes without plaintext content in diagnostics.
 
 `VaultCreated` and `VaultRenamed` are supported authoritative Events. Vacuum MUST authenticate and retain them byte-for-byte, include them in successor reachability, rebuild the Vault Name Projection, and prove that the final name and source Event remain unchanged before activation.
@@ -58,6 +59,11 @@ Vacuum SHALL:
 Every Vacuum lease, estimate, snapshot, reachability query, activation, and collection operation MUST be scoped to one Vault ID and MUST NOT inspect or modify another Vault in the same Workspace.
 
 After successful Vacuum, every pre-Vacuum Active Capture MUST remain Active and authenticatable, Deleted MUST be empty, and no active reference may point to an omitted Object.
+
+Reachability for a retained Bundle SHALL include its descriptor and every Artifact Object referenced
+by that descriptor. Reclaimable bytes for an Artifact use the exact external wrapper length, with
+safe counters beyond 4 GiB. Startup reconciliation SHALL remove orphan wrapper files but SHALL treat
+a committed Artifact record with a missing or corrupt wrapper as corruption.
 
 Vacuum MUST retain or rewrite `CollectionsMerged`, `CapturesMoved`, and `CollectionMergeReverted` whenever they affect a retained Capture's effective Collection. It MAY omit facts concerning only reclaimed Captures or identities with no retained members. A mixed `CapturesMoved` Event MUST be rewritten under a new Event ID with only retained moves. Verification MUST prove that each retained Capture remains in the same effective Collection.
 

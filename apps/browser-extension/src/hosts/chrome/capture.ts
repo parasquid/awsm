@@ -63,12 +63,11 @@ export async function preflightCapture(
   return { tabId: tab.id, url: tab.url };
 }
 
-export async function acquireMandatoryMhtml(host: CaptureHost, tabId: number): Promise<Uint8Array> {
+export async function acquireMandatoryMhtml(host: CaptureHost, tabId: number): Promise<Blob> {
   try {
     const blob = await host.saveAsMhtml(tabId);
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    if (bytes.byteLength === 0) throw new Error("empty MHTML");
-    return bytes;
+    if (blob.size === 0) throw new Error("empty MHTML");
+    return blob;
   } catch {
     throw new CaptureHostError(
       "MHTML_CAPTURE_FAILED",

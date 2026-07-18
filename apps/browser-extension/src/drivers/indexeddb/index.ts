@@ -9,6 +9,8 @@ export type {
   AtomicRegistrationV1,
   CommandOutcomeV1,
   StoreCounts,
+  StoredArtifactObjectV1,
+  StoredBundleDescriptorObjectV1,
   StoredCollectionProjectionV1,
   StoredEvent,
   StoredObjectType,

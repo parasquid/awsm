@@ -86,7 +86,8 @@ The Storage Service stores immutable Objects.
 
 Objects include:
 
-- Bundles
+- Bundle Descriptors
+- Artifacts
 - Blocks
 - Wrapped Keys
 - Event Log Segments
@@ -139,7 +140,7 @@ Corrupted objects SHALL be reported to the caller.
 
 # 10. Streaming
 
-Large Objects SHOULD support streaming reads and writes.
+Large Objects SHALL support streaming reads and writes when their owning format requires it.
 
 Implementations SHOULD avoid buffering complete Objects in memory.
 
@@ -196,7 +197,8 @@ Where the underlying platform lacks a primitive, the driver SHALL emulate equiva
 
 # 15. Browser Drivers
 
-The initial Chrome extension implementation SHALL use an IndexedDB Driver.
+The initial browser extension implementation SHALL use an IndexedDB Driver for compact records and
+an Artifact Store Driver for encrypted Artifact wrappers.
 
 It SHALL:
 
@@ -204,10 +206,13 @@ It SHALL:
 - persist encrypted Projection rows separately from authoritative Objects
 - persist operational Jobs and command outcomes
 - use one versioned database
-- provide atomic transactions across Bundle Object, Event, Projection, and command-outcome writes
+- provide atomic transactions across Bundle Descriptor and Artifact records, Event, Projection,
+  Generation, and command-outcome writes
 - isolate storage by extension origin
 
-Future browser implementations MAY add an OPFS Driver for streaming or large-Object workloads.
+Its Artifact Store SHALL prepare encrypted wrappers in a Vault-scoped OPFS namespace, stream reads
+and writes, validate exact wrapper integrity, remove failed preparations, and reconcile orphan files
+against authoritative records at startup. Platform APIs remain behind the Driver.
 
 The Runtime MUST NOT depend upon IndexedDB-specific or OPFS-specific APIs outside the selected Driver.
 

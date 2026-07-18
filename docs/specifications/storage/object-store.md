@@ -55,7 +55,8 @@ The storage layer recognizes only broad storage categories.
 
 Examples include:
 
-- Bundle
+- BundleDescriptor
+- Artifact
 - Event
 - Block
 - WrappedKey
@@ -92,6 +93,11 @@ Replacing an Object requires storing a new Object with a different identifier.
 Implementations SHOULD support streaming writes and reads.
 
 Large Objects SHOULD NOT require complete in-memory buffering.
+
+An Artifact Object has a compact authoritative record and an external encrypted Artifact wrapper.
+The record binds the Artifact Object ID to the exact wrapper byte length and SHA-256 checksum. The
+Object Store SHALL treat that pair as one immutable Object and SHALL NOT report a successful read
+until both wrapper and plaintext integrity validation complete.
 
 ---
 
@@ -148,7 +154,9 @@ Payloads are opaque.
 
 Integrity verification is mandatory.
 
-Objects are the authoritative persistence records; higher-level specifications define how Object Types such as Bundles, Event Log Segments, and Wrapped Keys affect Vault state.
+Objects are the authoritative persistence records; higher-level specifications define how Object
+Types such as Bundle Descriptors, Artifacts, Event Log Segments, and Wrapped Keys affect Vault
+state.
 
 ---
 

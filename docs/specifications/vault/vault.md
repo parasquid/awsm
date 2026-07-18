@@ -102,7 +102,7 @@ The authoritative state of a Vault consists exclusively of immutable Objects who
 
 Examples include:
 
-- Bundle Objects
+- Bundle Descriptor and Artifact Objects
 - Event Objects
 - Event Log Segment Objects
 - Wrapped Key Objects
@@ -114,7 +114,8 @@ Bundle Registries, Event Stores, Search Projections, and UI views are logical in
 
 # 7. Bundle Registry
 
-The Bundle Registry is a Projection over authoritative Bundle Objects and Vault Events.
+The Bundle Registry is a Projection over authoritative Bundle Descriptor and Artifact Objects plus
+Vault Events.
 
 Bundles are immutable.
 

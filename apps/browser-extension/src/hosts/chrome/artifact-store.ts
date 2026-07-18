@@ -1,0 +1,170 @@
+import { readArtifactEnvelope, writeArtifactEnvelope } from "../../crypto/artifact-envelope";
+import { deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
+import { wipe } from "../../crypto/sodium";
+import { bytesEqual } from "../../domain/hash";
+import { uuid } from "../../domain/validation";
+import type { StoredArtifactObjectV1 } from "../../drivers/indexeddb/schema";
+import type { ArtifactStore, PreparedArtifact } from "../../runtime/artifact";
+
+const ROOT_DIRECTORY = "awsm-vault-objects";
+const SUFFIX = ".artifact";
+
+async function rootDirectory(): Promise<FileSystemDirectoryHandle> {
+  const root = await navigator.storage.getDirectory();
+  return root.getDirectoryHandle(ROOT_DIRECTORY, { create: true });
+}
+
+async function vaultDirectory(vaultId: string): Promise<FileSystemDirectoryHandle> {
+  const scoped = uuid(vaultId, "artifactStore.vaultId");
+  return (await rootDirectory()).getDirectoryHandle(scoped, { create: true });
+}
+
+function filename(objectId: string): string {
+  return `${uuid(objectId, "artifactStore.objectId")}${SUFFIX}`;
+}
+
+async function fileStream(vaultId: string, objectId: string): Promise<ReadableStream<Uint8Array>> {
+  const directory = await vaultDirectory(vaultId);
+  const handle = await directory.getFileHandle(filename(objectId));
+  return (await handle.getFile()).stream();
+}
+
+export class ChromeArtifactStore implements ArtifactStore {
+  async prepare(input: {
+    readonly vaultId: string;
+    readonly objectId: string;
+    readonly rootKey: CryptoKey;
+    readonly plaintext: AsyncIterable<Uint8Array>;
+    readonly noncePrefix?: Uint8Array;
+    readonly signal?: AbortSignal;
+  }): Promise<PreparedArtifact> {
+    const vaultId = uuid(input.vaultId, "artifactStore.vaultId");
+    const objectId = uuid(input.objectId, "artifactStore.objectId");
+    const directory = await vaultDirectory(vaultId);
+    const name = filename(objectId);
+    try {
+      await directory.getFileHandle(name);
+      throw new Error("An Artifact Object identifier already exists.");
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+    }
+    const handle = await directory.getFileHandle(name, { create: true });
+    const writable = await handle.createWritable({ keepExistingData: false });
+    const key = await deriveContextKeyFromCryptoKey(input.rootKey, {
+      vaultId,
+      domain: "vault:artifact:v1",
+      contextId: objectId,
+      keyVersion: 1,
+    });
+    try {
+      const summary = await writeArtifactEnvelope({
+        objectId,
+        key,
+        plaintext: input.plaintext,
+        write: (value) => writable.write(Uint8Array.from(value).buffer),
+        ...(input.noncePrefix === undefined ? {} : { noncePrefix: input.noncePrefix }),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
+      await writable.close();
+      const stored = await handle.getFile();
+      if (stored.size !== summary.envelopeByteLength)
+        throw new Error("Artifact write was truncated.");
+      return {
+        object: {
+          version: 1,
+          objectId,
+          objectType: "Artifact",
+          envelopeFormat: "artifact:xchacha20poly1305-chunked:v1",
+          envelopeByteLength: summary.envelopeByteLength,
+          envelopeChecksumAlgorithm: "hash:sha256:v1",
+          envelopeChecksum: summary.envelopeChecksum,
+        },
+        plaintextByteLength: summary.plaintextByteLength,
+        plaintextChecksum: summary.plaintextChecksum,
+      };
+    } catch (error) {
+      await writable.abort().catch(() => undefined);
+      await directory.removeEntry(name).catch(() => undefined);
+      throw error;
+    } finally {
+      await wipe(key);
+    }
+  }
+
+  openEncrypted(vaultId: string, objectId: string): Promise<ReadableStream<Uint8Array>> {
+    return fileStream(vaultId, objectId);
+  }
+
+  async openPlaintext(input: {
+    readonly vaultId: string;
+    readonly object: StoredArtifactObjectV1;
+    readonly reference: import("../../domain/artifact-graph").ArtifactReferenceV1;
+    readonly rootKey: CryptoKey;
+    readonly signal?: AbortSignal;
+  }): Promise<ReadableStream<Uint8Array>> {
+    const vaultId = uuid(input.vaultId, "artifactStore.vaultId");
+    if (input.object.objectId !== input.reference.artifactObjectId)
+      throw new Error("Artifact reference does not match its Object record.");
+    const encrypted = await fileStream(vaultId, input.object.objectId);
+    const key = await deriveContextKeyFromCryptoKey(input.rootKey, {
+      vaultId,
+      domain: "vault:artifact:v1",
+      contextId: input.object.objectId,
+      keyVersion: 1,
+    });
+    const transform = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = transform.writable.getWriter();
+    void readArtifactEnvelope({
+      expectedObjectId: input.object.objectId,
+      key,
+      encrypted: streamChunks(encrypted),
+      write: (value) => writer.write(value),
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    })
+      .then(async (summary) => {
+        if (
+          summary.envelopeByteLength !== input.object.envelopeByteLength ||
+          !bytesEqual(summary.envelopeChecksum, input.object.envelopeChecksum) ||
+          summary.plaintextByteLength !== input.reference.plaintextByteLength ||
+          !bytesEqual(summary.plaintextChecksum, input.reference.plaintextChecksum)
+        ) {
+          throw new Error("Artifact integrity does not match its authoritative records.");
+        }
+        await writer.close();
+      })
+      .catch(async (error) => writer.abort(error))
+      .finally(async () => wipe(key));
+    return transform.readable;
+  }
+
+  async remove(vaultId: string, objectId: string): Promise<void> {
+    const directory = await vaultDirectory(vaultId);
+    await directory.removeEntry(filename(objectId)).catch((error) => {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+    });
+  }
+
+  async reconcile(vaultId: string, authoritativeIds: ReadonlySet<string>): Promise<void> {
+    const directory = await vaultDirectory(vaultId);
+    for await (const [name, handle] of directory.entries()) {
+      if (handle.kind !== "file") continue;
+      const objectId = name.endsWith(SUFFIX) ? name.slice(0, -SUFFIX.length) : undefined;
+      if (objectId === undefined || !authoritativeIds.has(objectId)) {
+        await directory.removeEntry(name);
+      }
+    }
+  }
+}
+
+async function* streamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

@@ -1,15 +1,16 @@
+import type { ArtifactRole } from "../../domain/artifact-graph";
 import type { CaptureWarningId, LibraryItemV1 } from "../../domain/contracts";
 
 export interface BundleRegisteredProjectionEventV1 {
   readonly eventId: string;
   readonly eventType: "BundleRegistered";
   readonly bundleId: string;
-  readonly bundleObjectId: string;
+  readonly descriptorObjectId: string;
   readonly collectionId: string;
   readonly title: string;
   readonly originalUrl: string;
   readonly capturedAt: string;
-  readonly screenshotPresent: boolean;
+  readonly artifactRoles: readonly ArtifactRole[];
   readonly thumbnailWebp?: Uint8Array;
   readonly warnings: readonly CaptureWarningId[];
 }
@@ -70,12 +71,12 @@ export function reduceLibraryProjection(
     items.set(event.bundleId, {
       version: 1,
       bundleId: event.bundleId,
-      bundleObjectId: event.bundleObjectId,
+      descriptorObjectId: event.descriptorObjectId,
       assignedCollectionId: event.collectionId,
       title: event.title,
       originalUrl: event.originalUrl,
       capturedAt: event.capturedAt,
-      screenshotPresent: event.screenshotPresent,
+      artifactRoles: event.artifactRoles,
       status: "Active",
       ...(event.thumbnailWebp === undefined ? {} : { thumbnailWebp: event.thumbnailWebp }),
       warnings: event.warnings,

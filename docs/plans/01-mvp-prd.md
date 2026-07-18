@@ -28,13 +28,13 @@ The modern web is transient.
 
 Users regularly encounter situations where:
 
-* articles disappear
-* documentation changes
-* discussions are edited or deleted
-* web applications evolve
-* URLs become invalid
-* images are removed
-* embedded media becomes unavailable
+- articles disappear
+- documentation changes
+- discussions are edited or deleted
+- web applications evolve
+- URLs become invalid
+- images are removed
+- embedded media becomes unavailable
 
 Traditional bookmarking systems preserve only links.
 
@@ -42,10 +42,10 @@ Traditional note-taking systems often preserve extracted text but not the origin
 
 Existing archival solutions either:
 
-* fail to preserve dynamic web content,
-* expose user data to centralized services,
-* require server-side processing,
-* or provide limited search and organization capabilities.
+- fail to preserve dynamic web content,
+- expose user data to centralized services,
+- require server-side processing,
+- or provide limited search and organization capabilities.
 
 Users need a system that faithfully preserves information while respecting privacy.
 
@@ -57,13 +57,13 @@ Archive Platform enables users to build a permanent digital knowledge library.
 
 Every archived Bundle becomes:
 
-* permanently preserved
-* searchable
-* available offline
-* synchronized securely
-* AI-enhanced
-* exportable
-* user-owned
+- permanently preserved
+- searchable
+- available offline
+- synchronized securely
+- AI-enhanced
+- exportable
+- user-owned
 
 The platform should become the trusted repository for everything a user wishes to preserve.
 
@@ -107,11 +107,11 @@ Archives should remain accessible regardless of future implementation changes.
 
 The platform is not intended to replace:
 
-* collaborative documentation platforms
-* real-time editors
-* project management software
-* cloud office suites
-* enterprise content management systems
+- collaborative documentation platforms
+- real-time editors
+- project management software
+- cloud office suites
+- enterprise content management systems
 
 The focus remains knowledge preservation.
 
@@ -279,17 +279,22 @@ I want confidence that the service provider cannot read my archives.
 
 The system shall:
 
-* capture complete web pages
-* capture page metadata
-* attempt full-page screenshots and report a warning when the Host cannot produce one
-* preserve dynamic DOM state
-* preserve page title
-* preserve URL
-* preserve timestamps
-* preserve favicons
-* preserve Open Graph metadata
+- capture complete web pages
+- capture page metadata
+- attempt full-page screenshots and report a warning when the Host cannot produce one
+- preserve a bounded thumbnail plus normalized text and structured semantic content when available
+- preserve dynamic DOM state
+- preserve page title
+- preserve URL
+- preserve timestamps
+- preserve favicons
+- preserve Open Graph metadata
 
 The first `ChromeWebPage-v1` Capture Profile requires non-empty MHTML.
+
+Every successful payload is an independently encrypted Artifact Object referenced by one compact
+Bundle Descriptor. Mandatory MHTML failure rejects Capture; optional Artifact failure remains
+visible through a typed warning.
 
 Firefox capture is deferred until after the first Chrome vertical slice and should eventually produce an equivalent self-contained representation.
 
@@ -299,12 +304,15 @@ Firefox capture is deferred until after the first Chrome vertical slice and shou
 
 The client shall maintain a local encrypted Vault replica.
 
+Large Artifact reads and writes shall stream with bounded memory. A Bundle is authoritative only
+after its descriptor and exact Artifact dependency closure commit atomically.
+
 The local archive shall support:
 
-* offline browsing
-* offline search
-* offline AI
-* offline annotations
+- offline browsing
+- offline search
+- offline AI
+- offline annotations
 
 ---
 
@@ -312,17 +320,17 @@ The local archive shall support:
 
 The client shall provide:
 
-* full-text search
+- full-text search
 
-* title search
+- title search
 
-* URL search
+- URL search
 
-* tag search
+- tag search
 
-* folder search
+- folder search
 
-* AI-assisted semantic search (future)
+- AI-assisted semantic search (future)
 
 Search shall not require backend participation.
 
@@ -332,15 +340,15 @@ Search shall not require backend participation.
 
 The client shall support:
 
-* summarization
+- summarization
 
-* automatic tagging
+- automatic tagging
 
-* keyword extraction
+- keyword extraction
 
-* entity extraction
+- entity extraction
 
-* embeddings
+- embeddings
 
 Future AI capabilities should integrate through a provider abstraction.
 
@@ -352,15 +360,15 @@ The platform shall synchronize immutable Bundles, Vault Events, wrapped keys, an
 
 Synchronization shall:
 
-* resume automatically
+- resume automatically
 
-* support interrupted uploads
+- support interrupted uploads
 
-* converge by replaying ordered Events
+- converge by replaying ordered Events
 
-* synchronize incrementally
+- synchronize incrementally
 
-* minimize bandwidth
+- minimize bandwidth
 
 ---
 
@@ -430,6 +438,11 @@ Stored Objects must be verifiable using integrity metadata.
 
 ## Portability
 
+The client shall export the exact active Vault Generation as a passphrase-protected streaming ZIP64
+Vault Package. Complete packages include every Artifact; Selective packages authenticate each
+permitted heavyweight omission. Export shall remain distinct from Backup and shall not create a
+local passphrase credential.
+
 The platform should support:
 
 Chrome
@@ -458,37 +471,37 @@ The first public release includes:
 
 Browser Extension
 
-* Capture current page
-* Full-page screenshot
-* MHTML (Chrome)
-* Self-contained HTML (Firefox)
-* Metadata extraction
-* Local encrypted storage
-* Local search
-* Manual tags
-* Manual folders
-* Notes
-* Synchronization
-* Multi-device support
+- Capture current page
+- Full-page screenshot
+- MHTML (Chrome)
+- Self-contained HTML (Firefox)
+- Metadata extraction
+- Local encrypted storage
+- Local search
+- Manual tags
+- Manual folders
+- Notes
+- Synchronization
+- Multi-device support
 
 Backend
 
-* Authentication
-* Multi-tenancy
-* Object storage
-* Synchronization
-* Device registry
-* Billing foundation
+- Authentication
+- Multi-tenancy
+- Object storage
+- Synchronization
+- Device registry
+- Billing foundation
 
 Excluded:
 
-* Sharing
-* OCR
-* Scheduled captures
-* Mobile applications
-* Public archives
-* Semantic search
-* Browser history import
+- Sharing
+- OCR
+- Scheduled captures
+- Mobile applications
+- Public archives
+- Semantic search
+- Browser history import
 
 ---
 
@@ -496,33 +509,33 @@ Excluded:
 
 Technical
 
-* Successful capture rate >99%
+- Successful capture rate >99%
 
-* Synchronization success >99.9%
+- Synchronization success >99.9%
 
-* Search latency <100 ms
+- Search latency <100 ms
 
-* Zero known plaintext leaks
+- Zero known plaintext leaks
 
 User
 
-* Daily active users
+- Daily active users
 
-* Monthly retained users
+- Monthly retained users
 
-* Average archive count
+- Average archive count
 
-* Search usage frequency
+- Search usage frequency
 
-* AI usage frequency
+- AI usage frequency
 
 Business
 
-* Storage growth
+- Storage growth
 
-* Paid conversion
+- Paid conversion
 
-* Device count per account
+- Device count per account
 
 ---
 
@@ -622,11 +635,11 @@ The MVP is considered complete when a user can:
 
 Every feature should improve at least one of the following:
 
-* Preservation
-* Privacy
-* Performance
-* Portability
-* Simplicity
+- Preservation
+- Privacy
+- Performance
+- Portability
+- Simplicity
 
 Features that compromise these principles require strong justification.
 
@@ -636,17 +649,17 @@ Features that compromise these principles require strong justification.
 
 The architecture should ultimately support a universal encrypted knowledge archive containing:
 
-* Web pages
-* PDFs
-* Books
-* Emails
-* Images
-* Videos
-* Audio
-* Source code
-* Personal notes
-* Research papers
-* Office documents
-* AI-generated knowledge artifacts
+- Web pages
+- PDFs
+- Books
+- Emails
+- Images
+- Videos
+- Audio
+- Source code
+- Personal notes
+- Research papers
+- Office documents
+- AI-generated knowledge artifacts
 
 without requiring changes to the platform's core architecture.

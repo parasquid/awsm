@@ -59,21 +59,16 @@ describe("Chrome capture Host preflight", () => {
 });
 
 describe("mandatory MHTML acquisition", () => {
-  it("returns non-empty Blob bytes", async () => {
-    await expect(acquireMandatoryMhtml(host(), 7)).resolves.toEqual(
-      new TextEncoder().encode("MIME-Version: 1.0\r\n"),
-    );
+  it("returns the original non-empty Blob for streaming", async () => {
+    const result = await acquireMandatoryMhtml(host(), 7);
+    expect(result).toBeInstanceOf(Blob);
+    expect(await result.text()).toBe("MIME-Version: 1.0\r\n");
   });
 
-  it("maps empty, rejected, and unreadable Blobs to MHTML_CAPTURE_FAILED", async () => {
+  it("maps empty and rejected Blobs to MHTML_CAPTURE_FAILED", async () => {
     const cases: CaptureHost[] = [
       host({ saveAsMhtml: vi.fn(async () => new Blob()) }),
       host({ saveAsMhtml: vi.fn(async () => Promise.reject(new Error("sensitive URL"))) }),
-      host({
-        saveAsMhtml: vi.fn(
-          async () => ({ arrayBuffer: async () => Promise.reject(new Error("bad")) }) as Blob,
-        ),
-      }),
     ];
     for (const fake of cases) {
       await expect(acquireMandatoryMhtml(fake, 7)).rejects.toMatchObject({

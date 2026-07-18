@@ -8,304 +8,79 @@
 
 **Depends On:**
 
-- bundle.md
-- manifest.md
+- `bundle.md`
+- `manifest.md`
+- `../crypto/object-encryption.md`
 
 ---
 
 # 1. Purpose
 
-Artifacts are the immutable payloads contained within a Bundle.
-
-Each Artifact represents one preserved or derived piece of information.
-
-Artifacts are individually addressable.
-
-Artifacts never change after Bundle creation.
-
----
-
-# 2. Design Goals
-
-Artifacts MUST provide:
-
-- immutability
-- independent validation
-- explicit semantics
-- format neutrality
-- canonical format validation
-
----
-
-# 3. Artifact Properties
-
-Every Artifact MUST have:
-
-- Artifact Identifier
-- Kind
-- Role
-- MIME Type
-- Byte Length
-- Checksum
-- Version
-
-Optional properties MAY include:
-
-- Original Filename
-- Character Encoding
-- Language
-- Compression Information
-
----
-
-# 4. Artifact Identifier
-
-Artifact Identifiers MUST be unique within a Bundle.
-
-Artifact Identifiers SHOULD remain stable for the lifetime of the Bundle.
-
-Example:
-
-A000001
-
----
-
-# 5. Kind
-
-Kind describes the nature of the Artifact.
-
-Initial standard Kinds include:
-
-CAPTURE
-
-IMAGE
-
-TEXT
-
-DOCUMENT
-
-METADATA
-
-DERIVED
-
-USER
-
-Future Kinds MAY be introduced.
-
-Readers MUST reject unknown Kinds.
-
----
-
-# 6. Role
-
-Role describes the Artifact's purpose.
-
-Examples:
-
-PRIMARY
-
-SCREENSHOT_FULL
-
-SCREENSHOT_VISIBLE
-
-OCR
-
-THUMBNAIL
-
-SUMMARY_AI
-
-NOTE
-
-FAVICON
-
-MANIFEST_METADATA
-
-Future Roles MAY be introduced.
-
----
-
-# 7. MIME Type
-
-Artifacts SHALL declare their MIME type.
-
-Examples:
-
-multipart/related
-
-image/png
-
-image/webp
-
-text/plain
-
-application/pdf
-
-application/json
-
----
-
-# 8. Payload
-
-The payload contains the Artifact's bytes.
-
-The Bundle Specification does not define payload encoding.
-
-Payload interpretation depends on MIME Type.
-
----
-
-# 9. Compression
-
-Compression is optional.
-
-If applied, compression metadata MUST be recorded.
-
----
-
-# 10. Encryption
-
-The Artifact Specification describes plaintext representation only.
-
-Encryption is defined by the Cryptography Specification.
-
----
-
-# 11. Integrity
-
-Every Artifact MUST include a checksum.
-
-Implementations MUST validate checksums before use.
-
----
-
-# 12. Relationships
-
-Artifacts are independent.
-
-Relationships between Artifacts are described by the Manifest.
-
-Examples:
-
-OCR belongs to PRIMARY.
-
-Thumbnail derived from SCREENSHOT_FULL.
-
-AI Summary derived from OCR.
-
-Relationships SHALL NOT be inferred from filenames.
-
----
-
-# 13. Standard Artifact Kinds
-
-The following Kinds are reserved:
-
-CAPTURE
-
-IMAGE
-
-TEXT
-
-DOCUMENT
-
-METADATA
-
-DERIVED
-
-USER
-
-Implementations MAY define additional Kinds.
-
----
-
-# 14. Standard Roles
-
-Initial standard Roles include:
-
-PRIMARY
-
-SCREENSHOT_FULL
-
-SCREENSHOT_VISIBLE
-
-OCR
-
-TEXT_EXTRACTED
-
-THUMBNAIL
-
-METADATA_CAPTURE
-
-NOTE
-
-ATTACHMENT_USER
-
-SUMMARY_AI
-
-EMBEDDING_AI
-
-FAVICON
-
-Roles SHOULD remain stable across Bundle versions.
-
----
-
-# 15. Unknown Artifacts
-
-Readers MUST reject unknown Artifact Kinds and Roles.
-
-Unsupported Artifacts MUST NOT invalidate the Bundle.
-
----
-
-# 16. Validation
-
-An Artifact is valid if:
-
-✓ Identifier exists
-
-✓ Kind exists
-
-✓ Role exists
-
-✓ MIME Type valid
-
-✓ Byte Length correct
-
-✓ Checksum matches
-
----
-
-# 17. Invariants
-
-Artifacts are immutable.
-
-Artifact Identifiers are unique.
-
-Payloads are opaque.
-
-Artifacts are never modified in place.
-
-Derived Artifacts never replace original Artifacts.
-
----
-
-# 18. Unsupported Artifact Semantics
-
-Artifact semantics outside this specification are unsupported, including:
-
-- new Kinds
-- new Roles
-- new MIME Types
-
-Readers MUST reject unsupported Artifact semantics.
-
----
+An Artifact is an immutable authoritative payload referenced by a Bundle Descriptor. Every Artifact
+is independently identifiable, encrypted, stored, streamed, and verifiable.
+
+# 2. Canonical Initial Roles
+
+| Role                 | Kind                 | MIME type                  | Requirement |
+| -------------------- | -------------------- | -------------------------- | ----------- |
+| `PRIMARY`            | `CAPTURE`            | `multipart/related`        | mandatory   |
+| `SCREENSHOT_FULL`    | `IMAGE`              | `image/webp`               | best effort |
+| `THUMBNAIL`          | `IMAGE`              | `image/webp`               | best effort |
+| `TEXT_EXTRACTED`     | `TEXT`               | `text/plain;charset=utf-8` | best effort |
+| `CONTENT_STRUCTURED` | `STRUCTURED_CONTENT` | `application/cbor-seq`     | best effort |
+
+Readers SHALL reject any other Kind, Role, or Role/MIME pairing in the initial format. Roles SHALL
+be unique within a Bundle.
+
+# 3. Artifact Reference
+
+Each descriptor Artifact reference SHALL contain only:
+
+- `artifactVersion: 1`;
+- `artifactObjectId`, a fresh canonical UUID that is also the Artifact identifier;
+- Kind, Role, and exact MIME type;
+- canonical acquisition timestamp;
+- safe non-negative plaintext byte length;
+- checksum algorithm `hash:sha256:v1`; and
+- the exact 32-byte plaintext SHA-256 checksum.
+
+References SHALL be sorted by Artifact Object ID. They SHALL NOT contain filenames, storage paths,
+wrapper lengths, wrapper checksums, compression settings, or local availability state.
+
+# 4. Artifact Object and Wrapper
+
+The authoritative IndexedDB Object record binds the Artifact Object ID to `objectType: Artifact`
+and the immutable wrapper byte length and SHA-256 checksum. It contains no plaintext payload and no
+local path. The Artifact Store derives a Vault-scoped path from validated UUIDs.
+
+The wrapper uses the chunked Artifact encryption format in the Object Encryption Specification.
+Readers SHALL authenticate every frame and verify final plaintext length/checksum plus wrapper
+length/checksum before exposing successful completion. A missing, truncated, corrupt, or
+checksum-mismatched referenced wrapper is corruption, not an optional or unavailable Artifact.
+
+# 5. Structured and Text Artifacts
+
+`CONTENT_STRUCTURED` is a canonical CBOR sequence with one versioned header followed by ordered
+semantic blocks. The initial block union is Heading, Paragraph, Quote, ListItem, Preformatted, and
+Table. Links SHALL be canonical absolute HTTP(S) URLs. Unknown fields and block variants are
+rejected.
+
+`TEXT_EXTRACTED` is deterministic NFC UTF-8 text derived from the same ordered block stream. Empty
+structured content may produce an empty text Artifact. Text and structured Artifacts are compact
+and SHALL NOT be intentionally omitted from a Selective package.
+
+# 6. Invariants
+
+- Artifact identifiers are globally unique canonical UUIDs, never Bundle-local sequence labels.
+- Equal payloads are not deduplicated and do not reuse identifiers.
+- Artifact bytes never mutate in place.
+- Derived Artifacts never replace preserved Artifacts.
+- The coordination boundary never receives plaintext checksums or semantic metadata outside opaque
+  encrypted Objects.
 
 # References
 
-bundle.md
-
-manifest.md
-
-crypto/crypto.md
+- `bundle.md`
+- `manifest.md`
+- `../crypto/object-encryption.md`
+- `../runtime/capture.md`

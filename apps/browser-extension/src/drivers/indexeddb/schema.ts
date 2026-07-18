@@ -39,14 +39,26 @@ export interface VaultDirectoryEntryV1 {
   readonly createdAt: string;
 }
 
-export type StoredObjectType = "Bundle" | "Event";
+export type StoredObjectType = "BundleDescriptor" | "Artifact";
 
-export interface StoredObjectV1 {
+export interface StoredBundleDescriptorObjectV1 {
   readonly version: 1;
   readonly objectId: string;
-  readonly objectType: StoredObjectType;
+  readonly objectType: "BundleDescriptor";
   readonly envelopeBytes: Uint8Array;
 }
+
+export interface StoredArtifactObjectV1 {
+  readonly version: 1;
+  readonly objectId: string;
+  readonly objectType: "Artifact";
+  readonly envelopeFormat: "artifact:xchacha20poly1305-chunked:v1";
+  readonly envelopeByteLength: number;
+  readonly envelopeChecksumAlgorithm: "hash:sha256:v1";
+  readonly envelopeChecksum: Uint8Array;
+}
+
+export type StoredObjectV1 = StoredBundleDescriptorObjectV1 | StoredArtifactObjectV1;
 
 export interface StoredEvent {
   readonly version: 1;
@@ -81,12 +93,17 @@ export interface CommandOutcomeV1 {
   readonly commandId: string;
   readonly status: "Succeeded";
   readonly bundleId: string;
-  readonly bundleObjectId: string;
+  readonly descriptorObjectId: string;
   readonly eventId: string;
 }
 
 export interface AtomicRegistrationV1 {
-  readonly object: StoredObjectV1;
+  readonly objects: readonly StoredObjectV1[];
+  readonly graph: {
+    readonly bundleId: string;
+    readonly descriptorObjectId: string;
+    readonly artifactObjectIds: readonly string[];
+  };
   readonly event: StoredEvent;
   readonly projection: StoredProjectionV1;
   readonly outcome: CommandOutcomeV1;

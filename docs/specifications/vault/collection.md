@@ -42,7 +42,8 @@ Commands MUST validate complete input before writing. One accepted operation MUS
 
 `CollectionMergeReverted` names one active `CollectionsMerged` Event whose redirect is deactivated. An inverse move swaps each original move's source and destination and names the Event it reverts.
 
-Identifier lists MUST use canonical ascending order. Events and immutable Bundle Objects MUST remain present after management and Undo.
+Identifier lists MUST use canonical ascending order. Events and immutable Bundle Descriptor and
+Artifact Objects MUST remain present after management and Undo.
 
 ## 5. Projection and replay
 

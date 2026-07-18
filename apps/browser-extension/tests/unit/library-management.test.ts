@@ -22,12 +22,12 @@ function item(
   return {
     version: 1,
     bundleId: id(bundle),
-    bundleObjectId: id(bundle + 100),
+    descriptorObjectId: id(bundle + 100),
     assignedCollectionId: id(collection),
     title: `Capture ${String(bundle)}`,
     originalUrl: `https://fixture.test/${String(bundle)}`,
     capturedAt: `2026-07-18T${String(bundle).padStart(2, "0")}:00:00.000Z`,
-    screenshotPresent: false,
+    artifactRoles: ["PRIMARY"],
     status,
     warnings: [],
   };

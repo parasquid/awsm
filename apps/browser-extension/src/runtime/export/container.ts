@@ -1,6 +1,5 @@
 import {
   BlobReader,
-  BlobWriter,
   type FileEntry,
   Uint8ArrayReader,
   Uint8ArrayWriter,
@@ -19,11 +18,11 @@ export const VAULT_PACKAGE_MIME = "application/vnd.awsm.vault+zip";
 const FIXED_DATE = new Date("1980-01-01T00:00:00.000Z");
 const FIXED_PATHS = new Set(["generation.cbor", "head.cbor", "key.cbor", "manifest.cbor"]);
 const DYNAMIC_PATH =
-  /^(events|objects)\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.cbor$/iu;
+  /^(?:(?:events|objects)\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.cbor|artifacts\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.bin)$/iu;
 
 export interface VaultPackageEntry {
   readonly path: string;
-  readonly bytes: Uint8Array;
+  readonly bytes: Uint8Array | ReadableStream<Uint8Array>;
 }
 
 export interface ValidatedVaultPackage {
@@ -86,18 +85,22 @@ export async function writeVaultPackage(
       }
       previousPath = entry.path;
       if (FIXED_PATHS.has(entry.path)) seenFixed.add(entry.path);
-      await writer.add(entry.path, new Uint8ArrayReader(entry.bytes), {
-        zip64: true,
-        level: 0,
-        compressionMethod: 0,
-        extendedTimestamp: false,
-        externalFileAttributes: 0,
-        internalFileAttributes: 0,
-        lastModDate: FIXED_DATE,
-        msDosCompatible: true,
-        ...(signal === undefined ? {} : { signal }),
-        useWebWorkers: false,
-      });
+      await writer.add(
+        entry.path,
+        entry.bytes instanceof Uint8Array ? new Uint8ArrayReader(entry.bytes) : entry.bytes,
+        {
+          zip64: true,
+          level: 0,
+          compressionMethod: 0,
+          extendedTimestamp: false,
+          externalFileAttributes: 0,
+          internalFileAttributes: 0,
+          lastModDate: FIXED_DATE,
+          msDosCompatible: true,
+          ...(signal === undefined ? {} : { signal }),
+          useWebWorkers: false,
+        },
+      );
     }
     if (seenFixed.size !== FIXED_PATHS.size) throw new ExportPackageInvalidError();
     await writer.close(new Uint8Array(), { zip64: true });
@@ -105,15 +108,6 @@ export async function writeVaultPackage(
     await writer.close().catch(() => undefined);
     throw error;
   }
-}
-
-export async function writeVaultPackageBlob(
-  entries: Iterable<VaultPackageEntry> | AsyncIterable<VaultPackageEntry>,
-  signal?: AbortSignal,
-): Promise<Blob> {
-  const output = new BlobWriter(VAULT_PACKAGE_MIME);
-  await writeVaultPackage(output, entries, signal);
-  return output.getData();
 }
 
 async function entryBytes(entry: FileEntry, maximum: number): Promise<Uint8Array> {
@@ -188,7 +182,13 @@ export async function validateVaultPackage(
       throw new ExportAuthenticationError();
     }
     rawRootKey = await openExportKeyEnvelope(keyEnvelope, manifestBytes, passphrase);
-    const descriptorChecksum = await sha256(encodeCanonicalCbor(manifest.entries));
+    const descriptorChecksum = await sha256(
+      encodeCanonicalCbor({
+        entries: manifest.entries,
+        omissions: manifest.omissions,
+        coverage: manifest.coverage,
+      }),
+    );
     if (!bytesEqual(descriptorChecksum, manifest.contentIntegrity.checksum)) {
       throw new ExportPackageInvalidError();
     }
@@ -203,6 +203,7 @@ export async function validateVaultPackage(
       if (entry === undefined || entry.uncompressedSize !== descriptor.byteLength) {
         throw new ExportPackageInvalidError();
       }
+      if (descriptor.recordType === "ArtifactPayload") continue;
       const bytes = await entryBytes(entry, descriptor.byteLength);
       if (!bytesEqual(await sha256(bytes), descriptor.checksum)) {
         throw new ExportPackageInvalidError();
@@ -224,6 +225,15 @@ export async function validateVaultPackage(
         const entry = files.get(path);
         if (entry === undefined) throw new ExportPackageInvalidError();
         return entryBytes(entry, maximum);
+      },
+      openArtifact: async (objectId) => {
+        const entry = files.get(`artifacts/${objectId}.bin`);
+        if (entry === undefined) throw new ExportPackageInvalidError();
+        const stream = new TransformStream<Uint8Array, Uint8Array>();
+        void entry
+          .getData(stream.writable)
+          .catch((error: unknown) => stream.writable.abort(error).catch(() => undefined));
+        return stream.readable;
       },
     });
     return { manifest, rootKey };

@@ -1,9 +1,22 @@
 import { decodeCanonicalCbor, encodeCanonicalCbor } from "../../domain/cbor";
 import { DomainValidationError } from "../../domain/errors";
 import { bytesEqual } from "../../domain/hash";
-import { bytes, canonicalRecord, integer, literal, timestamp, uuid } from "../../domain/validation";
+import {
+  bytes,
+  canonicalRecord,
+  integer,
+  literal,
+  string,
+  timestamp,
+  uuid,
+} from "../../domain/validation";
 
-export type ExportRecordType = "VaultGeneration" | "VaultHead" | "Event" | "Object";
+export type ExportRecordType =
+  | "VaultGeneration"
+  | "VaultHead"
+  | "Event"
+  | "Object"
+  | "ArtifactPayload";
 
 export interface ExportEntryDescriptorV1 {
   readonly path: string;
@@ -14,20 +27,29 @@ export interface ExportEntryDescriptorV1 {
   readonly checksum: Uint8Array;
 }
 
+export interface ExportOmissionV1 {
+  readonly artifactObjectId: string;
+  readonly expectedPath: string;
+  readonly envelopeByteLength: number;
+  readonly envelopeChecksumAlgorithm: "hash:sha256:v1";
+  readonly envelopeChecksum: Uint8Array;
+  readonly reason: "NotLocallyAvailable";
+}
+
 export interface ExportManifestV1 {
   readonly exportFormatVersion: 1;
   readonly packageId: string;
   readonly createdAt: string;
   readonly originatingVaultId: string;
-  readonly vaultFormatVersion: 1;
-  readonly bundleFormatVersion: 1;
-  readonly eventFormatVersion: 1;
   readonly generationId: string;
   readonly generationNumber: number;
-  readonly objectCount: number;
+  readonly coverage: "Complete" | "Selective";
   readonly eventCount: number;
-  readonly supportedFeatures: readonly ["full-vault", "vault-generation"];
+  readonly objectCount: number;
+  readonly artifactPayloadCount: number;
+  readonly supportedFeatures: readonly ["artifact-graph", "selective-coverage", "vault-generation"];
   readonly entries: readonly ExportEntryDescriptorV1[];
+  readonly omissions: readonly ExportOmissionV1[];
   readonly contentIntegrity: {
     readonly algorithm: "hash:sha256:v1";
     readonly checksum: Uint8Array;
@@ -50,31 +72,21 @@ export interface ExportKeyEnvelopeV1 {
   readonly ciphertext: Uint8Array;
 }
 
-const MANIFEST_FIELDS = [
-  "exportFormatVersion",
-  "packageId",
-  "createdAt",
-  "originatingVaultId",
-  "vaultFormatVersion",
-  "bundleFormatVersion",
-  "eventFormatVersion",
-  "generationId",
-  "generationNumber",
-  "objectCount",
-  "eventCount",
-  "supportedFeatures",
-  "entries",
-  "contentIntegrity",
-] as const;
-
-function requireCanonicalBytes(bytesValue: Uint8Array, decoded: unknown, field: string): void {
-  if (!bytesEqual(bytesValue, encodeCanonicalCbor(decoded))) {
+function canonical(encoded: Uint8Array, decoded: unknown, field: string): void {
+  if (!bytesEqual(encoded, encodeCanonicalCbor(decoded)))
     throw new DomainValidationError(field, "must use canonical CBOR");
-  }
 }
 
-function decodeEntry(value: unknown, index: number): ExportEntryDescriptorV1 {
-  const field = `manifest.entries[${index}]`;
+function expectedPath(type: ExportRecordType, id: string): string {
+  if (type === "VaultGeneration") return "generation.cbor";
+  if (type === "VaultHead") return "head.cbor";
+  if (type === "Event") return `events/${id}.cbor`;
+  if (type === "Object") return `objects/${id}.cbor`;
+  return `artifacts/${id}.bin`;
+}
+
+function entry(value: unknown, index: number): ExportEntryDescriptorV1 {
+  const field = `manifest.entries.${index}`;
   const input = canonicalRecord(value, field, [
     "path",
     "recordType",
@@ -84,22 +96,16 @@ function decodeEntry(value: unknown, index: number): ExportEntryDescriptorV1 {
     "checksum",
   ]);
   const recordId = uuid(input.recordId, `${field}.recordId`);
-  const recordType = input.recordType;
-  if (!["VaultGeneration", "VaultHead", "Event", "Object"].includes(String(recordType))) {
+  const type = string(input.recordType, `${field}.recordType`);
+  if (!["VaultGeneration", "VaultHead", "Event", "Object", "ArtifactPayload"].includes(type))
     throw new DomainValidationError(`${field}.recordType`, "is unsupported");
-  }
-  const expectedPath =
-    recordType === "VaultGeneration"
-      ? "generation.cbor"
-      : recordType === "VaultHead"
-        ? "head.cbor"
-        : `${recordType === "Event" ? "events" : "objects"}/${recordId}.cbor`;
-  if (input.path !== expectedPath) {
-    throw new DomainValidationError(`${field}.path`, "does not match its record identity");
-  }
+  const recordType = type as ExportRecordType;
+  const path = expectedPath(recordType, recordId);
+  if (input.path !== path)
+    throw new DomainValidationError(`${field}.path`, "does not match identity");
   return {
-    path: expectedPath,
-    recordType: recordType as ExportRecordType,
+    path,
+    recordType,
     recordId,
     byteLength: integer(input.byteLength, `${field}.byteLength`),
     checksumAlgorithm: literal(
@@ -111,55 +117,113 @@ function decodeEntry(value: unknown, index: number): ExportEntryDescriptorV1 {
   };
 }
 
+function omission(value: unknown, index: number): ExportOmissionV1 {
+  const field = `manifest.omissions.${index}`;
+  const input = canonicalRecord(value, field, [
+    "artifactObjectId",
+    "expectedPath",
+    "envelopeByteLength",
+    "envelopeChecksumAlgorithm",
+    "envelopeChecksum",
+    "reason",
+  ]);
+  const artifactObjectId = uuid(input.artifactObjectId, `${field}.artifactObjectId`);
+  const path = `artifacts/${artifactObjectId}.bin`;
+  if (input.expectedPath !== path)
+    throw new DomainValidationError(`${field}.expectedPath`, "is invalid");
+  return {
+    artifactObjectId,
+    expectedPath: path,
+    envelopeByteLength: integer(input.envelopeByteLength, `${field}.envelopeByteLength`),
+    envelopeChecksumAlgorithm: literal(
+      input.envelopeChecksumAlgorithm,
+      "hash:sha256:v1",
+      `${field}.envelopeChecksumAlgorithm`,
+    ),
+    envelopeChecksum: bytes(input.envelopeChecksum, 32, `${field}.envelopeChecksum`),
+    reason: literal(input.reason, "NotLocallyAvailable", `${field}.reason`),
+  };
+}
+
 export function decodeExportManifest(encoded: Uint8Array): ExportManifestV1 {
   const decoded = decodeCanonicalCbor(encoded);
-  requireCanonicalBytes(encoded, decoded, "manifest");
-  const input = canonicalRecord(decoded, "manifest", MANIFEST_FIELDS);
-  if (!Array.isArray(input.supportedFeatures)) {
-    throw new DomainValidationError("manifest.supportedFeatures", "must be an array");
-  }
+  canonical(encoded, decoded, "manifest");
+  const input = canonicalRecord(decoded, "manifest", [
+    "exportFormatVersion",
+    "packageId",
+    "createdAt",
+    "originatingVaultId",
+    "generationId",
+    "generationNumber",
+    "coverage",
+    "eventCount",
+    "objectCount",
+    "artifactPayloadCount",
+    "supportedFeatures",
+    "entries",
+    "omissions",
+    "contentIntegrity",
+  ]);
   if (
-    input.supportedFeatures.length !== 2 ||
-    input.supportedFeatures[0] !== "full-vault" ||
-    input.supportedFeatures[1] !== "vault-generation"
-  ) {
+    !Array.isArray(input.entries) ||
+    !Array.isArray(input.omissions) ||
+    !Array.isArray(input.supportedFeatures)
+  )
+    throw new DomainValidationError("manifest", "contains invalid arrays");
+  const entries = input.entries.map(entry);
+  const omissions = input.omissions.map(omission);
+  if (
+    entries.map((item) => item.path).join("\n") !==
+      entries
+        .map((item) => item.path)
+        .toSorted()
+        .join("\n") ||
+    new Set(entries.map((item) => item.path)).size !== entries.length
+  )
+    throw new DomainValidationError("manifest.entries", "must have sorted unique paths");
+  if (
+    omissions.map((item) => item.artifactObjectId).join("\n") !==
+      omissions
+        .map((item) => item.artifactObjectId)
+        .toSorted()
+        .join("\n") ||
+    new Set(omissions.map((item) => item.artifactObjectId)).size !== omissions.length
+  )
+    throw new DomainValidationError("manifest.omissions", "must be sorted and unique");
+  const coverage =
+    input.coverage === "Complete" || input.coverage === "Selective" ? input.coverage : undefined;
+  if (coverage === undefined || (coverage === "Complete") !== (omissions.length === 0))
+    throw new DomainValidationError("manifest.coverage", "does not match omissions");
+  const features = ["artifact-graph", "selective-coverage", "vault-generation"] as const;
+  if (input.supportedFeatures.join("\n") !== features.join("\n"))
     throw new DomainValidationError("manifest.supportedFeatures", "must be canonical");
-  }
-  if (!Array.isArray(input.entries)) {
-    throw new DomainValidationError("manifest.entries", "must be an array");
-  }
-  const entries = input.entries.map(decodeEntry);
-  for (let index = 1; index < entries.length; index += 1) {
-    if ((entries[index - 1]?.path ?? "") >= (entries[index]?.path ?? "")) {
-      throw new DomainValidationError("manifest.entries", "must have unique lexical paths");
-    }
-  }
   const integrity = canonicalRecord(input.contentIntegrity, "manifest.contentIntegrity", [
     "algorithm",
     "checksum",
   ]);
-  const objectCount = integer(input.objectCount, "manifest.objectCount");
   const eventCount = integer(input.eventCount, "manifest.eventCount");
-  if (entries.filter((entry) => entry.recordType === "Object").length !== objectCount) {
-    throw new DomainValidationError("manifest.objectCount", "does not match entries");
-  }
-  if (entries.filter((entry) => entry.recordType === "Event").length !== eventCount) {
-    throw new DomainValidationError("manifest.eventCount", "does not match entries");
-  }
+  const objectCount = integer(input.objectCount, "manifest.objectCount");
+  const artifactPayloadCount = integer(input.artifactPayloadCount, "manifest.artifactPayloadCount");
+  if (
+    entries.filter((item) => item.recordType === "Event").length !== eventCount ||
+    entries.filter((item) => item.recordType === "Object").length !== objectCount ||
+    entries.filter((item) => item.recordType === "ArtifactPayload").length !== artifactPayloadCount
+  )
+    throw new DomainValidationError("manifest", "counts do not match entries");
   return {
     exportFormatVersion: literal(input.exportFormatVersion, 1, "manifest.exportFormatVersion"),
     packageId: uuid(input.packageId, "manifest.packageId"),
     createdAt: timestamp(input.createdAt, "manifest.createdAt"),
     originatingVaultId: uuid(input.originatingVaultId, "manifest.originatingVaultId"),
-    vaultFormatVersion: literal(input.vaultFormatVersion, 1, "manifest.vaultFormatVersion"),
-    bundleFormatVersion: literal(input.bundleFormatVersion, 1, "manifest.bundleFormatVersion"),
-    eventFormatVersion: literal(input.eventFormatVersion, 1, "manifest.eventFormatVersion"),
     generationId: uuid(input.generationId, "manifest.generationId"),
     generationNumber: integer(input.generationNumber, "manifest.generationNumber"),
-    objectCount,
+    coverage,
     eventCount,
-    supportedFeatures: ["full-vault", "vault-generation"],
+    objectCount,
+    artifactPayloadCount,
+    supportedFeatures: features,
     entries,
+    omissions,
     contentIntegrity: {
       algorithm: literal(
         integrity.algorithm,
@@ -173,7 +237,7 @@ export function decodeExportManifest(encoded: Uint8Array): ExportManifestV1 {
 
 export function decodeExportKeyEnvelope(encoded: Uint8Array): ExportKeyEnvelopeV1 {
   const decoded = decodeCanonicalCbor(encoded);
-  requireCanonicalBytes(encoded, decoded, "exportKeyEnvelope");
+  canonical(encoded, decoded, "exportKeyEnvelope");
   const input = canonicalRecord(decoded, "exportKeyEnvelope", [
     "exportKeyEnvelopeVersion",
     "purpose",

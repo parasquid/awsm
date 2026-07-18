@@ -3,10 +3,12 @@ import {
   IndexedDbDriver,
   IndexedDbVaultRepository,
   IndexedDbWorkspaceRepository,
+  type StoredBundleDescriptorObjectV1,
   type StoredObjectV1,
   vaultKey,
   vaultSingletonKey,
 } from "../../../src/drivers/indexeddb";
+import { ChromeArtifactStore } from "../../../src/hosts/chrome/artifact-store";
 import {
   encryptWorkspaceVaultName,
   prepareVaultNameChange,
@@ -19,23 +21,41 @@ function id(suffix: string): string {
   return `00000000-0000-4000-8000-${suffix.padStart(12, "0")}`;
 }
 
-function object(objectId: string, byte: number): StoredObjectV1 {
+function object(objectId: string, byte: number): StoredBundleDescriptorObjectV1 {
   return {
     version: 1,
     objectId,
-    objectType: "Bundle",
+    objectType: "BundleDescriptor",
     envelopeBytes: new Uint8Array([byte]),
   };
 }
 
-function registration(seed: number): AtomicRegistrationV1 {
+function registration(
+  seed: number,
+): AtomicRegistrationV1 & { readonly object: StoredBundleDescriptorObjectV1 } {
+  const descriptor = object(id(String(seed)), seed);
+  const artifact: StoredObjectV1 = {
+    version: 1,
+    objectId: id(String(seed + 200)),
+    objectType: "Artifact",
+    envelopeFormat: "artifact:xchacha20poly1305-chunked:v1",
+    envelopeByteLength: seed + 10,
+    envelopeChecksumAlgorithm: "hash:sha256:v1",
+    envelopeChecksum: new Uint8Array(32).fill(seed),
+  };
   return {
-    object: object(id(String(seed)), seed),
+    object: descriptor,
+    objects: [descriptor, artifact],
+    graph: {
+      bundleId: id(String(seed + 300)),
+      descriptorObjectId: descriptor.objectId,
+      artifactObjectIds: [artifact.objectId],
+    },
     event: {
       version: 1,
       vaultId: "00000000-0000-4000-8000-000000000000",
       eventId: id(String(seed + 100)),
-      referencedObjectIds: [id(String(seed + 200))],
+      referencedObjectIds: [descriptor.objectId, artifact.objectId].toSorted(),
       orderingTimestamp: "2026-07-16T17:00:00.000Z",
       envelopeBytes: new Uint8Array([seed + 1]),
     },
@@ -49,7 +69,7 @@ function registration(seed: number): AtomicRegistrationV1 {
       commandId: id(String(seed + 400)),
       status: "Succeeded",
       bundleId: id(String(seed + 300)),
-      bundleObjectId: id(String(seed)),
+      descriptorObjectId: id(String(seed)),
       eventId: id(String(seed + 100)),
     },
   };
@@ -752,9 +772,13 @@ async function vaultIsolationScenario(): Promise<unknown> {
   const objectId = id("99");
   await first.putImmutableObject(object(objectId, 7));
   await second.putImmutableObject(object(objectId, 8));
+  const firstObject = await first.getStoredObject(objectId);
+  const secondObject = await second.getStoredObject(objectId);
   const result = {
-    firstByte: (await first.getStoredObject(objectId))?.envelopeBytes[0],
-    secondByte: (await second.getStoredObject(objectId))?.envelopeBytes[0],
+    firstByte:
+      firstObject?.objectType === "BundleDescriptor" ? firstObject.envelopeBytes[0] : undefined,
+    secondByte:
+      secondObject?.objectType === "BundleDescriptor" ? secondObject.envelopeBytes[0] : undefined,
     firstCounts: await first.counts(),
     secondCounts: await second.counts(),
   };
@@ -1410,6 +1434,86 @@ async function exportLeaseScenario(): Promise<unknown> {
   return result;
 }
 
+async function artifactStoreScenario(): Promise<unknown> {
+  const store = new ChromeArtifactStore();
+  const vaultId = crypto.randomUUID();
+  const objectId = crypto.randomUUID();
+  const rootKey = await crypto.subtle.importKey(
+    "raw",
+    crypto.getRandomValues(new Uint8Array(32)),
+    "HKDF",
+    false,
+    ["deriveBits"],
+  );
+  const plaintext = new TextEncoder().encode("known plaintext artifact");
+  async function* source(): AsyncGenerator<Uint8Array> {
+    yield plaintext.subarray(0, 3);
+    yield plaintext.subarray(3);
+  }
+  const prepared = await store.prepare({
+    vaultId,
+    objectId,
+    rootKey,
+    plaintext: source(),
+    noncePrefix: new Uint8Array(16).fill(7),
+  });
+  const encryptedReader = (await store.openEncrypted(vaultId, objectId)).getReader();
+  const encryptedParts: Uint8Array[] = [];
+  while (true) {
+    const next = await encryptedReader.read();
+    if (next.done) break;
+    encryptedParts.push(next.value);
+  }
+  const encryptedText = new TextDecoder().decode(
+    Uint8Array.from(encryptedParts.flatMap((value) => [...value])),
+  );
+  const plaintextReader = (
+    await store.openPlaintext({
+      vaultId,
+      object: prepared.object,
+      reference: {
+        artifactVersion: 1,
+        artifactObjectId: objectId,
+        kind: "CAPTURE",
+        role: "PRIMARY",
+        mimeType: "multipart/related",
+        acquiredAt: "2026-07-18T00:00:00.000Z",
+        plaintextByteLength: prepared.plaintextByteLength,
+        checksumAlgorithm: "hash:sha256:v1",
+        plaintextChecksum: prepared.plaintextChecksum,
+      },
+      rootKey,
+    })
+  ).getReader();
+  const recovered: Uint8Array[] = [];
+  while (true) {
+    const next = await plaintextReader.read();
+    if (next.done) break;
+    recovered.push(next.value);
+  }
+  let collisionRejected = false;
+  try {
+    await store.prepare({ vaultId, objectId, rootKey, plaintext: source() });
+  } catch {
+    collisionRejected = true;
+  }
+  await store.reconcile(vaultId, new Set());
+  let orphanRemoved = false;
+  try {
+    await store.openEncrypted(vaultId, objectId);
+  } catch {
+    orphanRemoved = true;
+  }
+  return {
+    objectType: prepared.object.objectType,
+    rootKeyExtractable: rootKey.extractable,
+    ciphertextExcludesPlaintext: !encryptedText.includes("known plaintext artifact"),
+    recovered: new TextDecoder().decode(Uint8Array.from(recovered.flatMap((value) => [...value]))),
+    collisionRejected,
+    orphanRemoved,
+  };
+}
+
 async function run(): Promise<void> {
   const scenario = new URL(location.href).searchParams.get("scenario");
   const result =
@@ -1463,7 +1567,9 @@ async function run(): Promise<void> {
                                                     ? await managementBusyScenario()
                                                     : scenario === "export-lease"
                                                       ? await exportLeaseScenario()
-                                                      : { error: "unknown scenario" };
+                                                      : scenario === "artifact-store"
+                                                        ? await artifactStoreScenario()
+                                                        : { error: "unknown scenario" };
   const output = document.querySelector("#result");
   if (output !== null) {
     output.textContent = JSON.stringify(result);

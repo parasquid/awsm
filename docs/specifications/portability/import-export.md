@@ -6,49 +6,26 @@
 
 **Status:** Draft
 
-**Depends On:** `../core/serialization.md`, `../storage/object-store.md`, `../crypto/crypto.md`, `../vault/vault.md`, `../runtime/jobs.md`
+**Depends On:** `../storage/object-store.md`, `../crypto/crypto.md`, `../vault/vault.md`,
+`../runtime/jobs.md`, `../bundle/bundle.md`
 
 ---
 
 # 1. Purpose
 
-This specification defines the canonical portable Vault Package. Export is manual interchange; it is not Backup, synchronization, or persistent Vault recovery configuration.
+This specification defines the canonical portable Vault Package. Export is manual interchange; it
+is not Backup, synchronization, or persistent Vault recovery configuration. A package is protected
+by a user-supplied export passphrase that is never saved and never changes local Vault unlock.
 
-The current product exports exactly one complete active Vault Generation. Partial Export, plaintext Export, merge Import, and user-facing Import are outside the current contract.
+# 2. Container and Layout
 
-# 2. Required Properties
+The sole canonical format is a streaming STORE-only ZIP64 `.awsm` package with media type
+`application/vnd.awsm.vault+zip`, export format version 1, canonical-CBOR records, lexical paths,
+fixed DOS epoch timestamps, and no comments, directory entries, platform permissions, duplicate
+paths, or compression. ZIP64 SHALL be used for every entry and central-directory record, including
+small packages, so entries and packages greater than 4 GiB are valid.
 
-A Vault Package MUST:
-
-- contain the active Generation's complete authoritative reachability;
-- preserve all authoritative identifiers and encrypted bytes without mutation;
-- exclude local device state and all rebuildable or operational state;
-- be independently authenticatable using only the package and its export passphrase;
-- support packages and entries beyond classic ZIP's 4 GiB boundary; and
-- be producible without buffering the complete Vault in memory.
-
-Export SHALL NOT change the source Vault. Failure or cancellation SHALL leave authoritative source bytes unchanged.
-
-# 3. Canonical Container
-
-The sole canonical format is:
-
-```text
-media type: application/vnd.awsm.vault+zip
-filename extension: .awsm
-export format version: 1
-container: ZIP64
-record encoding: canonical CBOR
-entry compression: STORE (method 0)
-```
-
-Every entry and the central directory SHALL use ZIP64. Writers SHALL stream to temporary filesystem storage. They SHALL NOT construct the package as an in-memory Blob, base64 value, or classic ZIP archive.
-
-Entries SHALL use forward-slash paths, lexical path order, a fixed DOS epoch modification time, and no comments, directory entries, platform permissions, extended timestamps, library encryption, or duplicate paths.
-
-# 4. Exact Layout
-
-Only these entries are permitted:
+Only these paths are permitted:
 
 ```text
 key.cbor
@@ -57,147 +34,96 @@ generation.cbor
 head.cbor
 events/<event-id>.cbor
 objects/<object-id>.cbor
+artifacts/<artifact-object-id>.bin
 ```
 
-`<event-id>` and `<object-id>` SHALL be canonical UUIDs equal to the identifier in the encoded record. No optional sections or empty directories exist.
+Writers SHALL stream through temporary Host storage and SHALL NOT buffer the Vault or any large
+Artifact in memory.
 
-# 5. Export Manifest
+# 3. Manifest and Coverage
 
-`manifest.cbor` SHALL encode this canonical record:
+`manifest.cbor` SHALL contain exactly export format version, package ID, creation time, originating
+Vault ID, Generation identity/number, coverage, ordered entry descriptors, ordered omissions, Event
+and Object counts, and content integrity.
 
-```text
-ExportManifestV1 {
-  exportFormatVersion: 1
-  packageId: UUID
-  createdAt: canonical UTC timestamp
-  originatingVaultId: UUID
-  vaultFormatVersion: 1
-  bundleFormatVersion: 1
-  eventFormatVersion: 1
-  generationId: UUID
-  generationNumber: non-negative integer
-  objectCount: non-negative integer
-  eventCount: non-negative integer
-  supportedFeatures: ["full-vault", "vault-generation"]
-  entries: ExportEntryDescriptorV1[]
-  contentIntegrity: {
-    algorithm: "hash:sha256:v1"
-    checksum: bytes[32]
-  }
-}
-```
+Coverage is exactly `Complete` or `Selective`. Complete packages have no omissions and inventory
+every Artifact wrapper referenced by the authenticated active Vault graph. Selective packages may
+omit only referenced `PRIMARY` or `SCREENSHOT_FULL` wrappers. Every omission SHALL authenticate the
+Artifact Object ID, expected wrapper byte length, wrapper checksum algorithm, and exact wrapper
+checksum. `THUMBNAIL`, `TEXT_EXTRACTED`, and `CONTENT_STRUCTURED` SHALL never be omitted.
 
-Each `ExportEntryDescriptorV1` SHALL contain:
+Entry descriptors SHALL contain path, record type (`VaultGeneration`, `VaultHead`, `Event`,
+`BundleDescriptorObject`, or `ArtifactObject`), record ID, exact byte length, and SHA-256 checksum.
+Artifact wrapper entries are inventoried by their Artifact Object record and path. Descriptors and
+omissions SHALL be sorted and unique. Content integrity is SHA-256 over canonical CBOR of exactly
+`{ entries, omissions, coverage }`.
 
-```text
-path: canonical package path
-recordType: "VaultGeneration" | "VaultHead" | "Event" | "Object"
-recordId: UUID
-byteLength: non-negative integer
-checksumAlgorithm: "hash:sha256:v1"
-checksum: bytes[32]
-```
+The Manifest SHALL NOT duplicate Bundle plaintext, Artifact Roles/checksums, Vault names, local
+device data, or discarded format fields.
 
-Descriptors exclude `manifest.cbor` and `key.cbor`, are sorted by path, and have unique paths and record identities. Counts SHALL equal their descriptor counts. `contentIntegrity.checksum` is SHA-256 over canonical CBOR of the ordered descriptor array.
+# 4. Export Key Envelope
 
-The Manifest contains operational interchange metadata only. It SHALL NOT contain the Vault name, decrypted content, content-derived metadata, or local device information.
+`key.cbor` SHALL bind package ID, originating Vault ID, exact Manifest checksum, Argon2id parameters,
+fresh salt, fresh XChaCha20-Poly1305 nonce, and the encrypted 32-byte Vault Root Key. Argon2id uses 64
+MiB memory and three iterations. The passphrase SHALL contain at least 12 Unicode code points and at
+most 1,024 UTF-8 bytes.
 
-# 6. Export Key Envelope
+The package wrapper is independent of local device slots. Passphrase, derived wrapping key, and raw
+Root Key remain memory-only and SHALL be wiped after use.
 
-`key.cbor` SHALL encode:
+# 5. Authoritative Inventory
 
-```text
-ExportKeyEnvelopeV1 {
-  exportKeyEnvelopeVersion: 1
-  purpose: "VaultExport"
-  packageId: UUID
-  originatingVaultId: UUID
-  algorithm: "wrap:xchacha20poly1305:passphrase:v1"
-  kdf: "kdf:argon2id:v1"
-  operations: 3
-  memoryBytes: 67108864
-  salt: bytes[16]
-  nonce: bytes[24]
-  manifestChecksumAlgorithm: "hash:sha256:v1"
-  manifestChecksum: bytes[32]
-  ciphertext: bytes[48]
-}
-```
+Export SHALL capture one authenticated active Vault Generation/head and include the exact reachable
+Event and Object records. Bundle Descriptor and Artifact records remain byte-for-byte unchanged.
+Complete Export includes every referenced Artifact wrapper unchanged. Selective Export includes
+authenticated omissions only as section 3 permits. Deleted Captures remain authoritative until
+Vault Vacuum and therefore remain in reachability.
 
-Each Export SHALL use a fresh random salt and nonce. Argon2id SHALL derive a 32-byte key from a passphrase containing at least 12 Unicode code points and at most 1,024 UTF-8 bytes. XChaCha20-Poly1305 SHALL encrypt exactly the 32-byte Vault Root Key.
+Export SHALL exclude Projections, Materializations, caches, Commands, outcomes, Jobs, temporary
+files, diagnostics, local key slots, device keys/metadata, synchronization cursors, and operational
+registries.
 
-Associated data is canonical CBOR of this ordered array:
+# 6. Validation
 
-```text
-[
-  exportKeyEnvelopeVersion, purpose, packageId, originatingVaultId,
-  algorithm, kdf, operations, memoryBytes, salt, nonce,
-  manifestChecksumAlgorithm, manifestChecksum
-]
-```
+Before download, the same read-only validator intended for Import SHALL:
 
-`manifestChecksum` is SHA-256 of the exact `manifest.cbor` bytes. Raw Root Key and derived passphrase-key bytes SHALL be wiped after use. The envelope belongs only to the package and SHALL NOT be persisted as a local Vault key slot.
+1. validate ZIP64 structure and exact paths/order/metadata;
+2. strictly decode and bind `manifest.cbor` and `key.cbor`;
+3. unwrap the Root Key without revealing which authentication field differed;
+4. authenticate Generation/head identity and exact Event/Object reachability;
+5. replay supported Events and validate every `BundleRegistered` closure;
+6. authenticate each Bundle Descriptor and its Artifact references;
+7. stream-check every record and wrapper length/checksum;
+8. decrypt each included wrapper, validate frame authentication and plaintext reference
+   length/checksum, and validate compact structured/text relationships; and
+9. prove coverage and omissions are exact, permitted, disjoint, and exhaustive.
 
-# 7. Authoritative Records
+Large MHTML and screenshot payloads SHALL never be accumulated during validation. Fixed 16 MiB
+allocation limits apply to compact records and compact text/structured validation. Missing, extra,
+duplicate, corrupt, unsupported, or cross-Vault content fails closed.
 
-`generation.cbor`, `head.cbor`, Event entries, and Object entries encode the current canonical stored records without reinterpretation. Local Vault metadata, verifiers, device keys, device slots, and Workspace records SHALL NOT be exported.
+# 7. Snapshot, Cancellation, and Restart
 
-Export SHALL include all Objects and Events in the union of the authenticated Generation's retained identifiers and the captured head's appended identifiers. This union SHALL exactly equal authoritative records stored for the scoped Vault. Deleted Captures remain authoritative until Vault Vacuum and therefore SHALL be included.
+Export runs as a Vault-scoped Job holding an exclusive lease. It captures the active head before
+enumeration and compares it again before download. Conflicting mutations return `VAULT_BUSY`.
+Export never changes source authoritative bytes.
 
-Before package creation, the Runtime SHALL authenticate the Generation, every Event, every Bundle, and every Artifact checksum; replay supported history; prove Event/Object references and reachability; and reject missing, extra, duplicate, unsupported, corrupt, or cross-Vault records.
+Cancellation propagates through enumeration, hashing, writing, validation, and download; it removes
+the temporary file. Because the passphrase is not persisted, interrupted Jobs fail with
+`EXPORT_INTERRUPTED` and never retry automatically.
 
-The following SHALL NOT be exported:
+# 8. Import Boundary
 
-- Projections and Materializations;
-- caches and derived indexes;
-- Commands and command outcomes;
-- Jobs, leases, queues, temporary files, and diagnostics;
-- local key slots, device keys, and device metadata; or
-- synchronization cursors and operational registries.
+A future Import may validate Complete or Selective packages and create the contained Vault with new
+local device metadata. It SHALL validate the entire package before any destination write and retain
+explicit unavailability only for authenticated permitted omissions. No user-facing Import workflow
+is currently defined.
 
-# 8. Export Job and Snapshot Stability
-
-Export SHALL execute through an Export Job holding an exclusive Vault-scoped lease. Lease acquisition SHALL atomically verify the expected active Vault and unlocked state, reject conflicting Jobs, capture the active head, and persist the Job before enumeration.
-
-While the lease is active, Capture, Library mutation, Collection mutation, rename, active-Vault change, lock, Vault creation, and Vacuum SHALL fail with `VAULT_BUSY` in the same transaction that would mutate state.
-
-The Runtime SHALL re-read and compare the active head before download. A mismatch invalidates the package. Job records SHALL NOT persist the passphrase, derived key, raw Root Key, Vault name, or temporary absolute path.
-
-# 9. Completed-Package Validation
-
-Before download, the Runtime SHALL validate the completed temporary package with the same read-only validator intended for Import. Validation SHALL:
-
-1. validate ZIP64 structure, canonical paths/order, STORE method, and prohibited metadata;
-2. strictly decode canonical `manifest.cbor` and `key.cbor`;
-3. authenticate the Manifest checksum and unwrap the Root Key;
-4. verify identity agreement across all records;
-5. stream-check every inventoried byte length and SHA-256 checksum;
-6. reject missing, extra, duplicate, or un-inventoried entries; and
-7. authenticate Generation reachability, Event replay, Bundles, and Artifact checksums.
-
-Readers SHALL apply fixed-record and existing per-Bundle allocation limits before allocation. STORE-only entries prevent decompression expansion.
-
-Wrong passphrase, substituted envelope, and envelope-authentication failure SHALL return `EXPORT_AUTHENTICATION_FAILED` without revealing which field differed. Unsupported versions return `UNSUPPORTED_FORMAT_VERSION`. Other package failures return `EXPORT_PACKAGE_INVALID`.
-
-# 10. Download, Cancellation, and Restart
-
-The Host SHALL use a neutral filename derived from the package creation time and package ID, not the Vault name. Success occurs only after the user-selected download completes.
-
-Cancellation SHALL propagate through hashing, writing, validation, and download; cancel any active browser download; delete the temporary file; and end in `Cancelled` without an error identifier.
-
-Because the passphrase is never persisted, Created or Running Export Jobs found after Runtime restart SHALL become Failed with `EXPORT_INTERRUPTED` and SHALL NOT retry automatically.
-
-# 11. Import Boundary
-
-A future Import may use a validated package and passphrase to create the contained Vault with new local device metadata, a new non-exportable device key, device slot, and verifier. Import SHALL verify the complete package before any destination write.
-
-No user-facing Import workflow is defined by this specification revision.
-
-# 12. Invariants
+# 9. Invariants
 
 - No plaintext authoritative content appears in a Vault Package.
-- The source Vault remains unchanged.
-- The package and passphrase are sufficient without the originating device or AWSM Service.
-- The originating device key and device slot never leave local storage.
-- Object, Event, Bundle, Vault, and Generation identifiers never change.
-- Export does not become Backup, synchronization, or persistent local recovery configuration.
+- Package bytes plus passphrase authenticate the exact captured Vault Generation.
+- A Complete package is standalone; a Selective package truthfully preserves its omissions.
+- The source Vault and all authoritative identifiers remain unchanged.
+- Device keys and local slots never leave local storage.
+- Export remains distinct from Backup and synchronization.

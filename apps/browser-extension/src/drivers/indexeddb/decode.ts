@@ -31,7 +31,7 @@ import type {
 } from "./schema";
 
 function objectType(value: unknown): StoredObjectType {
-  if (value === "Bundle" || value === "Event") {
+  if (value === "BundleDescriptor" || value === "Artifact") {
     return value;
   }
   throw new DomainValidationError("object.objectType", "contains an unsupported Object type");
@@ -92,17 +92,48 @@ export function decodeStoredVaultHead(value: unknown): StoredVaultHeadV1 {
 }
 
 export function decodeStoredObject(value: unknown): StoredObjectV1 {
+  if (typeof value !== "object" || value === null || !("objectType" in value))
+    throw new DomainValidationError("object", "must identify its Object type");
+  const type = objectType(value.objectType);
+  if (type === "BundleDescriptor") {
+    const input = canonicalRecord(value, "object", [
+      "version",
+      "objectId",
+      "objectType",
+      "envelopeBytes",
+    ]);
+    return {
+      version: literal(input.version, 1, "object.version"),
+      objectId: uuid(input.objectId, "object.objectId"),
+      objectType: literal(input.objectType, "BundleDescriptor", "object.objectType"),
+      envelopeBytes: bytes(input.envelopeBytes, undefined, "object.envelopeBytes"),
+    };
+  }
   const input = canonicalRecord(value, "object", [
     "version",
     "objectId",
     "objectType",
-    "envelopeBytes",
+    "envelopeFormat",
+    "envelopeByteLength",
+    "envelopeChecksumAlgorithm",
+    "envelopeChecksum",
   ]);
   return {
     version: literal(input.version, 1, "object.version"),
     objectId: uuid(input.objectId, "object.objectId"),
-    objectType: objectType(input.objectType),
-    envelopeBytes: bytes(input.envelopeBytes, undefined, "object.envelopeBytes"),
+    objectType: literal(input.objectType, "Artifact", "object.objectType"),
+    envelopeFormat: literal(
+      input.envelopeFormat,
+      "artifact:xchacha20poly1305-chunked:v1",
+      "object.envelopeFormat",
+    ),
+    envelopeByteLength: integer(input.envelopeByteLength, "object.envelopeByteLength"),
+    envelopeChecksumAlgorithm: literal(
+      input.envelopeChecksumAlgorithm,
+      "hash:sha256:v1",
+      "object.envelopeChecksumAlgorithm",
+    ),
+    envelopeChecksum: bytes(input.envelopeChecksum, 32, "object.envelopeChecksum"),
   };
 }
 
@@ -184,7 +215,7 @@ export function decodeCommandOutcome(value: unknown): CommandOutcomeV1 {
     "commandId",
     "status",
     "bundleId",
-    "bundleObjectId",
+    "descriptorObjectId",
     "eventId",
   ]);
   return {
@@ -192,7 +223,7 @@ export function decodeCommandOutcome(value: unknown): CommandOutcomeV1 {
     commandId: uuid(input.commandId, "outcome.commandId"),
     status: literal(input.status, "Succeeded", "outcome.status"),
     bundleId: uuid(input.bundleId, "outcome.bundleId"),
-    bundleObjectId: uuid(input.bundleObjectId, "outcome.bundleObjectId"),
+    descriptorObjectId: uuid(input.descriptorObjectId, "outcome.descriptorObjectId"),
     eventId: uuid(input.eventId, "outcome.eventId"),
   };
 }
@@ -205,7 +236,13 @@ function captureJobState(value: unknown): CaptureJobState {
 }
 
 function captureJobStage(value: unknown): CaptureJobStage {
-  if (value === "Preflight" || value === "MHTML" || value === "Screenshot" || value === "Commit") {
+  if (
+    value === "Preflight" ||
+    value === "MHTML" ||
+    value === "Content" ||
+    value === "Screenshot" ||
+    value === "Commit"
+  ) {
     return value;
   }
   throw new DomainValidationError("captureJob.stage", "contains an unsupported stage");

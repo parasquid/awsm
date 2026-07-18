@@ -185,7 +185,10 @@ Examples include:
 
 This list is informative rather than exhaustive.
 
-`CapturePage` is the first Chrome Host Command. It requests capability preflight and live acquisition through the Capture Service. Successful execution persists the immutable Bundle Object before producing `BundleRegistered`. Capture failure produces no Vault Event.
+`CapturePage` is the first browser Host Command. It requests capability preflight and live
+acquisition through the Capture Service. Successful execution prepares the complete immutable
+Bundle Descriptor and Artifact Object graph before atomically producing `BundleRegistered`.
+Mandatory Capture failure produces no Vault Event.
 
 `DeleteCaptures` and `RestoreCaptures` name a non-empty, duplicate-free canonical list of explicit Bundle IDs. They reject the entire request when any Bundle is absent from the expected Active or Deleted state. Accepted requests produce `CapturesDeleted` and `CapturesRestored` respectively.
 

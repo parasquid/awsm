@@ -82,13 +82,30 @@ Collection membership and redirects are derived by replaying immutable Events. A
 
 ## Bundle
 
-An immutable archival package representing one captured resource.
+An immutable Capture package represented by Object semantics.
 
-A Bundle contains one or more immutable Objects together with a Manifest describing the captured resource.
+A Bundle is a logical graph containing exactly one Bundle Descriptor Object and every independently
+encrypted Artifact Object referenced by that descriptor.
 
 Bundles are authoritative.
 
 Bundles are never modified after creation.
+
+---
+
+## Bundle Descriptor
+
+The compact encrypted Object that contains a Bundle's Capture metadata and exact Artifact
+references without embedding Artifact payload bytes.
+
+---
+
+## Artifact
+
+An immutable authoritative payload Object preserved or derived as part of a Bundle graph.
+
+Each Artifact is independently identified, encrypted, stored, streamed, and verified. Artifact is
+the canonical term; attachment is not a domain synonym.
 
 ---
 
@@ -118,7 +135,7 @@ Structured metadata describing another logical entity.
 
 Examples include:
 
-- Bundle Manifest
+- Bundle Descriptor
 - Export Manifest
 - Snapshot Manifest
 

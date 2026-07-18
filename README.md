@@ -10,7 +10,11 @@ The project domain is `awsm.foo`.
 
 AWSM is an extensible platform for capturing, preserving, organizing, and enriching digital knowledge while ensuring that user content remains private. The system is designed around a zero-knowledge architecture: all user content is encrypted before leaving trusted client devices, and the cloud service never has access to plaintext data.
 
-Unlike traditional web clipping or note-taking applications, Archive Platform is designed around immutable captures rather than editable documents. Every captured artifact represents a point-in-time snapshot that can later be searched, annotated, summarized, and synchronized across trusted devices.
+Unlike traditional web clipping or note-taking applications, AWSM is designed around immutable
+captures rather than editable documents. A web Capture is one immutable Bundle graph whose MHTML,
+full screenshot, thumbnail, normalized text, and structured content are independently encrypted
+Artifacts. This preserves the exact source while allowing bounded-memory storage, verification, and
+portable Export.
 
 The platform is intended to support not only web pages, but eventually any digital artifact, including PDFs, emails, images, documents, transcripts, and other content types.
 
@@ -64,12 +68,12 @@ The backend never performs inference on user content.
 
 Users should be able to:
 
-* browse archives
-* search archives
-* read captures
-* annotate captures
-* create folders
-* generate AI artifacts
+- browse archives
+- search archives
+- read captures
+- annotate captures
+- create folders
+- generate AI artifacts
 
 without requiring network connectivity.
 
@@ -81,13 +85,13 @@ Synchronization occurs opportunistically.
 
 The backend provides:
 
-* authentication
-* account management
-* billing
-* encrypted object coordination
-* device coordination
-* encrypted storage
-* sharing coordination
+- authentication
+- account management
+- billing
+- encrypted object coordination
+- device coordination
+- encrypted storage
+- sharing coordination
 
 The backend is intentionally unaware of archive contents.
 
@@ -97,14 +101,14 @@ The backend is intentionally unaware of archive contents.
 
 The platform aims to provide:
 
-* faithful preservation of web content
-* long-term readability
-* privacy-preserving synchronization
-* high-performance local search
-* extensibility through immutable artifacts
-* support for future AI capabilities
-* multi-device synchronization
-* enterprise-grade security architecture
+- faithful preservation of web content
+- long-term readability
+- privacy-preserving synchronization
+- high-performance local search
+- extensibility through immutable artifacts
+- support for future AI capabilities
+- multi-device synchronization
+- enterprise-grade security architecture
 
 ---
 
@@ -112,11 +116,11 @@ The platform aims to provide:
 
 The platform is not intended to become:
 
-* a collaborative document editor
-* a real-time note-taking application
-* a cloud document management system
-* a server-side AI platform
-* a centralized search engine
+- a collaborative document editor
+- a real-time note-taking application
+- a cloud document management system
+- a server-side AI platform
+- a centralized search engine
 
 These capabilities may exist as optional services in the future but are outside the architectural goals of the platform.
 
@@ -154,6 +158,6 @@ Every architectural decision should reinforce this principle.
 
 # Development Status
 
-This repository documents the design and implementation of the Archive Platform.
+This repository documents the design and implementation of AWSM.
 
 The implementation will proceed incrementally through well-defined phases, beginning with a minimal viable product focused on web page archival and expanding toward a general-purpose, privacy-preserving knowledge platform.

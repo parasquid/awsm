@@ -34,10 +34,10 @@ To become the most trustworthy platform for preserving personal knowledge.
 
 Trustworthiness is defined by four properties:
 
-* The platform preserves information faithfully.
-* The platform protects user privacy.
-* The platform remains usable for decades.
-* The platform avoids vendor lock-in.
+- The platform preserves information faithfully.
+- The platform protects user privacy.
+- The platform remains usable for decades.
+- The platform avoids vendor lock-in.
 
 ---
 
@@ -55,12 +55,12 @@ Offline tools often lack synchronization or multi-device support.
 
 No widely adopted platform simultaneously provides:
 
-* faithful archival
-* strong privacy
-* offline operation
-* synchronization
-* AI enrichment
-* extensibility
+- faithful archival
+- strong privacy
+- offline operation
+- synchronization
+- AI enrichment
+- extensibility
 
 Archive Platform aims to combine these capabilities into a single coherent system.
 
@@ -76,12 +76,12 @@ The cloud is a replication mechanism, not the application.
 
 If the synchronization service becomes unavailable, users should still be able to:
 
-* browse archives
-* search archives
-* generate AI summaries
-* edit notes
-* organize folders
-* read captured pages
+- browse archives
+- search archives
+- generate AI summaries
+- edit notes
+- organize folders
+- read captured pages
 
 without degradation.
 
@@ -119,13 +119,13 @@ AI-generated content is considered derived information.
 
 Examples include:
 
-* summaries
-* tags
-* keyword extraction
-* semantic embeddings
-* translations
-* entity recognition
-* document classification
+- summaries
+- tags
+- keyword extraction
+- semantic embeddings
+- translations
+- entity recognition
+- document classification
 
 Generated artifacts should always remain linked to their original capture.
 
@@ -141,27 +141,27 @@ Examples include:
 
 AI providers
 
-* Local LLMs
-* Ollama
-* LM Studio
-* OpenAI
-* Anthropic
-* Gemini
-* future providers
+- Local LLMs
+- Ollama
+- LM Studio
+- OpenAI
+- Anthropic
+- Gemini
+- future providers
 
 Storage
 
-* local filesystem
-* S3
-* Cloudflare R2
-* Backblaze
-* MinIO
+- local filesystem
+- S3
+- Cloudflare R2
+- Backblaze
+- MinIO
 
 Authentication
 
-* email/password
-* OAuth
-* enterprise SSO
+- email/password
+- OAuth
+- enterprise SSO
 
 The architecture should minimize coupling to external services.
 
@@ -175,15 +175,15 @@ Every implementation must satisfy the following constraints.
 
 The client performs:
 
-* capture
-* encryption
-* decryption
-* search
-* indexing
-* AI inference
-* archive rendering
-* synchronization
-* conflict resolution
+- capture
+- encryption
+- decryption
+- search
+- indexing
+- AI inference
+- archive rendering
+- synchronization
+- conflict resolution
 
 The client is the trusted execution environment.
 
@@ -193,15 +193,15 @@ The client is the trusted execution environment.
 
 The backend performs:
 
-* authentication
-* authorization
-* billing
-* encrypted object storage coordination
-* synchronization
-* device management
-* sharing coordination
-* quota management
-* observability
+- authentication
+- authorization
+- billing
+- encrypted object storage coordination
+- synchronization
+- device management
+- sharing coordination
+- quota management
+- observability
 
 The backend is intentionally unaware of archive contents.
 
@@ -215,15 +215,15 @@ Rather than thinking in terms of "web pages", the system stores Bundles and Even
 
 Examples include:
 
-* web pages
-* PDFs
-* images
-* emails
-* EPUB files
-* Markdown documents
-* office documents
-* transcripts
-* scanned documents
+- web pages
+- PDFs
+- images
+- emails
+- EPUB files
+- Markdown documents
+- office documents
+- transcripts
+- scanned documents
 
 Every content type follows the same lifecycle.
 
@@ -233,6 +233,10 @@ Capture Request
 ↓
 
 Immutable Bundle
+
+↓
+
+Independent encrypted Artifacts
 
 ↓
 
@@ -251,16 +255,16 @@ This abstraction allows new content types to be introduced without redesigning t
 
 The architecture should support future capabilities including:
 
-* semantic search
-* duplicate detection
-* change detection
-* scheduled captures
-* AI-assisted research
-* citation generation
-* knowledge graphs
-* timeline visualization
-* archive comparison
-* collaborative sharing through encrypted permissions
+- semantic search
+- duplicate detection
+- change detection
+- scheduled captures
+- AI-assisted research
+- citation generation
+- knowledge graphs
+- timeline visualization
+- archive comparison
+- collaborative sharing through encrypted permissions
 
 without requiring changes to the underlying storage model.
 
@@ -286,11 +290,11 @@ The platform is successful if users trust it as the permanent home for their dig
 
 Specifically, users should believe that:
 
-* their archives cannot be read by the service provider
-* their information remains accessible without network connectivity
-* their knowledge can outlive individual web services
-* their data can be exported without loss
-* the platform can continue evolving without requiring fundamental architectural redesign
+- their archives cannot be read by the service provider
+- their information remains accessible without network connectivity
+- their knowledge can outlive individual web services
+- their data can be exported without loss
+- the platform can continue evolving without requiring fundamental architectural redesign
 
 ---
 
@@ -298,13 +302,13 @@ Specifically, users should believe that:
 
 Archive Platform is not intended to become:
 
-* a collaborative wiki
-* a social network
-* a cloud-first document editor
-* an advertising platform
-* an analytics platform
-* a surveillance platform
-* a centralized AI service requiring plaintext access
+- a collaborative wiki
+- a social network
+- a cloud-first document editor
+- an advertising platform
+- an analytics platform
+- a surveillance platform
+- a centralized AI service requiring plaintext access
 
 Features that compromise the platform's core principles should not be introduced merely for convenience.
 

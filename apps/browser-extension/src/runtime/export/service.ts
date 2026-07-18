@@ -6,6 +6,7 @@ import type {
   StoredVaultGenerationV1,
   StoredVaultHeadV1,
 } from "../../drivers/indexeddb/schema";
+import type { ArtifactStore } from "../artifact";
 import { verifyVaultGeneration } from "../vault/generation";
 import type { VaultService } from "../vault/service";
 import type { VaultPackageEntry } from "./container";
@@ -72,6 +73,7 @@ export class VaultExportService {
     private readonly source: VaultExportSource,
     private readonly vault: VaultService,
     private readonly vaultId: string,
+    private readonly artifactStore: ArtifactStore,
   ) {}
 
   async prepare(input: {
@@ -80,6 +82,7 @@ export class VaultExportService {
     readonly passphrase: string;
     readonly salt: Uint8Array;
     readonly nonce: Uint8Array;
+    readonly omitArtifactObjectIds?: ReadonlySet<string>;
   }): Promise<PreparedVaultExport> {
     const head = await this.source.getVaultHead();
     if (head === undefined || head.vaultId !== this.vaultId) throw new Error("Active head missing");
@@ -120,10 +123,34 @@ export class VaultExportService {
       ),
       await descriptor("head.cbor", "VaultHead", this.vaultId, headBytes),
     );
+    const artifactObjects = [];
+    const omissions = [];
     for (const objectId of objectIds) {
       const object = await this.source.getStoredObject(objectId);
-      if (object === undefined || object.objectId !== objectId || object.objectType !== "Bundle") {
+      if (object === undefined || object.objectId !== objectId) {
         throw new Error("Object missing or unsupported");
+      }
+      if (object.objectType === "Artifact") {
+        artifactObjects.push(object);
+        if (input.omitArtifactObjectIds?.has(objectId)) {
+          omissions.push({
+            artifactObjectId: objectId,
+            expectedPath: `artifacts/${objectId}.bin`,
+            envelopeByteLength: object.envelopeByteLength,
+            envelopeChecksumAlgorithm: object.envelopeChecksumAlgorithm,
+            envelopeChecksum: object.envelopeChecksum,
+            reason: "NotLocallyAvailable" as const,
+          });
+        } else {
+          descriptors.push({
+            path: `artifacts/${objectId}.bin`,
+            recordType: "ArtifactPayload",
+            recordId: objectId,
+            byteLength: object.envelopeByteLength,
+            checksumAlgorithm: object.envelopeChecksumAlgorithm,
+            checksum: object.envelopeChecksum,
+          });
+        }
       }
       descriptors.push(
         await descriptor(
@@ -140,18 +167,28 @@ export class VaultExportService {
       packageId: input.packageId,
       createdAt: input.createdAt,
       originatingVaultId: this.vaultId,
-      vaultFormatVersion: 1,
-      bundleFormatVersion: 1,
-      eventFormatVersion: 1,
       generationId: generation.generationId,
       generationNumber: generation.generationNumber,
+      coverage: omissions.length === 0 ? "Complete" : "Selective",
       objectCount: objectIds.length,
       eventCount: eventIds.length,
-      supportedFeatures: ["full-vault", "vault-generation"],
+      artifactPayloadCount: artifactObjects.length - omissions.length,
+      supportedFeatures: ["artifact-graph", "selective-coverage", "vault-generation"],
       entries: descriptors,
+      omissions: omissions.toSorted((left, right) =>
+        left.artifactObjectId.localeCompare(right.artifactObjectId),
+      ),
       contentIntegrity: {
         algorithm: "hash:sha256:v1",
-        checksum: await sha256(encodeCanonicalCbor(descriptors)),
+        checksum: await sha256(
+          encodeCanonicalCbor({
+            entries: descriptors,
+            omissions: omissions.toSorted((left, right) =>
+              left.artifactObjectId.localeCompare(right.artifactObjectId),
+            ),
+            coverage: omissions.length === 0 ? "Complete" : "Selective",
+          }),
+        ),
       },
     };
     const manifestBytes = encodeCanonicalCbor(manifest);
@@ -173,6 +210,7 @@ export class VaultExportService {
         }
         throw new Error("Authoritative Export record is missing");
       },
+      openArtifact: (objectId) => this.artifactStore.openEncrypted(this.vaultId, objectId),
     });
     const keyEnvelope = await this.vault.createExportKeyEnvelope({
       packageId: input.packageId,
@@ -183,6 +221,7 @@ export class VaultExportService {
     });
     const source = this.source;
     const vaultId = this.vaultId;
+    const artifactStore = this.artifactStore;
     return {
       manifest,
       assertSnapshotCurrent: async () => {
@@ -192,20 +231,46 @@ export class VaultExportService {
       },
       entries: {
         async *[Symbol.asyncIterator](): AsyncGenerator<VaultPackageEntry> {
-          for (const eventId of eventIds) {
-            const event = await source.getStoredEvent(eventId);
-            if (event === undefined || event.vaultId !== vaultId) throw new Error("Event changed");
-            yield { path: `events/${eventId}.cbor`, bytes: encodeCanonicalCbor(event) };
-          }
-          yield { path: "generation.cbor", bytes: generationBytes };
-          yield { path: "head.cbor", bytes: headBytes };
-          yield { path: "key.cbor", bytes: encodeCanonicalCbor(keyEnvelope) };
-          yield { path: "manifest.cbor", bytes: manifestBytes };
-          for (const objectId of objectIds) {
-            const object = await source.getStoredObject(objectId);
-            if (object === undefined || object.objectType !== "Bundle")
-              throw new Error("Object changed");
-            yield { path: `objects/${objectId}.cbor`, bytes: encodeCanonicalCbor(object) };
+          const fixed = new Map<string, Uint8Array>([
+            ["generation.cbor", generationBytes],
+            ["head.cbor", headBytes],
+            ["key.cbor", encodeCanonicalCbor(keyEnvelope)],
+            ["manifest.cbor", manifestBytes],
+          ]);
+          const paths = [
+            ...descriptors.map((entry) => entry.path),
+            "key.cbor",
+            "manifest.cbor",
+          ].toSorted();
+          for (const path of paths) {
+            const fixedBytes = fixed.get(path);
+            if (fixedBytes !== undefined) {
+              yield { path, bytes: fixedBytes };
+              continue;
+            }
+            const artifactMatch = /^artifacts\/(.+)\.bin$/u.exec(path);
+            if (artifactMatch?.[1] !== undefined) {
+              yield {
+                path,
+                bytes: await artifactStore.openEncrypted(vaultId, artifactMatch[1]),
+              };
+              continue;
+            }
+            const eventMatch = /^events\/(.+)\.cbor$/u.exec(path);
+            if (eventMatch?.[1] !== undefined) {
+              const event = await source.getStoredEvent(eventMatch[1]);
+              if (event === undefined || event.vaultId !== vaultId)
+                throw new Error("Event changed");
+              yield { path, bytes: encodeCanonicalCbor(event) };
+              continue;
+            }
+            const objectMatch = /^objects\/(.+)\.cbor$/u.exec(path);
+            const object =
+              objectMatch?.[1] === undefined
+                ? undefined
+                : await source.getStoredObject(objectMatch[1]);
+            if (object === undefined) throw new Error("Object changed");
+            yield { path, bytes: encodeCanonicalCbor(object) };
           }
         },
       },

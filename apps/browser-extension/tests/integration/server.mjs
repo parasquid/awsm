@@ -8,13 +8,12 @@ const dependencyRoots = {
   "/vendor/libsodium-wrappers-sumo/": `${realpathSync(new URL("../../node_modules/libsodium-wrappers-sumo", import.meta.url).pathname)}/`,
   "/vendor/libsodium-sumo/": `${realpathSync(new URL("../../../../node_modules/.pnpm/libsodium-sumo@0.8.4/node_modules/libsodium-sumo", import.meta.url).pathname)}/`,
   "/vendor/zipjs/": `${realpathSync(new URL("../../node_modules/@zip.js/zip.js", import.meta.url).pathname)}/`,
-  "/vendor/fflate/": `${realpathSync(new URL("../../node_modules/fflate", import.meta.url).pathname)}/`,
 };
 
 const index = `<!doctype html>
 <html lang="en">
   <head><meta charset="UTF-8"><title>AWSM integration harness</title>
-  <script type="importmap">{"imports":{"@zip.js/zip.js":"/vendor/zipjs/index.js","fflate":"/vendor/fflate/esm/browser.js","cborg":"/vendor/cborg/cborg.js","libsodium-wrappers-sumo":"/vendor/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-wrappers.mjs","libsodium-sumo":"/vendor/libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs"}}</script></head>
+  <script type="importmap">{"imports":{"@zip.js/zip.js":"/vendor/zipjs/index.js","cborg":"/vendor/cborg/cborg.js","libsodium-wrappers-sumo":"/vendor/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-wrappers.mjs","libsodium-sumo":"/vendor/libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs"}}</script></head>
   <body><output id="result" aria-live="polite">running</output>
   <script type="module" src="/tests/integration/browser/harness.js"></script></body>
 </html>`;

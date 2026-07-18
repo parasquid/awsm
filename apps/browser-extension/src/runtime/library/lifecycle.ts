@@ -104,14 +104,14 @@ export async function prepareLibraryStateChange(
       ),
     })),
   );
-  const objectId = items[0]?.bundleObjectId;
+  const objectId = items[0]?.descriptorObjectId;
   if (objectId === undefined) throw new Error("A Library state change must name an Object.");
   return {
     event: {
       version: 1,
       vaultId: input.vaultId,
       eventId: input.eventId,
-      referencedObjectIds: items.map((item) => item.bundleObjectId).toSorted(),
+      referencedObjectIds: items.map((item) => item.descriptorObjectId).toSorted(),
       orderingTimestamp: input.timestamp,
       envelopeBytes: eventEnvelopeBytes,
     },

@@ -102,13 +102,14 @@ The standard pipeline is:
 2. Run capability preflight
 3. Freeze page state
 4. Collect metadata
-5. Capture screenshot
-6. Capture page representation
-7. Collect auxiliary artifacts
-8. Generate Manifest
-9. Build Bundle
-10. Persist Bundle
-11. Emit BundleRegistered
+5. Stream mandatory MHTML into a prepared `PRIMARY` Artifact
+6. Collect structured content and normalized text
+7. Stream and stitch screenshot tiles, then derive a thumbnail
+8. Prepare one independently encrypted Object per successful Artifact
+9. Generate and encrypt the Bundle Descriptor
+10. Validate the exact descriptor and Artifact dependency closure
+11. Atomically persist records, Event, Projection, and command outcome
+12. Publish one canonical invalidation after commit
 
 ---
 
@@ -190,6 +191,10 @@ This profile requires:
 
 The profile requests a lossy full-page WebP as a best-effort Artifact with Kind `IMAGE`, Role `SCREENSHOT_FULL`, and MIME type `image/webp`. MHTML remains the mandatory high-fidelity representation; the screenshot is a space-efficient visual preview.
 
+The profile also requests a 640×360 WebP `THUMBNAIL`, canonical-CBOR-sequence
+`CONTENT_STRUCTURED`, and normalized UTF-8 `TEXT_EXTRACTED`. These are best effort. Structured and
+text outputs SHALL derive from the same acknowledged bounded live-DOM block stream.
+
 Failure to produce the WebP SHALL record a typed warning but SHALL NOT invalidate otherwise valid required MHTML.
 
 ---
@@ -222,11 +227,12 @@ Optional artifacts include:
 
 ---
 
-# 13. Bundle Generation
+# 13. Bundle Graph Generation
 
-The Capture Service assembles all artifacts into a Bundle.
+The Capture Service prepares every successful Artifact independently, then creates one compact
+Bundle Descriptor referencing those Artifacts.
 
-The Manifest SHALL describe every artifact.
+The descriptor SHALL describe every Artifact and SHALL contain no payload bytes.
 
 The Bundle becomes immutable immediately after creation.
 
@@ -236,7 +242,9 @@ The Bundle becomes immutable immediately after creation.
 
 Successful Bundles SHALL be written through the Storage Service.
 
-Persistence MUST complete before emitting BundleRegistered.
+The descriptor record, every Artifact record, `BundleRegistered`, Projection update, and command
+outcome MUST commit atomically. Prepared wrapper files SHALL be removed if validation or commit
+fails. Startup reconciliation SHALL remove unreferenced prepared files.
 
 ---
 
@@ -260,7 +268,7 @@ Recoverable failures MAY retry individual pipeline stages.
 
 Permanent failures terminate the Capture Job.
 
-Partial Bundles SHALL NOT be persisted.
+Partial authoritative Bundle graphs SHALL NOT be persisted.
 
 Because live page state is external and mutable, interrupted page acquisition SHALL NOT resume automatically. Recovery SHALL mark the Capture Job interrupted and require an explicit new user action to retry.
 

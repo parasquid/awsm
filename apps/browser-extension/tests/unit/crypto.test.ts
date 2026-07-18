@@ -41,7 +41,7 @@ describe("cryptographic contracts", () => {
     );
   });
 
-  it("domain-separates Bundle, Event, and Projection keys", async () => {
+  it("domain-separates descriptor, Artifact, Event, and Projection keys", async () => {
     const rootKey = new Uint8Array(32).fill(7);
     const common = {
       rootKey,
@@ -50,13 +50,20 @@ describe("cryptographic contracts", () => {
       keyVersion: 1,
     } as const;
 
-    const bundle = await deriveContextKey({ ...common, domain: "vault:bundle:v1" });
+    const descriptor = await deriveContextKey({
+      ...common,
+      domain: "vault:bundle-descriptor:v1",
+    });
+    const artifact = await deriveContextKey({ ...common, domain: "vault:artifact:v1" });
     const event = await deriveContextKey({ ...common, domain: "vault:event:v1" });
     const projection = await deriveContextKey({ ...common, domain: "vault:projection:v1" });
 
-    expect(toHex(bundle)).not.toBe(toHex(event));
+    expect(toHex(descriptor)).not.toBe(toHex(artifact));
+    expect(toHex(artifact)).not.toBe(toHex(event));
     expect(toHex(event)).not.toBe(toHex(projection));
-    expect(await deriveContextKey({ ...common, domain: "vault:bundle:v1" })).toEqual(bundle);
+    expect(await deriveContextKey({ ...common, domain: "vault:bundle-descriptor:v1" })).toEqual(
+      descriptor,
+    );
   });
 
   it("matches a fixed XChaCha20-Poly1305 vector", async () => {
@@ -88,7 +95,7 @@ describe("cryptographic contracts", () => {
     const key = new Uint8Array(32).fill(9);
     const plaintext = encoder.encode("private title and MHTML");
     const envelope = await encryptEnvelope({
-      objectType: "Bundle",
+      objectType: "BundleDescriptor",
       objectId: "00000000-0000-4000-8000-000000000003",
       plaintext,
       key,

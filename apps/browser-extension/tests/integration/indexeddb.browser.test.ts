@@ -143,10 +143,10 @@ test("rejects an Event whose declared Vault differs from the scoped Driver", asy
 test("commits registration atomically and idempotently", async ({ page }) => {
   const result = await scenario(page, "atomic");
   expect(result).toMatchObject({
-    appendedObjects: 1,
+    appendedObjects: 2,
     appendedEvents: 1,
     counts: {
-      objects: 1,
+      objects: 2,
       events: 1,
       projections: 1,
       outcomes: 1,
@@ -159,10 +159,10 @@ test("rolls back an Object when a later Event write conflicts", async ({ page })
   expect(result).toMatchObject({
     errorId: "STORAGE_TRANSACTION_FAILED",
     rolledBackObject: false,
-    appendedObjects: 1,
+    appendedObjects: 2,
     appendedEvents: 1,
     counts: {
-      objects: 1,
+      objects: 2,
       events: 1,
       projections: 1,
       outcomes: 1,
@@ -172,7 +172,7 @@ test("rolls back an Object when a later Event write conflicts", async ({ page })
 
 test("clears rebuildable Projection rows without deleting Objects", async ({ page }) => {
   await expect(scenario(page, "projection")).resolves.toMatchObject({
-    objects: 1,
+    objects: 2,
     projections: 0,
   });
 });
@@ -195,7 +195,7 @@ test("atomically changes grouped Projection rows while retaining immutable Objec
   page,
 }) => {
   await expect(scenario(page, "library-state")).resolves.toEqual({
-    counts: { objects: 2, events: 3, projections: 2, outcomes: 2 },
+    counts: { objects: 4, events: 3, projections: 2, outcomes: 2 },
     firstObject: true,
     secondObject: true,
   });
@@ -205,7 +205,7 @@ test("rolls back every Vacuum deletion when the transaction fails", async ({ pag
   await expect(scenario(page, "vacuum-rollback")).resolves.toEqual({
     failed: true,
     objectRetained: true,
-    counts: { objects: 1, events: 1, projections: 1, outcomes: 2 },
+    counts: { objects: 2, events: 1, projections: 1, outcomes: 2 },
   });
 });
 
@@ -230,7 +230,7 @@ test("atomically commits a Collection Event, item rows, topology, and generation
   page,
 }) => {
   await expect(scenario(page, "collection-operation")).resolves.toEqual({
-    counts: { objects: 2, events: 3, projections: 2, outcomes: 2 },
+    counts: { objects: 4, events: 3, projections: 2, outcomes: 2 },
     topologyStored: "00000000-0000-4000-8000-000000000992",
     appendedEvents: 3,
   });
@@ -260,5 +260,16 @@ test("holds an exclusive Export lease, releases it on cancellation, and reconcil
     reconciled: true,
     interruptedState: "Failed",
     interruptedErrorId: "EXPORT_INTERRUPTED",
+  });
+});
+
+test("streams encrypted Artifact wrappers through scoped OPFS storage", async ({ page }) => {
+  await expect(scenario(page, "artifact-store")).resolves.toEqual({
+    objectType: "Artifact",
+    rootKeyExtractable: false,
+    ciphertextExcludesPlaintext: true,
+    recovered: "known plaintext artifact",
+    collisionRejected: true,
+    orphanRemoved: true,
   });
 });

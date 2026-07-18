@@ -22,13 +22,13 @@ The review also separated Backup from Import/Export, added Capture capability pr
 
 # 2. Global Terminology Changes
 
-| Older wording | Current wording | Reason |
-| --- | --- | --- |
-| Search Index | Search Projection Materialization | Search owns no authoritative data; indexes are rebuildable materializations. |
-| Capture workflow | Capture Job pipeline | Capture is long-running work owned by the Runtime Job Framework. |
-| Upload/download synchronization | Synchronization reconciliation | Synchronization converges replicas through Work Items and checkpoints. |
-| Backup as export package | Snapshot-based Backup Set | Backup creates recovery points; Export creates interchange packages. |
-| Bundle/Event as only authoritative state | Authoritative Objects with Bundle/Event Object Types | Matches Object Store authority while preserving Bundle/Event semantics. |
+| Older wording                            | Current wording                                      | Reason                                                                       |
+| ---------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Search Index                             | Search Projection Materialization                    | Search owns no authoritative data; indexes are rebuildable materializations. |
+| Capture workflow                         | Capture Job pipeline                                 | Capture is long-running work owned by the Runtime Job Framework.             |
+| Upload/download synchronization          | Synchronization reconciliation                       | Synchronization converges replicas through Work Items and checkpoints.       |
+| Backup as export package                 | Snapshot-based Backup Set                            | Backup creates recovery points; Export creates interchange packages.         |
+| Bundle/Event as only authoritative state | Authoritative Objects with Bundle/Event Object Types | Matches Object Store authority while preserving Bundle/Event semantics.      |
 
 ---
 
@@ -44,7 +44,9 @@ The review also separated Backup from Import/Export, added Capture capability pr
 
 **Conflict:** The current architecture says Objects are immutable and authoritative. Treating Bundles and Events as the only authoritative layer bypassed the Object Store abstraction.
 
-**Replacement:** Vault authoritative state now consists of immutable Objects whose Object Types include Bundle Objects, Event Log Segment Objects, Wrapped Key Objects, and Vault Metadata Objects.
+**Replacement:** Vault authoritative state consists of immutable Objects whose Object Types include
+Bundle Descriptor Objects, Artifact Objects, Event Log Segment Objects, Wrapped Key Objects, and
+Vault Metadata Objects.
 
 **Ripple effects:** Bundle Registry and Event Store are now logical views over authoritative Objects. Search Projection, Device Registry, Trust Registry, and Synchronization State are derived or operational.
 
@@ -233,7 +235,7 @@ Capture Job
 ↓
 Capture Result
 ↓
-Bundle Object
+Bundle Descriptor and Artifact Objects
 ↓
 Local Object Store
 ↓

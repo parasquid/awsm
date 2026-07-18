@@ -215,11 +215,11 @@ Capture
 
 ↓
 
-Encrypt Bundle
+Encrypt Bundle Descriptor and Artifact wrappers
 
 ↓
 
-Store Bundle
+Prepare Artifact wrappers and atomically store the Bundle graph records
 
 ↓
 

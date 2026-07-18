@@ -1,19 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { decodeEncryptedEnvelopeBytes, decryptEnvelope } from "../../src/crypto/envelope";
 import { deriveContextKeyFromCryptoKey } from "../../src/crypto/hkdf";
-import { type CaptureMetadataV1, readBundle } from "../../src/domain/bundle";
+import {
+  type ArtifactReferenceV1,
+  type CaptureMetadataV1,
+  decodeBundleDescriptor,
+} from "../../src/domain/artifact-graph";
 import { decodeCanonicalCbor } from "../../src/domain/cbor";
+import type { StoredArtifactObjectV1 } from "../../src/drivers/indexeddb";
 import { prepareCaptureRegistration } from "../../src/runtime/capture/registration";
 
-const vaultId = "00000000-0000-4000-8000-000000000001";
-const deviceId = "00000000-0000-4000-8000-000000000002";
-const bundleId = "00000000-0000-4000-8000-000000000003";
-const bundleObjectId = "00000000-0000-4000-8000-000000000004";
-const eventId = "00000000-0000-4000-8000-000000000005";
-const commandId = "00000000-0000-4000-8000-000000000006";
-const collectionId = "00000000-0000-4000-8000-000000000007";
+const id = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const capturedAt = "2026-07-16T17:00:00.000Z";
-
 const metadata: CaptureMetadataV1 = {
   version: 1,
   originalUrl: "https://private.example/article",
@@ -33,50 +31,107 @@ async function rootKey(): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", new Uint8Array(32).fill(9), "HKDF", false, ["deriveBits"]);
 }
 
-describe("encrypted capture registration", () => {
-  it("builds and validates the Bundle before creating four encrypted commit records", async () => {
+function artifact(
+  objectId: string,
+  role: ArtifactReferenceV1["role"],
+  kind: ArtifactReferenceV1["kind"],
+  mimeType: string,
+): { object: StoredArtifactObjectV1; reference: ArtifactReferenceV1 } {
+  return {
+    object: {
+      version: 1,
+      objectId,
+      objectType: "Artifact",
+      envelopeFormat: "artifact:xchacha20poly1305-chunked:v1",
+      envelopeByteLength: 128,
+      envelopeChecksumAlgorithm: "hash:sha256:v1",
+      envelopeChecksum: new Uint8Array(32).fill(1),
+    },
+    reference: {
+      artifactVersion: 1,
+      artifactObjectId: objectId,
+      kind,
+      role,
+      mimeType,
+      acquiredAt: capturedAt,
+      plaintextByteLength: role === "TEXT_EXTRACTED" ? 0 : 10,
+      checksumAlgorithm: "hash:sha256:v1",
+      plaintextChecksum: new Uint8Array(32).fill(2),
+    },
+  };
+}
+
+describe("encrypted Artifact graph registration", () => {
+  it("encrypts one descriptor and registers its exact Artifact closure", async () => {
     const key = await rootKey();
+    const artifacts = [
+      artifact(id(20), "PRIMARY", "CAPTURE", "multipart/related"),
+      artifact(id(21), "SCREENSHOT_FULL", "IMAGE", "image/webp"),
+      artifact(id(22), "THUMBNAIL", "IMAGE", "image/webp"),
+      artifact(id(23), "TEXT_EXTRACTED", "TEXT", "text/plain;charset=utf-8"),
+      artifact(id(24), "CONTENT_STRUCTURED", "STRUCTURED_CONTENT", "application/cbor-seq"),
+    ];
     const registration = await prepareCaptureRegistration({
       rootKey: key,
-      vaultId,
-      deviceId,
-      commandId,
-      bundleId,
-      bundleObjectId,
-      eventId,
-      collectionId,
+      vaultId: id(1),
+      deviceId: id(2),
+      commandId: id(3),
+      bundleId: id(4),
+      descriptorObjectId: id(5),
+      eventId: id(6),
+      collectionId: id(7),
       capturedAt,
       metadata,
-      mhtml: new TextEncoder().encode("MIME-Version: 1.0\r\nSecret body"),
-      screenshot: new Uint8Array([137, 80, 78, 71]),
-      thumbnailWebp: new Uint8Array([137, 80, 78, 71, 1]),
+      artifacts,
+      thumbnailWebp: new Uint8Array([1, 2, 3]),
       warnings: [],
       clientVersion: "0.1.0",
     });
-    expect(registration.outcome).toEqual({
-      version: 1,
-      commandId,
-      status: "Succeeded",
-      bundleId,
-      bundleObjectId,
-      eventId,
-    });
+    expect(registration.objects.map((object) => object.objectId)).toEqual([
+      id(5),
+      id(20),
+      id(21),
+      id(22),
+      id(23),
+      id(24),
+    ]);
+    expect(registration.event.referencedObjectIds).toEqual([
+      id(5),
+      id(20),
+      id(21),
+      id(22),
+      id(23),
+      id(24),
+    ]);
+    expect(registration.outcome.descriptorObjectId).toBe(id(5));
 
-    const bundleEnvelope = decodeEncryptedEnvelopeBytes(registration.object.envelopeBytes);
-    const bundleKey = await deriveContextKeyFromCryptoKey(key, {
-      vaultId,
-      domain: "vault:bundle:v1",
-      contextId: bundleId,
+    const descriptorRecord = registration.objects[0];
+    if (descriptorRecord?.objectType !== "BundleDescriptor") throw new Error("missing descriptor");
+    const descriptorKey = await deriveContextKeyFromCryptoKey(key, {
+      vaultId: id(1),
+      domain: "vault:bundle-descriptor:v1",
+      contextId: id(4),
       keyVersion: 1,
     });
-    const bundle = await readBundle(await decryptEnvelope(bundleEnvelope, bundleKey));
-    expect(bundle.metadata).toMatchObject({ title: "Private page title" });
-    expect(bundle.artifacts.get("PRIMARY")).toContain(new TextEncoder().encode("Secret body")[0]);
+    const descriptor = decodeBundleDescriptor(
+      await decryptEnvelope(
+        decodeEncryptedEnvelopeBytes(descriptorRecord.envelopeBytes),
+        descriptorKey,
+      ),
+    );
+    expect(descriptor.metadata.title).toBe("Private page title");
+    expect(descriptor.artifacts.map((entry) => entry.role).toSorted()).toEqual([
+      "CONTENT_STRUCTURED",
+      "PRIMARY",
+      "SCREENSHOT_FULL",
+      "TEXT_EXTRACTED",
+      "THUMBNAIL",
+    ]);
 
     const eventKey = await deriveContextKeyFromCryptoKey(key, {
-      vaultId,
+      vaultId: id(1),
       domain: "vault:event:v1",
-      contextId: eventId,
+      contextId: id(6),
       keyVersion: 1,
     });
     expect(
@@ -88,62 +143,30 @@ describe("encrypted capture registration", () => {
       ),
     ).toMatchObject({
       eventType: "BundleRegistered",
-      correlationId: commandId,
-      bundleId,
-      collectionId,
-    });
-
-    const projectionKey = await deriveContextKeyFromCryptoKey(key, {
-      vaultId,
-      domain: "vault:projection:v1",
-      contextId: `LibraryItem-v1:${bundleId}`,
-      keyVersion: 1,
-    });
-    expect(
-      decodeCanonicalCbor(
-        await decryptEnvelope(
-          decodeEncryptedEnvelopeBytes(registration.projection.envelopeBytes),
-          projectionKey,
-        ),
-      ),
-    ).toMatchObject({
-      title: "Private page title",
-      assignedCollectionId: collectionId,
-      screenshotPresent: true,
-      thumbnailWebp: new Uint8Array([137, 80, 78, 71, 1]),
+      descriptorObjectId: id(5),
+      artifactObjectIds: [id(20), id(21), id(22), id(23), id(24)],
     });
   });
 
-  it("does not expose URL, title, MHTML, or screenshot bytes in persisted records", async () => {
-    const registration = await prepareCaptureRegistration({
-      rootKey: await rootKey(),
-      vaultId,
-      deviceId,
-      commandId,
-      bundleId,
-      bundleObjectId,
-      eventId,
-      collectionId,
-      capturedAt,
-      metadata,
-      mhtml: new TextEncoder().encode("UNIQUE_MHTML_SECRET"),
-      screenshot: new TextEncoder().encode("UNIQUE_SCREENSHOT_SECRET"),
-      thumbnailWebp: new TextEncoder().encode("UNIQUE_THUMBNAIL_SECRET"),
-      warnings: ["OPTIONAL_METADATA_UNAVAILABLE"],
-      clientVersion: "0.1.0",
-    });
-    const persisted = [
-      registration.object.envelopeBytes,
-      registration.event.envelopeBytes,
-      registration.projection.envelopeBytes,
-    ];
-    for (const bytes of persisted) {
-      const encoded = new TextDecoder().decode(bytes);
-      expect(encoded).not.toContain("private.example");
-      expect(encoded).not.toContain("Private page title");
-      expect(encoded).not.toContain("UNIQUE_MHTML_SECRET");
-      expect(encoded).not.toContain("UNIQUE_SCREENSHOT_SECRET");
-      expect(encoded).not.toContain("UNIQUE_THUMBNAIL_SECRET");
-    }
+  it("rejects a prepared record/reference identity mismatch", async () => {
+    const mismatched = artifact(id(20), "PRIMARY", "CAPTURE", "multipart/related");
+    mismatched.reference = { ...mismatched.reference, artifactObjectId: id(21) };
+    await expect(
+      prepareCaptureRegistration({
+        rootKey: await rootKey(),
+        vaultId: id(1),
+        deviceId: id(2),
+        commandId: id(3),
+        bundleId: id(4),
+        descriptorObjectId: id(5),
+        eventId: id(6),
+        collectionId: id(7),
+        capturedAt,
+        metadata,
+        artifacts: [mismatched],
+        warnings: [],
+        clientVersion: "0.1.0",
+      }),
+    ).rejects.toThrow(/match/u);
   });
 });

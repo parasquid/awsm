@@ -370,7 +370,10 @@ Non-recoverable:
 - corrupted input
 - permission denied
 
-Partial Bundles are never created.
+Partial authoritative Bundle graphs are never created. The Runtime prepares independently encrypted
+Artifact wrappers, creates the compact descriptor last, validates the exact dependency closure, and
+commits all records and `BundleRegistered` atomically. Failed preparation removes every temporary
+wrapper.
 
 ---
 
@@ -386,7 +389,9 @@ Sources of unavoidable variation (for example, timestamps) should be explicitly 
 
 Capture Adapters must treat all external input as untrusted.
 
-Validation occurs before packaging.
+Validation occurs before registration. MHTML and screenshots stream across Host boundaries in
+acknowledged bounded chunks. Structured content uses bounded acknowledged batches and excludes
+hidden content and unsafe links.
 
 Executable content is preserved as data, not executed by the pipeline.
 

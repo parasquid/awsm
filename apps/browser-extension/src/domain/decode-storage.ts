@@ -1,3 +1,4 @@
+import type { ArtifactRole } from "./artifact-graph";
 import {
   CAPTURE_WARNINGS,
   type CaptureJob,
@@ -12,7 +13,6 @@ import {
 } from "./contracts";
 import { DomainValidationError } from "./errors";
 import {
-  boolean,
   bytes,
   canonicalRecord,
   httpUrl,
@@ -22,6 +22,29 @@ import {
   timestamp,
   uuid,
 } from "./validation";
+
+const ARTIFACT_ROLES: readonly ArtifactRole[] = [
+  "PRIMARY",
+  "SCREENSHOT_FULL",
+  "THUMBNAIL",
+  "TEXT_EXTRACTED",
+  "CONTENT_STRUCTURED",
+];
+
+function artifactRoles(value: unknown): readonly ArtifactRole[] {
+  if (!Array.isArray(value))
+    throw new DomainValidationError("libraryItem.artifactRoles", "must be an array");
+  const roles = value.map((candidate, index) => {
+    if (!ARTIFACT_ROLES.includes(candidate as ArtifactRole))
+      throw new DomainValidationError(`libraryItem.artifactRoles.${index}`, "is unsupported");
+    return candidate as ArtifactRole;
+  });
+  if (new Set(roles).size !== roles.length || roles.join("\n") !== [...roles].toSorted().join("\n"))
+    throw new DomainValidationError("libraryItem.artifactRoles", "must be sorted and unique");
+  if (!roles.includes("PRIMARY"))
+    throw new DomainValidationError("libraryItem.artifactRoles", "must contain PRIMARY");
+  return roles;
+}
 
 function runtimeErrorId(value: unknown, field: string): RuntimeErrorId {
   for (const candidate of RUNTIME_ERROR_IDS) {
@@ -49,7 +72,13 @@ function jobState(value: unknown): CaptureJobState {
 }
 
 function jobStage(value: unknown): CaptureJobStage {
-  if (value === "Preflight" || value === "MHTML" || value === "Screenshot" || value === "Commit") {
+  if (
+    value === "Preflight" ||
+    value === "MHTML" ||
+    value === "Content" ||
+    value === "Screenshot" ||
+    value === "Commit"
+  ) {
     return value;
   }
   throw new DomainValidationError("job.stage", "contains an unsupported stage");
@@ -57,7 +86,7 @@ function jobStage(value: unknown): CaptureJobStage {
 
 function envelopeType(value: unknown): EncryptedEnvelopeV1["objectType"] {
   if (
-    value === "Bundle" ||
+    value === "BundleDescriptor" ||
     value === "Event" ||
     value === "Projection" ||
     value === "WrappedKey" ||
@@ -101,12 +130,12 @@ export function decodeLibraryItem(value: unknown): LibraryItemV1 {
   const input = canonicalRecord(value, "libraryItem", [
     "version",
     "bundleId",
-    "bundleObjectId",
+    "descriptorObjectId",
     "assignedCollectionId",
     "title",
     "originalUrl",
     "capturedAt",
-    "screenshotPresent",
+    "artifactRoles",
     "status",
     "warnings",
   ]);
@@ -119,12 +148,12 @@ export function decodeLibraryItem(value: unknown): LibraryItemV1 {
   return {
     version: literal(input.version, 1, "libraryItem.version"),
     bundleId: uuid(input.bundleId, "libraryItem.bundleId"),
-    bundleObjectId: uuid(input.bundleObjectId, "libraryItem.bundleObjectId"),
+    descriptorObjectId: uuid(input.descriptorObjectId, "libraryItem.descriptorObjectId"),
     assignedCollectionId: uuid(input.assignedCollectionId, "libraryItem.assignedCollectionId"),
     title: string(input.title, "libraryItem.title"),
     originalUrl: httpUrl(input.originalUrl, "libraryItem.originalUrl"),
     capturedAt: timestamp(input.capturedAt, "libraryItem.capturedAt"),
-    screenshotPresent: boolean(input.screenshotPresent, "libraryItem.screenshotPresent"),
+    artifactRoles: artifactRoles(input.artifactRoles),
     status: input.status,
     warnings: input.warnings.map((warning, index) =>
       warningId(warning, `libraryItem.warnings[${index}]`),

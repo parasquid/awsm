@@ -230,7 +230,7 @@ export async function prepareCollectionOperation(
     version: 1,
     vaultId: input.vaultId,
     eventId: input.eventId,
-    referencedObjectIds: [anchor.bundleObjectId],
+    referencedObjectIds: [anchor.descriptorObjectId],
     orderingTimestamp: input.timestamp,
     envelopeBytes: await encryptedBytes(
       input,

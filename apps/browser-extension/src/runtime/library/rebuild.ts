@@ -6,16 +6,19 @@ import {
 } from "../../crypto/envelope";
 import { deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
 import { wipe } from "../../crypto/sodium";
+import { type BundleDescriptorV1, decodeBundleDescriptor } from "../../domain/artifact-graph";
 import { decodeCanonicalCbor, encodeCanonicalCbor } from "../../domain/cbor";
-import { CAPTURE_WARNINGS, type CaptureWarningId } from "../../domain/contracts";
 import { DomainValidationError } from "../../domain/errors";
-import { boolean, httpUrl, record, string, timestamp, uuid } from "../../domain/validation";
+import { record, string, uuid } from "../../domain/validation";
 import type {
   StoredCollectionProjectionV1,
   StoredEvent,
+  StoredObjectV1,
   StoredProjectionV1,
   StoredVaultNameProjectionV1,
 } from "../../drivers/indexeddb";
+import type { ArtifactStore } from "../artifact";
+import { decodeBundleRegisteredPayload, validateArtifactWarnings } from "../capture/contracts";
 import { decodeVaultNameEvent, encryptVaultNameProjection } from "../vault/name-crypto";
 import { reduceVaultNameProjection, type VaultNameEventV1 } from "../vault/name-projection";
 import type { CollectionTopologyEventV1 } from "./collections";
@@ -24,21 +27,12 @@ import { assertCanonicalEventFields } from "./vacuum";
 
 export interface LibraryProjectionRebuildRepository {
   listStoredEvents(): Promise<readonly StoredEvent[]>;
+  getStoredObject(objectId: string): Promise<StoredObjectV1 | undefined>;
   replaceLibraryProjections(
     itemProjections: readonly StoredProjectionV1[],
     collectionProjection: StoredCollectionProjectionV1,
     vaultNameProjection: StoredVaultNameProjectionV1,
   ): Promise<void>;
-}
-
-function warnings(value: unknown): readonly CaptureWarningId[] {
-  if (!Array.isArray(value)) throw new DomainValidationError("event.warnings", "must be an array");
-  return value.map((warning, index) => {
-    if (typeof warning !== "string" || !CAPTURE_WARNINGS.includes(warning as CaptureWarningId)) {
-      throw new DomainValidationError(`event.warnings.${String(index)}`, "is unsupported");
-    }
-    return warning as CaptureWarningId;
-  });
 }
 
 async function decryptEvent(
@@ -95,6 +89,7 @@ export class LibraryProjectionRebuilder {
     readonly repository: LibraryProjectionRebuildRepository,
     readonly rootKey: CryptoKey,
     readonly vaultId: string,
+    readonly artifactStore: ArtifactStore,
   ) {}
 
   async execute(): Promise<void> {
@@ -115,18 +110,66 @@ export class LibraryProjectionRebuilder {
         continue;
       }
       if (eventType === "BundleRegistered") {
-        const metadata = record(payload.captureMetadata, "event.captureMetadata");
+        const registration = decodeBundleRegisteredPayload(payload, event.referencedObjectIds);
+        const storedDescriptor = await this.repository.getStoredObject(
+          registration.descriptorObjectId,
+        );
+        if (storedDescriptor?.objectType !== "BundleDescriptor")
+          throw new DomainValidationError("event.descriptorObjectId", "does not resolve");
+        const descriptorKey = await deriveContextKeyFromCryptoKey(this.rootKey, {
+          vaultId: this.vaultId,
+          domain: "vault:bundle-descriptor:v1",
+          contextId: registration.bundleId,
+          keyVersion: 1,
+        });
+        let descriptor: BundleDescriptorV1;
+        try {
+          const envelope = decodeEncryptedEnvelopeBytes(storedDescriptor.envelopeBytes);
+          if (
+            envelope.objectId !== storedDescriptor.objectId ||
+            envelope.objectType !== "BundleDescriptor"
+          )
+            throw new DomainValidationError("descriptor", "has a mismatched envelope");
+          descriptor = decodeBundleDescriptor(await decryptEnvelope(envelope, descriptorKey));
+        } finally {
+          await wipe(descriptorKey);
+        }
+        if (
+          descriptor.bundleId !== registration.bundleId ||
+          descriptor.artifacts.map((artifact) => artifact.artifactObjectId).join("\n") !==
+            registration.artifactObjectIds.join("\n")
+        )
+          throw new DomainValidationError("descriptor.artifacts", "does not match Event closure");
+        validateArtifactWarnings(
+          descriptor.artifacts.map((artifact) => artifact.role),
+          registration.warnings,
+        );
+        let thumbnailWebp: Uint8Array | undefined;
+        const thumbnail = descriptor.artifacts.find((artifact) => artifact.role === "THUMBNAIL");
+        if (thumbnail !== undefined) {
+          const object = await this.repository.getStoredObject(thumbnail.artifactObjectId);
+          if (object?.objectType !== "Artifact")
+            throw new DomainValidationError("descriptor.artifacts", "has a missing thumbnail");
+          const stream = await this.artifactStore.openPlaintext({
+            vaultId: this.vaultId,
+            object,
+            reference: thumbnail,
+            rootKey: this.rootKey,
+          });
+          thumbnailWebp = new Uint8Array(await new Response(stream).arrayBuffer());
+        }
         itemEvents.push({
           eventId: event.eventId,
           eventType,
-          bundleId: uuid(payload.bundleId, "event.bundleId"),
-          bundleObjectId: uuid(payload.bundleObjectId, "event.bundleObjectId"),
-          collectionId: uuid(payload.collectionId, "event.collectionId"),
-          title: string(metadata.title, "event.captureMetadata.title"),
-          originalUrl: httpUrl(metadata.originalUrl, "event.captureMetadata.originalUrl"),
-          capturedAt: timestamp(payload.timestamp, "event.timestamp"),
-          screenshotPresent: boolean(payload.screenshotPresent, "event.screenshotPresent"),
-          warnings: warnings(payload.warnings),
+          bundleId: registration.bundleId,
+          descriptorObjectId: registration.descriptorObjectId,
+          collectionId: registration.collectionId,
+          title: descriptor.metadata.title,
+          originalUrl: descriptor.metadata.originalUrl,
+          capturedAt: registration.timestamp,
+          artifactRoles: descriptor.artifacts.map((artifact) => artifact.role).toSorted(),
+          ...(thumbnailWebp === undefined ? {} : { thumbnailWebp }),
+          warnings: registration.warnings,
         });
         continue;
       }

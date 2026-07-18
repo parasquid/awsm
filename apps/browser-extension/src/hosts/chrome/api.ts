@@ -1,7 +1,8 @@
 import { type Browser, browser } from "wxt/browser";
 import { base64ToBytes, bytesToBase64 } from "../../app/base64";
-import type { CaptureMetadataV1 } from "../../domain/bundle";
+import type { CaptureMetadataV1 } from "../../domain/artifact-graph";
 import type { CapturePageCommandV1 } from "../../domain/contracts";
+import type { StructuredBlockV1 } from "../../domain/structured-content";
 import type { CaptureHost } from "./capture";
 import type {
   CapturedTile,
@@ -70,19 +71,15 @@ export class ChromeCaptureHost implements CaptureHost {
         };
       }
     ).chrome;
-    const captured = await new Promise<Uint8Array>((resolve, reject) => {
+    return new Promise<Blob>((resolve, reject) => {
       chromeApi.pageCapture.saveAsMHTML({ tabId }, (blob) => {
         if (chromeApi.runtime.lastError !== undefined || blob === undefined) {
           reject(new Error("Chrome MHTML capture failed."));
           return;
         }
-        void blob.arrayBuffer().then(
-          (buffer) => resolve(new Uint8Array(buffer)),
-          () => reject(new Error("Chrome MHTML Blob could not be read.")),
-        );
+        resolve(blob);
       });
     });
-    return new Blob([Uint8Array.from(captured).buffer], { type: "multipart/related" });
   }
 
   async collectMetadata(
@@ -122,6 +119,174 @@ export class ChromeCaptureHost implements CaptureHost {
       captureProfileId: "ChromeWebPage-v1",
       captureProfileVersion: 1,
     };
+  }
+
+  async collectStructuredContent(tabId: number): Promise<readonly StructuredBlockV1[]> {
+    const token = crypto.randomUUID();
+    const name = `awsm:content:${token}`;
+    const blocks: StructuredBlockV1[] = [];
+    let approximateBytes = 0;
+    const completed = new Promise<void>((resolve, reject) => {
+      const listener = (port: Browser.runtime.Port): void => {
+        if (port.name !== name) return;
+        browser.runtime.onConnect.removeListener(listener);
+        let done = false;
+        port.onMessage.addListener((message: unknown) => {
+          if (typeof message !== "object" || message === null) {
+            port.disconnect();
+            return;
+          }
+          if ("blocks" in message && Array.isArray(message.blocks)) {
+            approximateBytes += JSON.stringify(message.blocks).length * 2;
+            if (approximateBytes > 8 * 1024 * 1024) {
+              port.disconnect();
+              reject(new Error("Structured content exceeds its capture bound."));
+              return;
+            }
+            blocks.push(...(message.blocks as StructuredBlockV1[]));
+            port.postMessage({ acknowledged: true });
+          } else if ("done" in message && message.done === true) {
+            done = true;
+            port.postMessage({ acknowledged: true });
+            resolve();
+          } else port.disconnect();
+        });
+        port.onDisconnect.addListener(() => {
+          if (!done) reject(new Error("Structured content producer disconnected."));
+        });
+      };
+      browser.runtime.onConnect.addListener(listener);
+    });
+    await browser.scripting.executeScript({
+      target: { tabId },
+      args: [name],
+      func: async (portName: string): Promise<void> => {
+        interface InjectedPort {
+          postMessage(value: unknown): void;
+          disconnect(): void;
+          readonly onMessage: {
+            addListener(listener: (message: unknown) => void): void;
+            removeListener(listener: (message: unknown) => void): void;
+          };
+          readonly onDisconnect: {
+            addListener(listener: () => void): void;
+            removeListener(listener: () => void): void;
+          };
+        }
+        const extensionApi = (
+          globalThis as unknown as {
+            chrome: { runtime: { connect(value: { name: string }): InjectedPort } };
+          }
+        ).chrome;
+        const port = extensionApi.runtime.connect({ name: portName });
+        const send = (value: unknown): Promise<void> =>
+          new Promise((resolve, reject) => {
+            const disconnected = (): void => reject(new Error("content collector disconnected"));
+            const acknowledged = (message: unknown): void => {
+              if (
+                typeof message === "object" &&
+                message !== null &&
+                "acknowledged" in message &&
+                message.acknowledged === true
+              ) {
+                port.onDisconnect.removeListener(disconnected);
+                port.onMessage.removeListener(acknowledged);
+                resolve();
+              }
+            };
+            port.onDisconnect.addListener(disconnected);
+            port.onMessage.addListener(acknowledged);
+            port.postMessage(value);
+          });
+        let batch: StructuredBlockV1[] = [];
+        let blockIndex = 0;
+        const links = (candidate: HTMLElement) =>
+          [...candidate.querySelectorAll<HTMLAnchorElement>("a[href]")].flatMap((anchor) => {
+            const url = new URL(anchor.href);
+            return url.protocol === "http:" || url.protocol === "https:"
+              ? [{ text: (anchor.innerText || anchor.textContent || "").trim(), href: url.href }]
+              : [];
+          });
+        const append = async (block: StructuredBlockV1): Promise<void> => {
+          batch.push(block);
+          if (batch.length === 64) {
+            await send({ blocks: batch });
+            batch = [];
+          }
+        };
+        const candidates = document.querySelectorAll("h1,h2,h3,h4,h5,h6,p,blockquote,li,pre,table");
+        for (const candidate of candidates) {
+          if (!(candidate instanceof HTMLElement)) continue;
+          if (
+            candidate.closest("[hidden],[aria-hidden='true']") !== null ||
+            !candidate.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+          )
+            continue;
+          const text = (candidate.innerText || candidate.textContent || "").trim();
+          if (text.length === 0) continue;
+          blockIndex += 1;
+          const blockId = `B${String(blockIndex).padStart(6, "0")}`;
+          const tag = candidate.tagName.toLowerCase();
+          if (/^h[1-6]$/u.test(tag)) {
+            await append({
+              blockVersion: 1,
+              blockId,
+              kind: "Heading",
+              level: Number(tag[1]) as 1 | 2 | 3 | 4 | 5 | 6,
+              text,
+              links: links(candidate),
+            });
+          } else if (tag === "blockquote") {
+            await append({
+              blockVersion: 1,
+              blockId,
+              kind: "Quote",
+              text,
+              links: links(candidate),
+            });
+          } else if (tag === "li") {
+            let depth = 0;
+            for (
+              let parent = candidate.parentElement?.closest("li");
+              parent !== null && parent !== undefined;
+              parent = parent.parentElement?.closest("li")
+            )
+              depth += 1;
+            await append({
+              blockVersion: 1,
+              blockId,
+              kind: "ListItem",
+              ordered: candidate.parentElement?.tagName.toLowerCase() === "ol",
+              depth,
+              text,
+              links: links(candidate),
+            });
+          } else if (tag === "pre") {
+            await append({ blockVersion: 1, blockId, kind: "Preformatted", text });
+          } else if (tag === "table") {
+            const rows = [...candidate.querySelectorAll("tr")]
+              .map((row) =>
+                [...row.querySelectorAll("th,td")].map((cell) => (cell.textContent ?? "").trim()),
+              )
+              .filter((row) => row.length > 0);
+            if (rows.length > 0) await append({ blockVersion: 1, blockId, kind: "Table", rows });
+          } else {
+            await append({
+              blockVersion: 1,
+              blockId,
+              kind: "Paragraph",
+              text,
+              links: links(candidate),
+            });
+          }
+        }
+        if (batch.length > 0) await send({ blocks: batch });
+        await send({ done: true });
+        port.disconnect();
+      },
+    });
+    await completed;
+    return blocks;
   }
 }
 
@@ -211,30 +376,81 @@ export class ChromeScreenshotHost implements ScreenshotHost {
         justification: "Stitch screenshot tiles and encode lossy WebP previews.",
       });
     }
-    try {
-      const response: unknown = await browser.runtime.sendMessage({
-        type: "awsm:stitch-screenshot",
-        plan,
-        tiles: tiles.map((tile) => ({
-          geometry: tile.geometry,
-          imageBase64: bytesToBase64(tile.imageBytes),
-        })),
+    const port = browser.runtime.connect({ name: `awsm:screenshot:${crypto.randomUUID()}` });
+    let requestSequence = 0;
+    const send = (message: Record<string, unknown>): Promise<void> => {
+      requestSequence += 1;
+      const sequence = requestSequence;
+      return new Promise((resolve, reject) => {
+        const disconnected = (): void => reject(new Error("Screenshot stitcher disconnected."));
+        const acknowledged = (value: unknown): void => {
+          if (
+            typeof value === "object" &&
+            value !== null &&
+            "acknowledged" in value &&
+            value.acknowledged === sequence
+          ) {
+            port.onMessage.removeListener(acknowledged);
+            port.onDisconnect.removeListener(disconnected);
+            resolve();
+          }
+        };
+        port.onMessage.addListener(acknowledged);
+        port.onDisconnect.addListener(disconnected);
+        port.postMessage({ ...message, sequence });
       });
-      if (
-        typeof response !== "object" ||
-        response === null ||
-        !("webpBase64" in response) ||
-        typeof response.webpBase64 !== "string" ||
-        !("thumbnailBase64" in response) ||
-        typeof response.thumbnailBase64 !== "string"
-      ) {
-        throw new Error("The offscreen stitcher returned an invalid result.");
+    };
+    const outputParts = new Map<"Full" | "Thumbnail", ArrayBuffer[]>([
+      ["Full", []],
+      ["Thumbnail", []],
+    ]);
+    const completed = new Promise<void>((resolve, reject) => {
+      port.onMessage.addListener((value: unknown) => {
+        if (typeof value !== "object" || value === null || !("outputId" in value)) return;
+        const outputId = value.outputId;
+        if (typeof outputId !== "number") return;
+        if ("kind" in value && (value.kind === "Full" || value.kind === "Thumbnail")) {
+          if ("chunkBase64" in value && typeof value.chunkBase64 === "string") {
+            outputParts
+              .get(value.kind)
+              ?.push(Uint8Array.from(base64ToBytes(value.chunkBase64)).buffer);
+          }
+          port.postMessage({ outputAcknowledged: outputId });
+          return;
+        }
+        if ("done" in value && value.done === true) {
+          port.postMessage({ outputAcknowledged: outputId });
+          resolve();
+        }
+      });
+      port.onDisconnect.addListener(() => reject(new Error("Screenshot output was interrupted.")));
+    });
+    try {
+      await send({ operation: "Start", plan });
+      const chunkBytes = 192 * 1024;
+      for (const tile of tiles) {
+        await send({ operation: "TileStart", geometry: tile.geometry });
+        for (let offset = 0; offset < tile.imageBytes.byteLength; offset += chunkBytes) {
+          await send({
+            operation: "TileChunk",
+            chunkBase64: bytesToBase64(
+              tile.imageBytes.subarray(
+                offset,
+                Math.min(offset + chunkBytes, tile.imageBytes.byteLength),
+              ),
+            ),
+          });
+        }
+        await send({ operation: "TileEnd" });
       }
+      await send({ operation: "Finish" });
+      await completed;
       return {
-        webpBytes: base64ToBytes(response.webpBase64),
-        thumbnailWebpBytes: base64ToBytes(response.thumbnailBase64),
+        webpBlob: new Blob(outputParts.get("Full"), { type: "image/webp" }),
+        thumbnailWebpBlob: new Blob(outputParts.get("Thumbnail"), { type: "image/webp" }),
       };
     } finally {
+      port.disconnect();
       await browser.offscreen.closeDocument();
     }
   }

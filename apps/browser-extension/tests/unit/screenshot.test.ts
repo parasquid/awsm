@@ -103,8 +103,8 @@ function host(overrides: Partial<ScreenshotHost> = {}): ScreenshotHost {
     prepareTile: vi.fn(async () => undefined),
     captureVisible: vi.fn(async () => new Uint8Array([1, 2, 3])),
     stitch: vi.fn(async () => ({
-      webpBytes: new Uint8Array([82, 73, 70, 70]),
-      thumbnailWebpBytes: new Uint8Array([1, 2, 3]),
+      webpBlob: new Blob([new Uint8Array([82, 73, 70, 70])]),
+      thumbnailWebpBlob: new Blob([new Uint8Array([1, 2, 3])]),
     })),
     restore: vi.fn(async () => undefined),
     now: () => now,
@@ -119,8 +119,8 @@ describe("best-effort screenshot lifecycle", () => {
   it("mitigates repeated fixed content, throttles captures, stitches, and restores", async () => {
     const fake = host();
     await expect(acquireBestEffortScreenshot(fake)).resolves.toEqual({
-      webpBytes: new Uint8Array([82, 73, 70, 70]),
-      thumbnailWebpBytes: new Uint8Array([1, 2, 3]),
+      webpBlob: new Blob([new Uint8Array([82, 73, 70, 70])]),
+      thumbnailWebpBlob: new Blob([new Uint8Array([1, 2, 3])]),
       warnings: [],
     });
     expect(fake.prepareTile).toHaveBeenNthCalledWith(
@@ -159,8 +159,8 @@ describe("best-effort screenshot lifecycle", () => {
       })),
     });
     await expect(acquireBestEffortScreenshot(fake)).resolves.toEqual({
-      webpBytes: new Uint8Array([82, 73, 70, 70]),
-      thumbnailWebpBytes: new Uint8Array([1, 2, 3]),
+      webpBlob: new Blob([new Uint8Array([82, 73, 70, 70])]),
+      thumbnailWebpBlob: new Blob([new Uint8Array([1, 2, 3])]),
       warnings: ["SCREENSHOT_TRUNCATED"],
     });
     expect(fake.captureVisible).toHaveBeenCalled();

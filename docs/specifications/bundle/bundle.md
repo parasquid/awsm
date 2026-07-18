@@ -6,347 +6,66 @@
 
 **Status:** Draft
 
+**Depends On:**
+
+- `artifact.md`
+- `manifest.md`
+- `../storage/object-store.md`
+
 ---
 
 # 1. Purpose
 
-This specification defines the canonical on-disk representation of an archived capture.
+A Bundle is an immutable Capture package represented by Object semantics. It is a logical graph,
+not a container file: one compact Bundle Descriptor Object describes the Capture and references one
+independently encrypted Artifact Object for each successfully produced payload.
 
-A Bundle is the immutable unit of preservation.
+# 2. Graph
 
-Bundles are portable.
+Every Bundle SHALL contain exactly one Bundle Descriptor and one or more Artifact references. The
+initial `ChromeWebPage-v1` Capture Profile requires `PRIMARY` and permits `SCREENSHOT_FULL`,
+`THUMBNAIL`, `TEXT_EXTRACTED`, and `CONTENT_STRUCTURED`.
 
-Bundles are self-describing.
+The descriptor Object ID is independent of the Bundle ID. Each Artifact ID is its Object ID. All
+identifiers are fresh canonical UUIDs and SHALL NOT be derived from content. Artifact references
+SHALL be ordered by Artifact Object ID.
 
-Bundles are content-addressable.
+# 3. Completeness and Registration
 
----
+`BundleRegistered` SHALL reference the Bundle Descriptor Object and every Artifact Object directly.
+Its Object closure SHALL exactly equal the descriptor plus the descriptor's Artifact references.
+The Runtime SHALL validate and atomically commit that complete closure before the Bundle becomes
+visible. No incomplete Bundle may be authoritative.
 
-# 2. Goals
+Optional Artifact acquisition failure does not make the committed graph incomplete: the descriptor
+omits the Artifact and `BundleRegistered` records the corresponding typed warning. `PRIMARY`
+failure rejects the Capture.
 
-The Bundle format must provide:
+# 4. Persistence and Portability
 
-- faithful preservation
-- immutability
-- canonical format validation
-- efficient validation
-- deterministic serialization
-- offline portability
-- cryptographic verification
+The descriptor is a compact inline encrypted Object. Artifact payloads are independently framed,
+encrypted, and stored through the Artifact Store. Bundle semantics do not assign filenames or
+container paths to Artifacts.
 
----
+Export packages carry the descriptor Object record, Artifact Object records, and Artifact wrappers
+as separate entries. Package coverage may be Complete or Selective as defined by the Import and
+Export Specification. Export is not the canonical representation of a Bundle.
 
-# 3. Non-Goals
+# 5. Validation and Invariants
 
-Bundles do not define:
+Readers SHALL reject unknown fields, versions, Kinds, Roles, duplicate Object IDs, duplicate Roles,
+invalid MIME contracts, closure mismatches, warning mismatches, or checksum/length failures.
 
-- synchronization
-- search
-- authentication
-- authorization
-- AI processing
-- projection state
-
-These are specified elsewhere.
-
----
-
-# 4. Bundle Properties
-
-A Bundle SHALL be:
-
-- immutable
-- self-contained
-- versioned
-- independently verifiable
-
----
-
-# 5. Bundle Identifier
-
-Every Bundle has a globally unique identifier.
-
-```
-BundleID
-```
-
-The BundleID is assigned when the Bundle is created.
-
-Once assigned it MUST NOT change.
-
-The identifier is distinct from any content hash.
-
----
-
-# 6. Bundle Structure
-
-A Bundle consists of:
-
-```
-Bundle
-
-├── Manifest
-├── Artifacts
-└── Metadata
-```
-
-No additional top-level objects are permitted.
-
----
-
-# 7. Manifest
-
-Exactly one Manifest SHALL exist.
-
-The Manifest describes the Bundle.
-
-The Manifest does not duplicate Artifact contents.
-
----
-
-# 8. Artifacts
-
-Artifacts contain preserved content.
-
-Examples include:
-
-- page.mhtml
-- screenshot.webp
-- favicon.ico
-- extracted-text.txt
-- ai-summary.md
-
-Artifacts are immutable.
-
-Artifacts are individually identifiable.
-
----
-
-# 9. Metadata
-
-Metadata describes the Bundle itself.
-
-Examples:
-
-- capture timestamp
-- source URL
-- Bundle version
-- creator version
-
-Metadata SHALL NOT duplicate Artifact data unless explicitly required.
-
----
-
-# 10. Artifact Requirements
-
-Every Artifact MUST include:
-
-- ArtifactID
-- MIME type
-- byte length
-- checksum
-
-Optional fields:
-
-- filename
-- language
-- encoding
-- role
-
----
-
-# 11. Roles
-
-Artifacts are identified by role rather than filename.
-
-Initial standard Roles:
-
-PRIMARY
-
-SCREENSHOT_FULL
-
-SCREENSHOT_VISIBLE
-
-TEXT_EXTRACTED
-
-THUMBNAIL
-
-FAVICON
-
-SUMMARY_AI
-
-NOTE
-
-Roles are normative.
-
-Filenames are informative.
-
----
-
-# 12. MIME Types
-
-Artifacts SHALL declare MIME types.
-
-Examples:
-
-text/html
-
-multipart/related
-
-image/png
-
-image/jpeg
-
-image/webp
-
-text/plain
-
-application/pdf
-
----
-
-# 13. Checksums
-
-Every Artifact SHALL include a checksum.
-
-Checksums verify integrity.
-
-The checksum algorithm is defined by the Cryptography Specification.
-
----
-
-# 14. Compression
-
-Compression is optional.
-
-Compression metadata SHALL be recorded in the Manifest.
-
-The initial ZIP serialization uses a fixed DEFLATE configuration identified by the Bundle serialization version.
-
----
-
-# 15. Encryption
-
-Bundles are serialized before encryption.
-
-The Bundle Specification describes plaintext structure only.
-
-Encrypted representation is defined separately.
-
----
-
-# 16. Serialization
-
-Serialization SHALL be deterministic.
-
-Equivalent Bundles MUST produce equivalent serialized representations.
-
-The initial serialization SHALL be a ZIP archive with serialization identifier:
-
-```text
-bundle:zip:v1
-```
-
-The canonical layout SHALL be:
-
-```text
-manifest.cbor
-metadata.cbor
-artifacts/<artifact-path>
-```
-
-ZIP entries SHALL:
-
-- use UTF-8 paths
-- be ordered lexicographically by complete path
-- omit directory entries
-- use the fixed timestamp 1980-01-01 00:00:00
-- use the compression settings declared by the serialization version
-- omit comments and platform-specific or nondeterministic extra fields
-
-The Manifest and Bundle metadata SHALL use canonical CBOR with serialization identifier:
-
-```text
-cbor:canonical:v1
-```
-
-User-visible Bundle metadata SHALL remain inside the Bundle serialization so that Object encryption protects it.
-
-The first implementation Capture Profile, `ChromeWebPage-v1`, SHALL use:
-
-- `artifacts/primary.mhtml` for the required `PRIMARY` Artifact
-- `artifacts/screenshot-full.webp` for the optional lossy `SCREENSHOT_FULL` Artifact
-
-Filenames remain informative. Readers SHALL resolve Artifacts using Manifest identifiers and Roles.
-
----
-
-# 17. Unknown Fields
-
-Readers SHALL reject unknown fields.
-
-Readers SHALL write only fields defined by this specification.
-
----
-
-# 18. Versioning
-
-Every Bundle SHALL contain:
-
-Bundle Version
-
-Manifest Version
-
-Artifact Schema Version
-
----
-
-# 19. Validation
-
-A valid Bundle MUST satisfy:
-
-✓ Manifest exists
-
-✓ Artifact IDs unique
-
-✓ Checksums valid
-
-✓ Version present
-
-✓ Required metadata present
-
----
-
-# 20. Unsupported Bundle Semantics
-
-Bundle semantics outside this specification are unsupported, including:
-
-- new Artifact roles
-- new metadata
-- new compression methods
-
-Readers MUST reject unsupported Bundle data.
-
----
-
-# 21. Invariants
-
-Bundles never change.
-
-Artifacts never change.
-
-Manifest describes rather than owns Artifacts.
-
-Roles identify semantics.
-
-Checksums verify integrity.
-
----
+- Bundles and their identifiers never mutate.
+- Artifact payloads never live inside the descriptor.
+- Filenames and storage paths carry no Bundle semantics.
+- Checksums verify bytes but do not determine identity.
+- Projections and caches are not part of the Bundle graph.
 
 # References
 
-manifest.md
-
-artifact.md
-
-crypto.md
+- `artifact.md`
+- `manifest.md`
+- `../event/event.md`
+- `../storage/object-store.md`
+- `../portability/import-export.md`

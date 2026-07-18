@@ -28,4 +28,27 @@ describe("application request routing", () => {
       isAppRequest({ type: "CancelVaultExport", expectedVaultId: "vault", jobId: "job" }),
     ).toBe(true);
   });
+
+  it("accepts only canonical Vault-scoped Artifact session requests", () => {
+    expect(
+      isAppRequest({
+        type: "OpenArtifact",
+        expectedVaultId: "vault",
+        bundleId: "bundle",
+        role: "CONTENT_STRUCTURED",
+      }),
+    ).toBe(true);
+    expect(
+      isAppRequest({
+        type: "OpenArtifact",
+        expectedVaultId: "vault",
+        bundleId: "bundle",
+        role: "ARBITRARY_FILE",
+      }),
+    ).toBe(false);
+    expect(
+      isAppRequest({ type: "ReadArtifactChunk", expectedVaultId: "vault", sessionId: "session" }),
+    ).toBe(true);
+    expect(isAppRequest({ type: "ReadArtifactChunk", expectedVaultId: "vault" })).toBe(false);
+  });
 });

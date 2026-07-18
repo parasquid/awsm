@@ -3,6 +3,9 @@ export const CAPTURE_WARNINGS = [
   "SCREENSHOT_TRUNCATED",
   "SCREENSHOT_CAPTURE_FAILED",
   "OPTIONAL_METADATA_UNAVAILABLE",
+  "THUMBNAIL_CAPTURE_FAILED",
+  "TEXT_EXTRACTION_FAILED",
+  "STRUCTURED_CONTENT_EXTRACTION_FAILED",
 ] as const;
 
 export type CaptureWarningId = (typeof CAPTURE_WARNINGS)[number];
@@ -13,7 +16,6 @@ export const RUNTIME_ERROR_IDS = [
   "PERMISSION_DENIED",
   "MHTML_UNAVAILABLE",
   "MHTML_CAPTURE_FAILED",
-  "CAPTURE_TOO_LARGE",
   "CAPTURE_INTERRUPTED",
   "BUNDLE_INVALID",
   "CRYPTO_AUTHENTICATION_FAILED",
@@ -50,38 +52,14 @@ export interface CapturePageCommandV1 {
   readonly idempotencyKey: string;
 }
 
-export type ArtifactKind = "CAPTURE" | "IMAGE";
-export type ArtifactRole = "PRIMARY" | "SCREENSHOT_FULL";
-
-export interface ArtifactReferenceV1 {
-  readonly artifactId: string;
-  readonly artifactVersion: 1;
-  readonly kind: ArtifactKind;
-  readonly role: ArtifactRole;
-  readonly mimeType: string;
-  readonly byteLength: number;
-  readonly checksumAlgorithm: "hash:sha256:v1";
-  readonly checksum: Uint8Array;
-  readonly path: string;
-}
-
-export interface BundleManifestV1 {
-  readonly manifestVersion: 1;
-  readonly bundleVersion: 1;
-  readonly artifactSchemaVersion: 1;
-  readonly bundleId: string;
-  readonly createdAt: string;
-  readonly clientVersion: string;
-  readonly captureProfileId: "ChromeWebPage-v1";
-  readonly captureAdapterVersion: 1;
-  readonly bundleSerialization: "bundle:zip:v1";
-  readonly manifestSerialization: "cbor:canonical:v1";
-  readonly artifacts: readonly ArtifactReferenceV1[];
-}
-
 export interface EncryptedEnvelopeV1 {
   readonly formatVersion: 1;
-  readonly objectType: "Bundle" | "Event" | "Projection" | "WrappedKey" | "VaultGeneration";
+  readonly objectType:
+    | "BundleDescriptor"
+    | "Event"
+    | "Projection"
+    | "WrappedKey"
+    | "VaultGeneration";
   readonly algorithm: "enc:xchacha20poly1305:v1";
   readonly objectId: string;
   readonly payloadLength: number;
@@ -92,19 +70,19 @@ export interface EncryptedEnvelopeV1 {
 export interface LibraryItemV1 {
   readonly version: 1;
   readonly bundleId: string;
-  readonly bundleObjectId: string;
+  readonly descriptorObjectId: string;
   readonly assignedCollectionId: string;
   readonly title: string;
   readonly originalUrl: string;
   readonly capturedAt: string;
-  readonly screenshotPresent: boolean;
+  readonly artifactRoles: readonly import("./artifact-graph").ArtifactRole[];
   readonly status: "Active" | "Deleted";
   readonly thumbnailWebp?: Uint8Array;
   readonly warnings: readonly CaptureWarningId[];
 }
 
 export type CaptureJobState = "Created" | "Running" | "Succeeded" | "Failed";
-export type CaptureJobStage = "Preflight" | "MHTML" | "Screenshot" | "Commit";
+export type CaptureJobStage = "Preflight" | "MHTML" | "Content" | "Screenshot" | "Commit";
 
 export interface CaptureJob {
   readonly version: 1;

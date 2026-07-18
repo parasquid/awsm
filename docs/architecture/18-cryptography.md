@@ -178,35 +178,30 @@ The Coordination Server stores wrapped keys only.
 
 The initial browser Host uses a non-exportable device key to wrap the Vault Root Key locally. Local-only Vaults do not persist a passphrase wrapper. A passphrase-derived wrapper exists only inside a user-created Vault Package and is independent of local unlock state.
 
-Bundle, Event, and Projection keys are context-derived and are not stored as individually wrapped keys in the initial implementation.
+Bundle Descriptor, Artifact, Event, and Projection keys are context-derived and are not stored as
+individually wrapped keys in the initial implementation.
 
 ---
 
 # Encryption Pipeline
 
 ```
-Bundle
+Compact Object
 
-↓
+↓ canonical serialize and encrypt
 
-Serialize
+Inline encrypted record
 
-↓
+Artifact stream
 
-Compress
+↓ chunk-frame and encrypt
 
-↓
-
-Encrypt
-
-↓
-
-Store
+External immutable wrapper
 ```
 
 Encryption precedes synchronization.
 
-Compression precedes encryption.
+Large Artifact encryption and hashing are incremental and bounded-memory.
 
 ---
 
@@ -222,11 +217,10 @@ Sensitive metadata should remain encrypted whenever practical.
 
 # Artifact Encryption
 
-Artifacts follow the same lifecycle as Bundles.
-
-Artifacts remain immutable.
-
-Artifacts are encrypted before storage.
+Artifacts remain immutable and are encrypted independently before storage. Each Artifact key uses
+domain `vault:artifact:v1` and its Artifact Object UUID as context. The authenticated wrapper binds
+the header and every monotonically indexed frame, including a final empty frame when the plaintext
+is empty. Readers validate wrapper and plaintext length/checksum before successful completion.
 
 ---
 

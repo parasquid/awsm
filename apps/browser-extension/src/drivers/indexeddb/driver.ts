@@ -69,6 +69,20 @@ export class IndexedDbDriver {
     return job;
   }
 
+  private sameStoredObject(left: StoredObjectV1, right: StoredObjectV1): boolean {
+    if (left.objectType !== right.objectType) return false;
+    if (left.objectType === "BundleDescriptor" && right.objectType === "BundleDescriptor")
+      return bytesEqual(left.envelopeBytes, right.envelopeBytes);
+    if (left.objectType === "Artifact" && right.objectType === "Artifact")
+      return (
+        left.envelopeFormat === right.envelopeFormat &&
+        left.envelopeByteLength === right.envelopeByteLength &&
+        left.envelopeChecksumAlgorithm === right.envelopeChecksumAlgorithm &&
+        bytesEqual(left.envelopeChecksum, right.envelopeChecksum)
+      );
+    return false;
+  }
+
   async putImmutableObject(record: StoredObjectV1): Promise<void> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.objects, "readwrite");
@@ -83,10 +97,7 @@ export class IndexedDbDriver {
       }
       const existing = decodeStoredObject(existingValue);
       await transactionDone(transaction);
-      if (
-        existing.objectType !== record.objectType ||
-        !bytesEqual(existing.envelopeBytes, record.envelopeBytes)
-      ) {
+      if (!this.sameStoredObject(existing, record)) {
         throw new StorageDriverError(
           "IMMUTABLE_OBJECT_CONFLICT",
           "An Object identifier already exists with different bytes.",
@@ -114,6 +125,22 @@ export class IndexedDbDriver {
     const outcomes = transaction.objectStore(STORES.commandOutcomes);
     try {
       this.assertEventVault(input.event);
+      const objectIds = input.objects.map((object) => object.objectId);
+      const artifactIds = objectIds.slice(1);
+      if (
+        input.objects.length < 2 ||
+        input.objects[0]?.objectType !== "BundleDescriptor" ||
+        input.objects.slice(1).some((object) => object.objectType !== "Artifact") ||
+        new Set(objectIds).size !== objectIds.length ||
+        artifactIds.join("\n") !== [...artifactIds].toSorted().join("\n") ||
+        [...objectIds].toSorted().join("\n") !== input.event.referencedObjectIds.join("\n") ||
+        input.outcome.descriptorObjectId !== input.objects[0].objectId ||
+        input.graph.bundleId !== input.outcome.bundleId ||
+        input.graph.descriptorObjectId !== input.objects[0].objectId ||
+        input.graph.artifactObjectIds.join("\n") !== artifactIds.join("\n")
+      ) {
+        throw new Error("The registration does not contain an exact canonical Bundle graph.");
+      }
       await assertNoActiveExport(transaction, this.vaultId);
       if (
         (await requestValue(
@@ -135,9 +162,9 @@ export class IndexedDbDriver {
         await transactionDone(transaction);
         return decodeCommandOutcome(existing);
       }
-      transaction
-        .objectStore(STORES.objects)
-        .add(input.object, vaultKey(this.vaultId, input.object.objectId));
+      const objectStore = transaction.objectStore(STORES.objects);
+      for (const object of input.objects)
+        objectStore.add(object, vaultKey(this.vaultId, object.objectId));
       transaction
         .objectStore(STORES.events)
         .add(input.event, vaultKey(this.vaultId, input.event.eventId));
@@ -148,7 +175,7 @@ export class IndexedDbDriver {
       headStore.put(
         {
           ...head,
-          appendedObjectIds: [...head.appendedObjectIds, input.object.objectId].toSorted(),
+          appendedObjectIds: [...head.appendedObjectIds, ...objectIds].toSorted(),
           appendedEventIds: [...head.appendedEventIds, input.event.eventId].toSorted(),
         },
         vaultSingletonKey(this.vaultId, "active"),

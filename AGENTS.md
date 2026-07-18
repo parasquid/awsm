@@ -14,16 +14,16 @@ AWSM (Archive What Should Matter) is a local-first, zero-knowledge knowledge pre
 
 ## WHERE TO LOOK
 
-| Task | Location | Notes |
-|------|----------|-------|
-| Understand the product | `README.md`, `VISION.md` | Start with privacy, ownership, and preservation goals |
-| Check MVP scope | `docs/plans/01-mvp-prd.md` | Draft product requirements and acceptance criteria |
-| Resolve design principles | `docs/architecture/00-design-principles.md` | Normative; principles outrank implementation convenience |
-| Resolve terminology | `docs/architecture/glossary.md` | Normative; wins terminology conflicts |
-| Understand system boundaries | `docs/architecture/01-system-overview.md` | Trusted client vs untrusted coordination service |
-| Find a format or contract | `docs/specifications/` | Specifications own their declared domain semantics |
-| Check recent reconciliation | `docs/architecture/consistency-review.md` | Review record, not an independent normative source |
-| Understand testing requirements | `docs/architecture/19-testing-strategy.md` | Architectural invariants and TDD expectations |
+| Task                            | Location                                    | Notes                                                    |
+| ------------------------------- | ------------------------------------------- | -------------------------------------------------------- |
+| Understand the product          | `README.md`, `VISION.md`                    | Start with privacy, ownership, and preservation goals    |
+| Check MVP scope                 | `docs/plans/01-mvp-prd.md`                  | Draft product requirements and acceptance criteria       |
+| Resolve design principles       | `docs/architecture/00-design-principles.md` | Normative; principles outrank implementation convenience |
+| Resolve terminology             | `docs/architecture/glossary.md`             | Normative; wins terminology conflicts                    |
+| Understand system boundaries    | `docs/architecture/01-system-overview.md`   | Trusted client vs untrusted coordination service         |
+| Find a format or contract       | `docs/specifications/`                      | Specifications own their declared domain semantics       |
+| Check recent reconciliation     | `docs/architecture/consistency-review.md`   | Review record, not an independent normative source       |
+| Understand testing requirements | `docs/architecture/19-testing-strategy.md`  | Architectural invariants and TDD expectations            |
 
 ## DOCUMENT AUTHORITY
 
@@ -37,6 +37,28 @@ Use this precedence when editing or reviewing:
 No universal tie-break exists between conflicting formal specifications. Treat such conflicts as design issues and update all affected documents together. Verify claims in `consistency-review.md`; its status is `Review Record`.
 
 Explicitly approved plans supersede stale Draft documentation; reconcile every affected document.
+
+## DOCUMENTATION COMPLETION POLICY
+
+- A task is not complete until every related document reflects the resulting canonical behavior.
+  Follow the change through product documentation, architecture, formal specifications, plans,
+  testing guidance, operations, examples, and other affected prose rather than updating code alone.
+- At task completion, audit `ROADMAP.md` for the corresponding work. Remove an entry when its work
+  is fully implemented. When only part of an entry is complete, rewrite it to describe only the
+  unresolved future work and remove the implemented details.
+- Keep the Roadmap forward-looking. Do not preserve completed items by marking them done, moving
+  them into a completed section, or restating behavior already owned by current documentation. Git
+  history and approved plans provide implementation history.
+- Remove or reword Roadmap dependencies, assumptions, open questions, promotion criteria, and
+  sequencing that became stale because of the completed task. Remaining entries may link briefly
+  to canonical documents but must not duplicate their contracts.
+- Before reporting completion, search documentation and the Roadmap for superseded terminology,
+  requirements, and planned-work language associated with the task. Treat stale or duplicated
+  documentation as incomplete work.
+- Before reporting completion, run the repository-declared formatter and linter applicable to the
+  changed files, along with any broader formatting or lint checks required by the affected package.
+  Format the affected files, resolve every introduced warning or error, and report the exact checks
+  run. Do not treat unformatted or lint-failing work as complete.
 
 ## PRE-RELEASE FORMAT POLICY
 
@@ -53,16 +75,16 @@ Explicitly approved plans supersede stale Draft documentation; reconcile every a
 
 ## CORE MODEL
 
-| Concept | Role |
-|---------|------|
-| Vault | Ownership and cryptographic boundary |
-| Object | Immutable authoritative persistence record |
-| Bundle | Immutable capture package represented by Object semantics |
-| Event | Immutable history used to derive logical state |
-| Projection | Rebuildable logical derived state |
-| Materialization | Stored/indexed representation of a Projection |
-| Runtime | Platform-independent client business logic |
-| Host | Platform integration; contains no business logic |
+| Concept             | Role                                                          |
+| ------------------- | ------------------------------------------------------------- |
+| Vault               | Ownership and cryptographic boundary                          |
+| Object              | Immutable authoritative persistence record                    |
+| Bundle              | Immutable capture package represented by Object semantics     |
+| Event               | Immutable history used to derive logical state                |
+| Projection          | Rebuildable logical derived state                             |
+| Materialization     | Stored/indexed representation of a Projection                 |
+| Runtime             | Platform-independent client business logic                    |
+| Host                | Platform integration; contains no business logic              |
 | Coordination Server | Synchronizes opaque encrypted data; never understands content |
 
 ## CONVENTIONS

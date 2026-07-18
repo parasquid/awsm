@@ -3,10 +3,14 @@ import { AppClientError, sendRequest } from "../../src/app/client";
 import type {
   AppRequest,
   AppState,
+  ArtifactChunkMessage,
   LibraryDetailMessage,
   LibraryOperationReceipt,
   LibraryPageGroupMessage,
+  OpenArtifactMessage,
 } from "../../src/app/protocol";
+import type { ArtifactRole } from "../../src/domain/artifact-graph";
+import { decodeStructuredContentSequence } from "../../src/domain/structured-content";
 import {
   captureDropRequest,
   collectionLayerBundleIds,
@@ -29,6 +33,7 @@ const announcer = requiredElement("#announcer");
 const pageHeader = requiredElement("header");
 const libraryTitle = requiredElement("#library-title");
 let screenshotUrl: string | undefined;
+let detailController: AbortController | undefined;
 let activeGroups: readonly LibraryPageGroupMessage[] = [];
 let deletedGroups: readonly LibraryPageGroupMessage[] = [];
 let undoTimer: number | undefined;
@@ -62,7 +67,9 @@ function element<K extends keyof HTMLElementTagNameMap>(
 }
 
 async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
-  const suggestion = await sendRequest<{ readonly name: string }>({ type: "SuggestVaultName" });
+  const suggestion = await sendRequest<{ readonly name: string }>({
+    type: "SuggestVaultName",
+  });
   const { dialog, form } = dialogShell("Create another Vault");
   form.append(element("p", "Creating another Vault locks the current Vault.", "muted"));
   const label = element("label", "Vault name");
@@ -75,7 +82,9 @@ async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
   regenerate.type = "button";
   regenerate.addEventListener("click", () => {
     regenerate.disabled = true;
-    void sendRequest<{ readonly name: string }>({ type: "SuggestVaultName" }).then(
+    void sendRequest<{ readonly name: string }>({
+      type: "SuggestVaultName",
+    }).then(
       (next) => {
         name.value = next.name;
         name.focus();
@@ -181,7 +190,10 @@ function showExportVaultDialog(restoreFocus: HTMLElement): void {
     submit.disabled = true;
     cancel.disabled = true;
     submit.textContent = "Preparing…";
-    const request = sendRequest<{ readonly jobId: string; readonly filename: string }>({
+    const request = sendRequest<{
+      readonly jobId: string;
+      readonly filename: string;
+    }>({
       type: "ExportVault",
       expectedVaultId: expectedVaultId(),
       passphrase: passphrase.value,
@@ -452,8 +464,90 @@ function clearMergeDropTargets(): void {
 }
 
 function releaseScreenshot(): void {
+  detailController?.abort();
+  detailController = undefined;
   if (screenshotUrl !== undefined) URL.revokeObjectURL(screenshotUrl);
   screenshotUrl = undefined;
+}
+
+async function consumeArtifact(
+  bundleId: string,
+  role: ArtifactRole,
+  signal: AbortSignal,
+  consume: (chunk: Uint8Array) => void | Promise<void>,
+  openedCallback?: (opened: OpenArtifactMessage) => void | Promise<void>,
+): Promise<OpenArtifactMessage> {
+  const vaultId = expectedVaultId();
+  const opened = await sendRequest<OpenArtifactMessage>({
+    type: "OpenArtifact",
+    expectedVaultId: vaultId,
+    bundleId,
+    role,
+  });
+  try {
+    await openedCallback?.(opened);
+    for (;;) {
+      signal.throwIfAborted();
+      const next = await sendRequest<ArtifactChunkMessage>({
+        type: "ReadArtifactChunk",
+        expectedVaultId: vaultId,
+        sessionId: opened.sessionId,
+      });
+      if (next.done) return opened;
+      if (next.chunkBase64 === undefined) throw new Error("Artifact chunk missing");
+      await consume(base64ToBytes(next.chunkBase64));
+    }
+  } finally {
+    await sendRequest<null>({
+      type: "CancelArtifactSession",
+      expectedVaultId: vaultId,
+      sessionId: opened.sessionId,
+    }).catch(() => undefined);
+  }
+}
+
+async function downloadArtifact(
+  bundleId: string,
+  role: ArtifactRole,
+  signal: AbortSignal,
+): Promise<void> {
+  interface ArtifactWritable {
+    write(chunk: Uint8Array): Promise<void>;
+    close(): Promise<void>;
+    abort(): Promise<void>;
+  }
+  const picker = (
+    window as typeof window & {
+      showSaveFilePicker?: (options: {
+        readonly suggestedName: string;
+      }) => Promise<{ createWritable(): Promise<ArtifactWritable> }>;
+    }
+  ).showSaveFilePicker;
+  if (picker === undefined) throw new Error("Streaming file save is unavailable");
+  let writer: ArtifactWritable | undefined;
+  let succeeded = false;
+  try {
+    const extension =
+      role === "PRIMARY"
+        ? "mhtml"
+        : role === "TEXT_EXTRACTED"
+          ? "txt"
+          : role === "CONTENT_STRUCTURED"
+            ? "cborseq"
+            : "webp";
+    const handle = await picker({
+      suggestedName: `awsm-${bundleId.slice(0, 8)}-${role.toLowerCase().replaceAll("_", "-")}.${extension}`,
+    });
+    writer = await handle.createWritable();
+    const writable = writer;
+    await consumeArtifact(bundleId, role, signal, (chunk) => writable.write(chunk));
+    succeeded = true;
+  } finally {
+    if (writer !== undefined) {
+      if (succeeded) await writer.close().catch(() => undefined);
+      else await writer.abort().catch(() => undefined);
+    }
+  }
 }
 
 function renderError(message: string): void {
@@ -752,7 +846,7 @@ function groupGrid(
         "muted",
       ),
     );
-    if (!group.latest.screenshotPresent)
+    if (!group.latest.artifactRoles.includes("SCREENSHOT_FULL"))
       card.append(element("span", "Screenshot unavailable", "warning"));
     if (group.latest.warnings.length > 0)
       card.append(element("span", group.latest.warnings.join(", "), "warning"));
@@ -948,7 +1042,11 @@ function renderGroup(group: LibraryPageGroupMessage): void {
     const bundleIds = [...selected];
     if (bundleIds.length === 0) return;
     void applyManagement(
-      { type: "ExtractCaptures", expectedVaultId: expectedVaultId(), bundleIds },
+      {
+        type: "ExtractCaptures",
+        expectedVaultId: expectedVaultId(),
+        bundleIds,
+      },
       `Extracted ${String(bundleIds.length)} ${bundleIds.length === 1 ? "capture" : "captures"} to a new collection`,
     );
   });
@@ -1089,7 +1187,10 @@ async function showUnlock(): Promise<void> {
     const device = element("button", "Unlock on this device");
     device.addEventListener("click", () => {
       device.disabled = true;
-      void sendRequest<AppState>({ type: "UnlockDevice", expectedVaultId: expectedVaultId() }).then(
+      void sendRequest<AppState>({
+        type: "UnlockDevice",
+        expectedVaultId: expectedVaultId(),
+      }).then(
         () => loadList(),
         () => renderError("The Vault could not be unlocked."),
       );
@@ -1104,6 +1205,8 @@ async function showUnlock(): Promise<void> {
 
 async function loadDetail(bundleId: string): Promise<void> {
   releaseScreenshot();
+  const controller = new AbortController();
+  detailController = controller;
   app.setAttribute("aria-busy", "true");
   try {
     const [detail, activeGroups, deletedGroups] = await Promise.all([
@@ -1153,18 +1256,6 @@ async function loadDetail(bundleId: string): Promise<void> {
     captureCrumb.setAttribute("aria-current", "page");
     breadcrumb.append(captureCrumb);
     const actions = element("div", undefined, "actions");
-    const mhtmlBlob = new Blob([Uint8Array.from(base64ToBytes(detail.mhtmlBase64)).buffer], {
-      type: "multipart/related",
-    });
-    const mhtmlUrl = URL.createObjectURL(mhtmlBlob);
-    const download = element("a", "Download archived MHTML", "download");
-    download.href = mhtmlUrl;
-    download.download = `awsm-${detail.item.bundleId}.mhtml`;
-    download.addEventListener(
-      "click",
-      () => window.setTimeout(() => URL.revokeObjectURL(mhtmlUrl), 1_000),
-      { once: true },
-    );
     const stateAction = element(
       "button",
       detail.item.status === "Active" ? "Delete capture" : "Restore capture",
@@ -1183,7 +1274,7 @@ async function loadDetail(bundleId: string): Promise<void> {
         () => renderError("The capture state could not be changed safely."),
       );
     });
-    actions.append(originalSiteLink(detail.item), download);
+    actions.append(originalSiteLink(detail.item));
     if (detail.item.status === "Active") {
       const move = element("button", "Move to collection…");
       move.type = "button";
@@ -1218,19 +1309,172 @@ async function loadDetail(bundleId: string): Promise<void> {
     section.append(metadata);
     if (detail.item.warnings.length > 0)
       section.append(element("p", `Warnings: ${detail.item.warnings.join(", ")}`, "warning"));
-    if (detail.screenshotBase64 !== undefined) {
-      screenshotUrl = URL.createObjectURL(
-        new Blob([Uint8Array.from(base64ToBytes(detail.screenshotBase64)).buffer], {
-          type: "image/webp",
-        }),
+    const artifactPanel = element("section", undefined, "artifact-panel");
+    artifactPanel.setAttribute("aria-label", "Capture Artifacts");
+    artifactPanel.append(element("h3", "Artifacts"));
+    const inspection = element("section", undefined, "artifact-inspection");
+    inspection.hidden = true;
+    const bytesFromChunks = (chunks: readonly Uint8Array[]): Uint8Array => {
+      const output = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+      let offset = 0;
+      for (const chunk of chunks) {
+        output.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return output;
+    };
+    for (const artifact of detail.artifacts) {
+      const row = element("article", undefined, "artifact-row");
+      const summary = element("div", undefined, "artifact-row__summary");
+      summary.append(
+        element("strong", artifact.role.replaceAll("_", " ")),
+        element("span", artifact.mimeType, "muted"),
+        element(
+          "span",
+          artifact.byteLength === undefined
+            ? artifact.state
+            : `${artifact.state} · ${formatByteSize(artifact.byteLength)}`,
+          artifact.state === "Failed" ? "warning" : "muted",
+        ),
       );
-      const image = element("img");
-      image.src = screenshotUrl;
-      image.alt = `Full-page screenshot of ${detail.item.title}`;
-      section.append(image);
-    } else {
-      section.append(
-        element("p", "No screenshot was available; the mandatory MHTML is preserved.", "warning"),
+      if (artifact.acquiredAt !== undefined)
+        summary.append(
+          element("span", `Acquired ${new Date(artifact.acquiredAt).toLocaleString()}`, "muted"),
+        );
+      if (artifact.warning !== undefined)
+        summary.append(element("span", artifact.warning, "warning"));
+      const rowActions = element("div", undefined, "artifact-row__actions");
+      if (artifact.canInspect) {
+        const inspect = element("button", "Inspect");
+        inspect.type = "button";
+        inspect.addEventListener("click", () => {
+          inspect.disabled = true;
+          inspection.hidden = false;
+          inspection.replaceChildren(element("p", "Loading Artifact…", "muted"));
+          const chunks: Uint8Array[] = [];
+          void consumeArtifact(bundleId, artifact.role, controller.signal, (chunk) => {
+            chunks.push(Uint8Array.from(chunk));
+          }).then(
+            () => {
+              const bytes = bytesFromChunks(chunks);
+              inspection.replaceChildren(element("h3", artifact.role.replaceAll("_", " ")));
+              if (artifact.role === "TEXT_EXTRACTED") {
+                inspection.append(element("pre", new TextDecoder().decode(bytes)));
+              } else {
+                const appendTextAndLinks = (
+                  container: HTMLElement,
+                  text: string,
+                  links: readonly {
+                    readonly href: string;
+                    readonly text: string;
+                  }[],
+                ): void => {
+                  container.append(document.createTextNode(text));
+                  if (links.length === 0) return;
+                  const linkList = element("span", undefined, "artifact-inspection__links");
+                  linkList.append(document.createTextNode(" Links: "));
+                  links.forEach((link, index) => {
+                    const anchor = element("a", link.text || link.href);
+                    anchor.href = link.href;
+                    anchor.target = "_blank";
+                    anchor.rel = "noopener noreferrer";
+                    if (index > 0) linkList.append(document.createTextNode(", "));
+                    linkList.append(anchor);
+                  });
+                  container.append(linkList);
+                };
+                for (const block of decodeStructuredContentSequence(bytes)) {
+                  if (block.kind === "Heading") {
+                    const headingTags = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
+                    const heading = element(headingTags[block.level - 1] ?? "h6", block.text);
+                    appendTextAndLinks(heading, "", block.links);
+                    inspection.append(heading);
+                  } else if (block.kind === "Preformatted")
+                    inspection.append(element("pre", block.text));
+                  else if (block.kind === "Table") {
+                    const table = element("table");
+                    for (const cells of block.rows) {
+                      const tr = element("tr");
+                      for (const cell of cells) tr.append(element("td", cell));
+                      table.append(tr);
+                    }
+                    inspection.append(table);
+                  } else if (block.kind === "Quote") {
+                    const quote = element("blockquote");
+                    appendTextAndLinks(quote, block.text, block.links);
+                    inspection.append(quote);
+                  } else if (block.kind === "ListItem") {
+                    const list = element(block.ordered ? "ol" : "ul");
+                    list.style.marginInlineStart = `${String(Math.min(block.depth, 8) * 1.25)}rem`;
+                    const item = element("li");
+                    appendTextAndLinks(item, block.text, block.links);
+                    list.append(item);
+                    inspection.append(list);
+                  } else {
+                    const paragraph = element("p");
+                    appendTextAndLinks(paragraph, block.text, block.links);
+                    inspection.append(paragraph);
+                  }
+                }
+              }
+              inspect.disabled = false;
+            },
+            () => {
+              inspection.replaceChildren(
+                element("p", "The Artifact could not be inspected.", "notice error"),
+              );
+              inspect.disabled = false;
+            },
+          );
+        });
+        rowActions.append(inspect);
+      }
+      if (artifact.canDownload) {
+        const download = element("button", "Download");
+        download.type = "button";
+        download.addEventListener("click", () => {
+          download.disabled = true;
+          void downloadArtifact(bundleId, artifact.role, controller.signal).then(
+            () => {
+              download.disabled = false;
+            },
+            () => {
+              download.disabled = false;
+              announcer.textContent = "The Artifact could not be saved.";
+            },
+          );
+        });
+        rowActions.append(download);
+      }
+      row.append(summary, rowActions);
+      artifactPanel.append(row);
+    }
+    section.append(artifactPanel, inspection);
+    const screenshot = detail.artifacts.find(
+      (artifact) => artifact.role === "SCREENSHOT_FULL" && artifact.state === "Present",
+    );
+    if (screenshot !== undefined) {
+      const preview = element("section", undefined, "artifact-preview");
+      preview.setAttribute("aria-label", "Full screenshot preview");
+      preview.append(element("p", "Loading screenshot…", "muted"));
+      section.append(preview);
+      const chunks: Uint8Array[] = [];
+      void consumeArtifact(bundleId, "SCREENSHOT_FULL", controller.signal, (chunk) => {
+        chunks.push(Uint8Array.from(chunk));
+      }).then(
+        () => {
+          if (controller.signal.aborted) return;
+          screenshotUrl = URL.createObjectURL(
+            new Blob([Uint8Array.from(bytesFromChunks(chunks)).buffer], {
+              type: "image/webp",
+            }),
+          );
+          const image = element("img");
+          image.src = screenshotUrl;
+          image.alt = `Full-page screenshot of ${detail.item.title}`;
+          preview.replaceChildren(image);
+        },
+        () => preview.replaceChildren(element("p", "Screenshot preview unavailable.", "warning")),
       );
     }
     app.replaceChildren(section);

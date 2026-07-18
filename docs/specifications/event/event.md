@@ -101,7 +101,7 @@ The Payload contains the Event-specific data.
 
 The payload SHALL be interpreted according to Event Type.
 
-Unknown payload fields MUST be preserved.
+Canonical pre-release Event decoders SHALL reject unknown payload fields.
 
 ---
 
@@ -196,6 +196,17 @@ Future versions MAY introduce additional Event Types.
 
 Vault names are private plaintext and MUST be encrypted before persistence outside trusted Runtime memory or synchronization.
 
+## 11.3 BundleRegistered
+
+`BundleRegistered` version 1 SHALL contain the Bundle ID, Collection ID, Bundle Descriptor Object
+ID, the sorted unique Artifact Object IDs, Capture timestamp, original URL, and typed Capture
+warnings. Its referenced Object IDs SHALL equal exactly the descriptor Object ID plus every Artifact
+Object ID in the descriptor. The descriptor's Bundle ID and metadata SHALL match the Event.
+
+Warnings SHALL exactly explain absent best-effort Roles or the successful screenshot truncation
+condition. Mandatory `PRIMARY` has no absence warning because its failure prevents registration.
+Replay SHALL reject closure, metadata, Role, or warning mismatches.
+
 ---
 
 # 12. Event Semantics
@@ -289,7 +300,7 @@ References SHALL use stable identifiers.
 
 Events SHOULD remain small.
 
-Large binary content MUST reside in Bundles.
+Large binary content MUST reside in Artifact Objects.
 
 Events reference Bundles rather than embedding them.
 

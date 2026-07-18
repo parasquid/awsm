@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  decodeBundleManifest,
   decodeCaptureJob,
   decodeCapturePageCommand,
   decodeEncryptedEnvelope,
@@ -15,7 +14,6 @@ import {
 } from "../../src/drivers/indexeddb/decode";
 
 const IDS = {
-  artifact: "A000001",
   bundle: "00000000-0000-4000-8000-000000000003",
   command: "00000000-0000-4000-8000-000000000001",
   device: "00000000-0000-4000-8000-000000000002",
@@ -33,34 +31,6 @@ function validCommand(): Record<string, unknown> {
     observedUrl: "https://example.test/article",
     captureProfileId: "ChromeWebPage-v1",
     idempotencyKey: IDS.command,
-  };
-}
-
-function validManifest(): Record<string, unknown> {
-  return {
-    manifestVersion: 1,
-    bundleVersion: 1,
-    artifactSchemaVersion: 1,
-    bundleId: IDS.bundle,
-    createdAt: "2026-07-16T17:00:00.000Z",
-    clientVersion: "0.1.0",
-    captureProfileId: "ChromeWebPage-v1",
-    captureAdapterVersion: 1,
-    bundleSerialization: "bundle:zip:v1",
-    manifestSerialization: "cbor:canonical:v1",
-    artifacts: [
-      {
-        artifactId: IDS.artifact,
-        artifactVersion: 1,
-        kind: "CAPTURE",
-        role: "PRIMARY",
-        mimeType: "multipart/related",
-        byteLength: 4,
-        checksumAlgorithm: "hash:sha256:v1",
-        checksum: new Uint8Array(32),
-        path: "artifacts/primary.mhtml",
-      },
-    ],
   };
 }
 
@@ -111,38 +81,11 @@ describe("domain boundary decoders", () => {
     );
   });
 
-  it("rejects duplicate Artifact identifiers", () => {
-    const manifest = validManifest();
-    manifest.artifacts = [
-      ...(manifest.artifacts as readonly unknown[]),
-      {
-        ...(manifest.artifacts as readonly Record<string, unknown>[])[0],
-        role: "SCREENSHOT_FULL",
-        path: "artifacts/screenshot-full.webp",
-      },
-    ];
-
-    expect(() => decodeBundleManifest(manifest)).toThrow(DomainValidationError);
-  });
-
-  it("rejects fields outside the canonical Manifest", () => {
-    expect(() =>
-      decodeBundleManifest({
-        ...validManifest(),
-        unsupportedField: { enabled: true },
-      }),
-    ).toThrow(DomainValidationError);
-  });
-
-  it("accepts the canonical Bundle-local Artifact identifier", () => {
-    expect(decodeBundleManifest(validManifest()).artifacts[0]?.artifactId).toBe("A000001");
-  });
-
   it("rejects an unsupported encrypted-envelope version", () => {
     expect(() =>
       decodeEncryptedEnvelope({
         formatVersion: 99,
-        objectType: "Bundle",
+        objectType: "BundleDescriptor",
         algorithm: "enc:xchacha20poly1305:v1",
         objectId: IDS.object,
         payloadLength: 3,
@@ -157,12 +100,12 @@ describe("domain boundary decoders", () => {
       decodeLibraryItem({
         version: 1,
         bundleId: IDS.bundle,
-        bundleObjectId: IDS.object,
+        descriptorObjectId: IDS.object,
         assignedCollectionId: IDS.command,
         title: "Example",
         originalUrl: "https://example.test/",
         capturedAt: "2026-07-16T17:00:00.000Z",
-        screenshotPresent: false,
+        artifactRoles: ["PRIMARY"],
         status: "Active",
         warnings: [],
       }).title,

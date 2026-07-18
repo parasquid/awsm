@@ -189,7 +189,7 @@ Register Bundle
 
 ↓
 
-Encrypt Bundle
+Encrypt Bundle Descriptor and Artifact wrappers
 
 ↓
 

@@ -1,12 +1,23 @@
 import { encodeEncryptedEnvelope, encryptEnvelope } from "../../crypto/envelope";
 import { deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
 import { wipe } from "../../crypto/sodium";
-import { buildBundle, type CaptureMetadataV1, readBundle } from "../../domain/bundle";
+import {
+  type ArtifactReferenceV1,
+  type BundleDescriptorV1,
+  type CaptureMetadataV1,
+  decodeBundleDescriptor,
+  encodeBundleDescriptor,
+} from "../../domain/artifact-graph";
 import { encodeCanonicalCbor } from "../../domain/cbor";
 import type { CaptureWarningId } from "../../domain/contracts";
-import { sha256 } from "../../domain/hash";
-import type { AtomicRegistrationV1 } from "../../drivers/indexeddb";
+import type { AtomicRegistrationV1, StoredArtifactObjectV1 } from "../../drivers/indexeddb";
 import { reduceLibraryProjection } from "../library/projection";
+import { decodeBundleRegisteredPayload, validateArtifactWarnings } from "./contracts";
+
+export interface PreparedCaptureArtifact {
+  readonly object: StoredArtifactObjectV1;
+  readonly reference: ArtifactReferenceV1;
+}
 
 export interface PrepareCaptureRegistrationInput {
   readonly rootKey: CryptoKey;
@@ -14,13 +25,12 @@ export interface PrepareCaptureRegistrationInput {
   readonly deviceId: string;
   readonly commandId: string;
   readonly bundleId: string;
-  readonly bundleObjectId: string;
+  readonly descriptorObjectId: string;
   readonly eventId: string;
   readonly collectionId: string;
   readonly capturedAt: string;
   readonly metadata: CaptureMetadataV1;
-  readonly mhtml: Uint8Array;
-  readonly screenshot?: Uint8Array;
+  readonly artifacts: readonly PreparedCaptureArtifact[];
   readonly thumbnailWebp?: Uint8Array;
   readonly warnings: readonly CaptureWarningId[];
   readonly clientVersion: string;
@@ -28,9 +38,9 @@ export interface PrepareCaptureRegistrationInput {
 
 async function encryptedBytes(
   input: PrepareCaptureRegistrationInput,
-  domain: "vault:bundle:v1" | "vault:event:v1" | "vault:projection:v1",
+  domain: "vault:bundle-descriptor:v1" | "vault:event:v1" | "vault:projection:v1",
   contextId: string,
-  objectType: "Bundle" | "Event" | "Projection",
+  objectType: "BundleDescriptor" | "Event" | "Projection",
   objectId: string,
   plaintext: Uint8Array,
 ): Promise<Uint8Array> {
@@ -50,67 +60,88 @@ async function encryptedBytes(
 export async function prepareCaptureRegistration(
   input: PrepareCaptureRegistrationInput,
 ): Promise<AtomicRegistrationV1> {
-  const built = await buildBundle({
+  const artifacts = [...input.artifacts].toSorted((left, right) =>
+    left.object.objectId.localeCompare(right.object.objectId),
+  );
+  if (
+    artifacts.length === 0 ||
+    artifacts.some((artifact) => artifact.object.objectId !== artifact.reference.artifactObjectId)
+  )
+    throw new Error("Every prepared Artifact must match its descriptor reference.");
+
+  const descriptor: BundleDescriptorV1 = {
+    descriptorVersion: 1,
     bundleId: input.bundleId,
     createdAt: input.capturedAt,
     clientVersion: input.clientVersion,
-    metadata: input.metadata,
-    mhtml: input.mhtml,
-    ...(input.screenshot === undefined ? {} : { screenshot: input.screenshot }),
-  });
-  await readBundle(built.bytes);
-
-  const integrityChecksum = await sha256(built.bytes);
-  const eventPlaintext = encodeCanonicalCbor({
-    version: 1,
-    eventType: "BundleRegistered",
-    eventVersion: 1,
-    payloadVersion: 1,
-    vaultId: input.vaultId,
-    deviceId: input.deviceId,
-    timestamp: input.capturedAt,
-    protocolVersion: 1,
-    correlationId: input.commandId,
-    bundleId: input.bundleId,
-    bundleObjectId: input.bundleObjectId,
-    collectionId: input.collectionId,
-    screenshotPresent: input.screenshot !== undefined,
     captureProfileId: "ChromeWebPage-v1",
-    captureMetadata: input.metadata,
-    warnings: input.warnings,
-    integrity: {
-      algorithm: "hash:sha256:v1",
-      checksum: integrityChecksum,
-      byteLength: built.bytes.byteLength,
+    captureAdapterVersion: 1,
+    metadata: input.metadata,
+    artifacts: artifacts.map((artifact) => artifact.reference),
+  };
+  const descriptorPlaintext = encodeBundleDescriptor(descriptor);
+  decodeBundleDescriptor(descriptorPlaintext);
+
+  const artifactObjectIds = artifacts.map((artifact) => artifact.object.objectId);
+  validateArtifactWarnings(
+    artifacts.map((artifact) => artifact.reference.role),
+    input.warnings,
+  );
+  const referencedObjectIds = [input.descriptorObjectId, ...artifactObjectIds].toSorted();
+  const payload = decodeBundleRegisteredPayload(
+    {
+      version: 1,
+      eventType: "BundleRegistered",
+      eventVersion: 1,
+      payloadVersion: 1,
+      vaultId: input.vaultId,
+      deviceId: input.deviceId,
+      timestamp: input.capturedAt,
+      protocolVersion: 1,
+      correlationId: input.commandId,
+      bundleId: input.bundleId,
+      descriptorObjectId: input.descriptorObjectId,
+      artifactObjectIds,
+      collectionId: input.collectionId,
+      captureProfileId: "ChromeWebPage-v1",
+      warnings: [...input.warnings].toSorted(),
     },
-  });
+    referencedObjectIds,
+  );
   const projection = reduceLibraryProjection([
     {
       eventId: input.eventId,
       eventType: "BundleRegistered",
       bundleId: input.bundleId,
-      bundleObjectId: input.bundleObjectId,
+      descriptorObjectId: input.descriptorObjectId,
       collectionId: input.collectionId,
       title: input.metadata.title,
       originalUrl: input.metadata.originalUrl,
       capturedAt: input.capturedAt,
-      screenshotPresent: input.screenshot !== undefined,
+      artifactRoles: artifacts.map((artifact) => artifact.reference.role).toSorted(),
       ...(input.thumbnailWebp === undefined ? {} : { thumbnailWebp: input.thumbnailWebp }),
-      warnings: input.warnings,
+      warnings: payload.warnings,
     },
   ])[0];
   if (projection === undefined) throw new Error("BundleRegistered did not produce a Projection.");
 
-  const [bundleEnvelopeBytes, eventEnvelopeBytes, projectionEnvelopeBytes] = await Promise.all([
+  const [descriptorEnvelopeBytes, eventEnvelopeBytes, projectionEnvelopeBytes] = await Promise.all([
     encryptedBytes(
       input,
-      "vault:bundle:v1",
+      "vault:bundle-descriptor:v1",
       input.bundleId,
-      "Bundle",
-      input.bundleObjectId,
-      built.bytes,
+      "BundleDescriptor",
+      input.descriptorObjectId,
+      descriptorPlaintext,
     ),
-    encryptedBytes(input, "vault:event:v1", input.eventId, "Event", input.eventId, eventPlaintext),
+    encryptedBytes(
+      input,
+      "vault:event:v1",
+      input.eventId,
+      "Event",
+      input.eventId,
+      encodeCanonicalCbor(payload),
+    ),
     encryptedBytes(
       input,
       "vault:projection:v1",
@@ -122,17 +153,25 @@ export async function prepareCaptureRegistration(
   ]);
 
   return {
-    object: {
-      version: 1,
-      objectId: input.bundleObjectId,
-      objectType: "Bundle",
-      envelopeBytes: bundleEnvelopeBytes,
+    objects: [
+      {
+        version: 1,
+        objectId: input.descriptorObjectId,
+        objectType: "BundleDescriptor",
+        envelopeBytes: descriptorEnvelopeBytes,
+      },
+      ...artifacts.map((artifact) => artifact.object),
+    ],
+    graph: {
+      bundleId: input.bundleId,
+      descriptorObjectId: input.descriptorObjectId,
+      artifactObjectIds,
     },
     event: {
       version: 1,
       vaultId: input.vaultId,
       eventId: input.eventId,
-      referencedObjectIds: [input.bundleObjectId],
+      referencedObjectIds,
       orderingTimestamp: input.capturedAt,
       envelopeBytes: eventEnvelopeBytes,
     },
@@ -146,7 +185,7 @@ export async function prepareCaptureRegistration(
       commandId: input.commandId,
       status: "Succeeded",
       bundleId: input.bundleId,
-      bundleObjectId: input.bundleObjectId,
+      descriptorObjectId: input.descriptorObjectId,
       eventId: input.eventId,
     },
   };
