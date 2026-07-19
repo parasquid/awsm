@@ -1,0 +1,47 @@
+name: awsm-development
+
+services:
+  coordination-server:
+    build:
+      context: ./apps/coordination-server
+      dockerfile: Dockerfile.development
+    command:
+      - bash
+      - -c
+      - rm -f tmp/pids/server.pid && bin/rails db:prepare && exec bin/rails server --binding 0.0.0.0 --port 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/coordination_server_development
+      RAILS_ENV: development
+    init: true
+    ports:
+      - "127.0.0.1:3000:3000"
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./apps/coordination-server:/rails
+      - coordination-server-tmp:/rails/tmp
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: coordination_server_development
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U postgres -d coordination_server_development",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  coordination-server-tmp:
+  postgres-data:
