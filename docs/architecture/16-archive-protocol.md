@@ -1,4 +1,4 @@
-# Archive Protocol
+# Archive Protocol Adapter
 
 **Document:** `architecture/16-archive-protocol.md`
 
@@ -6,400 +6,48 @@
 
 **Owner:** Engineering
 
-**Primary Transport:** HTTPS + JSON (MVP)
-
 **Depends On:**
 
 - architecture/08-synchronization.md
-- architecture/14-trust-and-device-management.md
 - architecture/15-coordination-server.md
+- specifications/protocol/protocol.md
+- specifications/protocol/http-api.openapi.yaml
 
 ---
 
 # Purpose
 
-This document defines the Archive Protocol.
+The Archive Protocol separates transport-independent synchronization semantics from the canonical
+HTTPS and Action Cable adapters.
 
-The Archive Protocol specifies the communication contract between Client Runtimes and the Coordination Server.
+# Control Plane
 
-The protocol is transport-independent.
+The strict JSON control API is mounted at unversioned `/api` routes and requires protocol header
+value `1`, a lowercase UUID request ID, Account bearer authentication, and an idempotency UUID for
+mutations. OpenAPI owns shapes and statuses. Unknown fields and undocumented routes fail; there is no
+session handshake, negotiation, generic message bus, or compatibility path.
 
-The MVP uses HTTPS with JSON serialization.
+# Opaque Data Plane
 
----
+Short-lived scoped tickets authorize upload parts and full/ranged downloads. Bodies are opaque
+`application/octet-stream`. The Service validates ticket digest, scope, expiry, part/range bounds,
+length, and ciphertext SHA-256 without interpreting bytes. PostgreSQL stores no payload bytes.
 
-# Design Goals
+# Publication and Discovery
 
-The protocol must provide:
+One Event closure commit is the publication unit. Full active enumeration bootstraps a Replica;
+snapshot-bounded changes use a Delivery Cursor that is independent of Event replay order. Action
+Cable publishes an advisory cursor hint only. Polling is the correctness path.
 
-- transport independence
-- resumable synchronization
-- idempotent operations
-- zero-knowledge coordination
-- one canonical protocol
-- extensibility
+# Generation and Recovery
 
----
+Successor Generation activation is a compare-and-swap over predecessor ID, predecessor number, and
+observed head cursor. Complete retained membership is submitted in sealed pages for safe remote
+retention. Superseded membership is available only through explicit recovery until a durable Purge
+Job revokes it and safely deletes newly unreferenced bytes.
 
-# Philosophy
+# Deferred Adapters
 
-The protocol exposes primitives.
-
-It does not expose application workflows.
-
-The Client Runtime owns workflow orchestration.
-
----
-
-# Layers
-
-```
-Client Runtime
-
-↓
-
-Archive Protocol
-
-↓
-
-Transport
-
-↓
-
-Coordination Server
-```
-
----
-
-# Transports
-
-Supported transports may include:
-
-- HTTPS/JSON (MVP)
-- gRPC
-- WebSocket
-- Local IPC
-- Test Transport
-
-All transports implement the same protocol semantics.
-
----
-
-# Protocol Operations
-
-The protocol consists of primitive operations.
-
-Examples:
-
-Authenticate
-
-FetchEvents
-
-CommitEvent
-
-UploadBlock
-
-DownloadBlock
-
-QueryBlockExistence
-
-EnrollDevice
-
-FetchWrappedKeys
-
-RotateVaultKey
-
-SubscribeNotifications
-
-No operation exposes mutable archive state.
-
----
-
-# Operation Properties
-
-Every operation should be:
-
-- authenticated
-- authorized
-- idempotent where possible
-- versioned
-- independently testable
-
----
-
-# Authentication
-
-Authentication establishes user identity.
-
-The protocol does not mandate an authentication mechanism.
-
-Possible implementations include:
-
-- OAuth 2.1
-- OpenID Connect
-- Passkeys
-- Session tokens
-
-Authentication is separate from Vault trust.
-
----
-
-# Authorization
-
-Authorization determines whether the authenticated device may perform an operation.
-
-Examples:
-
-- access tenant
-- fetch Event Log
-- upload Blocks
-- retrieve wrapped keys
-
-Vault decryption remains a client concern.
-
----
-
-# Protocol Contract
-
-Every request conforms to the one protocol contract, including its required:
-
-Client Version
-
-Capability Set
-
-The server rejects requests outside the canonical contract.
-
----
-
-# Idempotency
-
-The following operations should be idempotent:
-
-UploadBlock
-
-CommitEvent
-
-EnrollDevice (where applicable)
-
-Duplicate requests should produce identical observable results.
-
----
-
-# Error Model
-
-Errors should be structured.
-
-Examples:
-
-AuthenticationFailed
-
-AuthorizationDenied
-
-ProtocolVersionUnsupported
-
-MissingBlock
-
-QuotaExceeded
-
-InvalidSignature
-
-InvalidEvent
-
-UnknownOperation
-
-Clients should classify errors as:
-
-Retryable
-
-Non-retryable
-
----
-
-# Synchronization
-
-Synchronization consists of protocol operations.
-
-Example:
-
-```
-FetchEvents
-
-↓
-
-Determine Missing Blocks
-
-↓
-
-Download Blocks
-
-↓
-
-Replay Events
-```
-
-The server never executes synchronization workflows.
-
----
-
-# Notifications
-
-Notifications are advisory.
-
-Examples:
-
-New Events
-
-Vault Updated
-
-Device Revoked
-
-Notifications should contain no decrypted content.
-
----
-
-# Block Transfer
-
-Blocks are opaque binary objects.
-
-The protocol treats Blocks as immutable.
-
-Block contents are never interpreted by the server.
-
----
-
-# Event Transfer
-
-Events contain encrypted payloads.
-
-The server stores and forwards Events.
-
-The server does not inspect payload semantics.
-
----
-
-# Device Enrollment
-
-Enrollment consists of protocol operations.
-
-Example:
-
-Generate Device Keys
-
-↓
-
-Authenticate
-
-↓
-
-Upload Public Key
-
-↓
-
-Receive Wrapped Vault Root Key
-
-↓
-
-Begin Synchronization
-
----
-
-# Capability Discovery
-
-Clients may query supported capabilities.
-
-Examples:
-
-Protocol Version
-
-Maximum Block Size
-
-Notification Support
-
-Compression Algorithms
-
-Supported Authentication Methods
-
----
-
-# Streaming
-
-Future protocol versions may support streaming.
-
-Examples:
-
-Streaming Block Upload
-
-Streaming Event Download
-
-Live Notifications
-
-Streaming should not alter protocol semantics.
-
----
-
-# Extensibility
-
-Unknown protocol operations should be rejected gracefully.
-
-Unknown fields and operations are rejected unless the canonical specification explicitly defines them.
-
----
-
-# Security
-
-All protocol traffic must use authenticated encrypted transport.
-
-Protocol messages should avoid revealing archive semantics.
-
-Sensitive information should remain encrypted end-to-end where practical.
-
----
-
-# Design Decisions
-
-## Why Protocol Instead of REST?
-
-A protocol outlives transport choices and allows multiple implementations.
-
----
-
-## Why Primitive Operations?
-
-Primitive operations compose into workflows while keeping the server simple.
-
----
-
-## Why Client-Orchestrated Workflows?
-
-The Client Runtime owns state and synchronization logic.
-
-The server provides durable coordination only.
-
----
-
-## Why One Protocol Contract?
-
-Before the first release, one contract prevents discarded development formats from becoming product behavior.
-
----
-
-# Future Extensions
-
-Possible protocol additions include:
-
-- batch operations
-- delta synchronization
-- peer-to-peer relay
-- transport compression negotiation
-- server push
-- multiplexed streams
-
-These extensions should preserve the core protocol model.
-
----
-
-# References
-
-- `docs/architecture/17-extension-framework.md`
-- `docs/architecture/18-cryptography.md`
-- `docs/architecture/20-deployment-and-operations.md`
+Production Account/Device authorization, key-wrapper resources, rate limits, quotas, shared byte
+storage, alternate transports, and compression are not defined by the implemented proof. Adding any
+of them requires an explicit contract decision; it MUST NOT introduce a parallel pre-release path.

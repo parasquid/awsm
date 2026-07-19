@@ -102,6 +102,15 @@ The following invariants are fundamental.
 - Plaintext never leaves the trusted runtime.
 - The Coordination Server never requires plaintext to operate.
 - Search indexes never synchronize.
+- OpenAPI request and response validation rejects unknown fields and undocumented resources.
+- Independent clients converge through real HTTP, PostgreSQL, immutable byte storage, and Action
+  Cable; a lost-notification variant converges through polling alone.
+- Delivery Cursor order is tested independently from canonical Event replay order, including late
+  offline Events.
+- Generation tests cover paged reachability, dependency closure, predecessor/head races, explicit
+  recovery, and stale-write rejection.
+- Purge fault tests prove restart safety, ticket revocation, active/shared-byte retention, permanent
+  tombstones, and verified absence before success.
 
 ---
 

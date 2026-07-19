@@ -152,14 +152,14 @@ The Block Store does not understand Bundles.
 
 ---
 
-# Bundle Store
+# Local Physical Chunking
 
-The Bundle Store maps Bundles to Blocks.
+A Storage Driver MAY internally map an encrypted Object byte sequence to physical Blocks.
 
 Example:
 
 ```text
-Bundle A
+Encrypted Object A
 
 ↓
 
@@ -170,7 +170,8 @@ Block 2
 Block 3
 ```
 
-The Bundle Store maintains ordering information required for reconstruction.
+The Driver maintains ordering information required for reconstruction. This mapping is local,
+non-authoritative, and absent from the Coordination Server contract.
 
 It never stores plaintext.
 
@@ -229,56 +230,49 @@ Server
 Remote Object Store
 ```
 
-Synchronization may copy Objects or derived Blocks between the two according to protocol capabilities.
+Synchronization copies canonical opaque Object records and bytes. It does not expose or negotiate a
+Driver's derived Blocks.
 
 ---
 
 # Upload Process
 
 ```text
-Bundle
+Object
 
 ↓
 
-Encrypted Bundle
+Encrypted Object bytes
 
 ↓
 
-Blocks
+Resumable opaque parts
 
 ↓
 
-Determine Missing Blocks
-
-↓
-
-Upload Missing Blocks
-
-↓
-
-Commit Bundle
+Finalize durable Object, then publish an Event closure or Vault Generation
 ```
 
-The commit step occurs only after all Blocks are durable.
+Publication occurs only after the complete declared closure is durable.
 
 ---
 
 # Download Process
 
 ```text
-Bundle Requested
+Object requested
 
 ↓
 
-Retrieve Block List
+Authorize an active or recovery-scoped ticket
 
 ↓
 
-Download Blocks
+Download full or ranged Object bytes
 
 ↓
 
-Reassemble
+Verify exact ciphertext length and SHA-256
 
 ↓
 
@@ -293,7 +287,8 @@ Deserialize
 
 # Integrity
 
-Every Block includes a checksum.
+Every synchronized Object binds exact ciphertext length and SHA-256. A local Driver that derives
+Blocks also binds checksums for those non-authoritative physical units.
 
 Verification occurs:
 

@@ -1,0 +1,64 @@
+name: awsm-sync-proof
+
+services:
+  postgres-proof:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: coordination_server_proof
+      POSTGRES_PASSWORD: proof-only
+      POSTGRES_USER: proof
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proof -d coordination_server_proof"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-proof-data:/var/lib/postgresql/data
+
+  coordination-proof:
+    build:
+      context: .
+      dockerfile: apps/coordination-server/Dockerfile.proof
+    command:
+      - bash
+      - -c
+      - >-
+        bin/rails db:prepare &&
+        bin/rails runner 'Account.find_or_create_by!(id: ENV.fetch("AWSM_PROOF_ACCOUNT_ID"))' &&
+        exec bin/rails server --binding 0.0.0.0 --port 3000
+    depends_on:
+      postgres-proof:
+        condition: service_healthy
+    environment:
+      AWSM_CABLE_ADAPTER: async
+      AWSM_JOB_QUEUE_ADAPTER: async
+      AWSM_OPENAPI_PATH: /docs/specifications/protocol/http-api.openapi.yaml
+      AWSM_OPAQUE_STORAGE_PATH: /opaque-storage
+      AWSM_PROOF_ACCOUNT_ID: 01900000-0000-7000-8000-000000000001
+      AWSM_PROOF_ACCOUNT_TOKEN: awsm-compose-proof-only-token-not-a-production-secret
+      AWSM_SYNC_PROOF: "true"
+      RAILS_ENV: test
+      TEST_DATABASE_URL: postgresql://proof:proof-only@postgres-proof:5432/coordination_server_proof
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:3000/ready"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - opaque-proof-data:/opaque-storage
+
+  replica-proof:
+    image: node:24-bookworm-slim
+    command: ["node", "/proof/sync-proof.mjs"]
+    depends_on:
+      coordination-proof:
+        condition: service_healthy
+    environment:
+      AWSM_PROOF_BASE_URL: http://coordination-proof:3000
+      AWSM_PROOF_CREDENTIAL: awsm-compose-proof-only-token-not-a-production-secret
+    volumes:
+      - ./apps/coordination-server/script:/proof:ro
+
+volumes:
+  postgres-proof-data:
+  opaque-proof-data:

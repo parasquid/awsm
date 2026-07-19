@@ -32,6 +32,34 @@ Implementation-specific terminology SHALL NOT replace architectural terminology.
 
 # 3. Primary Concepts
 
+## Account
+
+The authenticated principal that owns one or more Vault replica records at a Coordination Server.
+
+In the current proof boundary, an Account owns Vaults directly. Memberships, shared Vault authority,
+Organizations, and Device authorization remain future concepts and MUST NOT be inferred from Account
+authentication alone.
+
+## Replica
+
+One synchronized copy of opaque Vault records. A client Replica retains trusted local state; the
+Coordination Server maintains an untrusted operational Vault replica record scoped to an Account.
+
+## Delivery Cursor
+
+A per-Vault, monotonically increasing Coordination Server sequence used only to discover accepted
+changes. Delivery Cursor order does not define canonical Event replay order.
+
+## Recovery Snapshot
+
+The exact membership of a superseded Vault Generation retained temporarily for explicit encrypted
+recovery access.
+
+## Purge Job
+
+A durable, non-cancellable operational workflow that removes selected superseded Generation
+memberships and deletes only opaque bytes no remaining Generation references.
+
 ## Workspace
 
 A management context that enumerates one or more independent Vaults.

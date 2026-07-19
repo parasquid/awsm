@@ -35,6 +35,12 @@ All critical functionality—including capture, search, AI processing, projectio
 
 The cloud exists to synchronize data, not to enable the application.
 
+The repository now includes a pre-release Coordination Server proof: a strict Account-scoped opaque
+HTTP/Cable adapter backed by PostgreSQL and immutable Disk bytes, with Generation fencing, explicit
+recovery, and verified purge. It proves the untrusted server boundary and two-replica transport; it
+is not released production synchronization. Production authentication, Device trust, shared
+storage, quotas, and trusted client integration remain future work.
+
 ---
 
 ## Zero Knowledge

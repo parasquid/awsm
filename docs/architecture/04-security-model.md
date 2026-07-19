@@ -84,22 +84,23 @@ The account is **not** the cryptographic owner of archived content.
 Instead:
 
 ```text
-User
-
-↓
-
-Membership
+Account
 
 ↓
 
 Vault
 ```
 
-This distinction allows future support for:
+This direct ownership is the current Coordination Server proof boundary. A future separately
+approved authorization model may add:
 
 - shared vaults
 - organization vaults
 - delegated access
+
+Account authentication in the proof does not establish Device trust or cryptographic Vault access.
+The fixed proof credential is accepted only in the Rails test environment when explicitly enabled;
+development and production fail closed without a real authenticator.
 
 ---
 

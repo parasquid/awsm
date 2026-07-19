@@ -24,14 +24,36 @@ numbered plan and reconciliation with the owning specifications.
 [Bundle and Artifact contracts](docs/specifications/bundle/bundle.md), and
 [Vault Package interchange](docs/specifications/portability/import-export.md)
 
+### Candidate Boundaries
+
+Every capability in this initiative is optional future work. A separately approved narrow
+Coordination Server proof would not approve, schedule, or require the broader product surface.
+Each deferred area requires its own explicit promotion before it may become an implementation plan:
+
+- **Candidate — Account and recovery:** production login, Account-key enrollment, recovery
+  cryptography, password change, and recovery user experience;
+- **Candidate — Device trust:** cryptographic Device identity, signed requests, enrollment,
+  revocation, key distribution, and Device management;
+- **Candidate — Production operations:** quotas, abuse controls, shared object-storage adapters,
+  billing, and production deployment hardening;
+- **Candidate — Client synchronization:** extension integration, retention controls, background
+  synchronization, and selective local Replica behavior; and
+- **Candidate — Web product surface:** a web Library, recovery and management interfaces, Search,
+  organization, Export and Import workflows, collaboration, and other product UI.
+
+Listing a Candidate records an avenue worth evaluating. It does not assert that the capability will
+be implemented, establish delivery order, or reserve it for a release.
+
 ### Future Product Delta
 
-Explore an independent trusted web client and untrusted Coordination Server that add:
+Build on the implemented untrusted Coordination Server proof with an independent trusted web client
+and production security boundary that add:
 
 - Accounts and authenticated sessions without granting content-decryption authority;
 - client-only Account key enrollment, recovery, password change, and device-slot ceremonies;
-- synchronization of opaque authoritative Objects, Events, key wrappers, and Vault Generation
-  fences;
+- trusted-client synchronization of opaque authoritative Objects, Events, future key wrappers, and
+  the implemented Vault Generation fences;
+- zero-knowledge Account storage quotas and usage visibility over opaque bytes;
 - Full and Selective local Replica retention profiles with explicit per-Artifact availability;
 - background upload, durable server acknowledgement, on-demand Artifact retrieval, and safe local
   eviction;
@@ -46,10 +68,9 @@ synchronization protocol.
 
 ### Candidate Shape
 
-Evaluate a shared platform-independent Runtime used by the extension and web Hosts, with a Rails
-application as a possible Account/UI shell and Coordination API, PostgreSQL for operational data,
-and opaque object storage for encrypted authoritative bytes. These are candidate adapter choices,
-not architectural commitments.
+Evaluate a shared platform-independent Runtime used by the extension and web Hosts. The implemented
+Rails/PostgreSQL/Disk proof establishes the strict Account-scoped Coordination API and opaque byte
+semantics, but does not select a production Account/UI shell or shared object-storage adapter.
 
 The Coordination Server would be a zero-knowledge Full Replica after durable synchronization. This
 describes ciphertext completeness, not semantic authority. A client-created dependency closure must
@@ -77,9 +98,10 @@ Resolve and specify:
 
 Resolve and specify:
 
-- the opaque record protocol, cursor model, generation compare-and-swap behavior, retry/idempotency,
-  notification hints, quotas, and server garbage collection;
-- the exact server-visible metadata budget and traffic-analysis consequences;
+- Account quota scope, byte accounting, upload reservation, concurrent transfer behavior,
+  superseded-generation charging, over-quota outcomes, and self-hosted configuration;
+- whether production use accepts the proof's documented server-visible metadata budget and
+  traffic-analysis consequences;
 - retention profiles, default cache budgets, pinning, eviction order, offline promises, and user
   warnings when the server holds the only complete ciphertext copy;
 - recovery for stale replicas with unpublished work after a Vault Generation is superseded;
@@ -102,12 +124,14 @@ Resolve and specify:
 - whether self-hosted deployments may use a configurable origin without weakening WebAuthn,
   cookie, CSP, CSRF, or key-wrapper boundaries.
 
-### Possible Delivery Stages
+### Possible Delivery Sequence
 
-1. Specify Account, recovery, Device, synchronization, selective availability, and threat contracts;
+If one or more of these Candidates are separately approved, an illustrative dependency order is:
+
+1. Specify Account, recovery, Device, trusted-client synchronization, selective availability, and threat contracts;
    complete independent security review.
-2. Implement the opaque Coordination API and local synchronization engine with deterministic
-   multi-replica tests and fault injection.
+2. Implement the trusted local synchronization engine against the existing opaque Coordination API
+   with deterministic multi-replica tests and fault injection.
 3. Implement Account enrollment/recovery and a read-only web Library over a Selective Replica.
 4. Add web organization, Search, Export retrieval, selective Import, retention controls, and Device
    management only after earlier invariants hold.

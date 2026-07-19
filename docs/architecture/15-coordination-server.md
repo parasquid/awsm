@@ -10,458 +10,79 @@
 
 **Depends On:**
 
+- architecture/03-zero-knowledge.md
 - architecture/08-synchronization.md
-- architecture/14-trust-and-device-management.md
+- specifications/protocol/protocol.md
+- specifications/protocol/http-api.openapi.yaml
 
 ---
 
 # Purpose
 
-The Coordination Server provides authenticated synchronization and storage coordination for Archive Platform.
-
-It intentionally does not possess the ability to decrypt user Vaults.
-
-Its primary responsibilities are:
-
-- authentication
-- authorization
-- synchronization coordination
-- object storage coordination
-- tenant management
-- device trust
-- event distribution
-
----
-
-# Design Goals
-
-The server must provide:
-
-- horizontal scalability
-- stateless request handling
-- zero-knowledge operation
-- resumable synchronization
-- tenant isolation
-- high availability
-
----
-
-# Philosophy
-
-The Client Runtime owns intelligence.
-
-The Coordination Server owns coordination.
-
-The server should remain unaware of archive contents.
-
----
-
-# High-Level Architecture
-
-```
-                 Internet
-
-                     │
-
-              HTTPS API Gateway
-
-                     │
-
-               Rails Application
-
-     ┌──────────┬──────────┬──────────┐
-
- Authentication  Sync      Trust
-
- Tenant Mgmt     Events    Storage
-
-                     │
-
-          PostgreSQL Metadata
-
-                     │
-
-             Object Storage
-```
-
----
-
-# Responsibilities
-
-The server owns:
-
-- user accounts
-- tenant accounts
-- authentication
-- authorization
-- device registration
-- wrapped Vault Root Keys
-- Event Log persistence
-- Block registry
-- notifications
-
-The server does not own:
-
-- search
-- AI
-- OCR
-- archive rendering
-- Bundle creation
-- encryption
-- decryption
-
----
-
-# Major Services
-
-## Authentication Service
-
-Responsibilities:
-
-- login
-- passkeys
-- OAuth
-- session management
-- token issuance
-
-Authentication proves identity.
-
-It does not grant Vault access.
-
----
-
-## Tenant Service
-
-Responsibilities:
-
-- tenant lifecycle
-- billing integration
-- quotas
-- subscription state
-- feature flags
-
-The Tenant Service never accesses Vault contents.
-
----
-
-## Trust Service
-
-Responsibilities:
-
-- device enrollment
-- public keys
-- wrapped Vault Root Keys
-- revocation
-- key rotation metadata
-
-Private keys never reach the server.
-
----
-
-## Synchronization Service
-
-Responsibilities:
-
-- Event persistence
-- Event ordering
-- Event distribution
-- synchronization cursors
-
-The Synchronization Service stores encrypted Event payloads.
-
----
-
-## Block Registry
-
-Responsibilities:
-
-- Block existence
-- Bundle → Block mapping
-- reference counting
-- garbage collection scheduling
-
-The Registry never stores plaintext.
-
----
-
-## Storage Adapter
-
-Responsibilities:
-
-- upload coordination
-- download coordination
-- backend abstraction
-
-Supported providers:
-
-- S3
-- MinIO
-- Azure Blob
-- Google Cloud Storage
-- Local development
-
----
-
-## Notification Service
-
-Responsibilities:
-
-- notify connected clients
-- wake sleeping devices
-- publish synchronization hints
-
-Notifications never contain archive contents.
-
----
-
-# Persistence
-
-The server maintains metadata only.
-
-Examples:
-
-Users
-
-Tenants
-
-Devices
-
-Wrapped Keys
-
-Events
-
-Block References
-
-Synchronization State
-
-No decrypted archive data is persisted.
-
----
-
-# Request Pipeline
-
-```
-HTTPS Request
-
-↓
-
-Authentication
-
-↓
-
-Authorization
-
-↓
-
-Application Service
-
-↓
-
-Domain Service
-
-↓
-
-Repository
-
-↓
-
-Persistence
-```
-
-Controllers should remain thin.
-
-Business logic belongs in services.
-
----
-
-# Object Storage
-
-Encrypted Blocks are stored outside PostgreSQL.
-
-```
-Rails
-
-↓
-
-Storage Adapter
-
-↓
-
-Object Store
-```
-
-PostgreSQL stores only references.
-
----
-
-# Horizontal Scaling
-
-Every API instance should be stateless.
-
-Shared infrastructure:
-
-- PostgreSQL
-- Object Storage
-- Cache
-- Message Broker (future)
-
-Requests may be served by any instance.
-
----
-
-# Synchronization Workflow
-
-```
-Client
-
-↓
-
-Upload Blocks
-
-↓
-
-Commit Event
-
-↓
-
-Persist Event
-
-↓
-
-Notify Devices
-```
-
-The server does not reconstruct Vault state.
-
----
-
-# Authentication vs Authorization
-
-Authentication:
-
-Who is this user?
-
-Authorization:
-
-May this device access this tenant and receive synchronization metadata?
-
-Vault decryption is independent of both.
-
----
-
-# Multi-Tenancy
-
-Each tenant owns:
-
-- users
-- devices
-- Vault metadata
-- billing state
-- quotas
-
-Tenant isolation must be enforced at every persistence boundary.
-
----
-
-# Observability
-
-The server records operational metrics only.
-
-Examples:
-
-- request latency
-- synchronization duration
-- upload throughput
-- storage utilization
-- error rates
-
-Logs must never contain decrypted archive contents.
-
----
-
-# Error Handling
-
-Failures should be idempotent.
-
-Examples:
-
-Duplicate Block upload:
-
-Success.
-
-Duplicate Event:
-
-Ignored.
-
-Repeated Commit:
-
-Safe.
-
-Interrupted Upload:
-
-Resume.
-
----
-
-# Security
-
-The server should assume every incoming payload is untrusted.
-
-Validation includes:
-
-- authentication
-- authorization
-- schema validation
-- signature verification (where applicable)
-- quota enforcement
-
-The server never attempts to interpret encrypted payloads.
-
----
-
-# Design Decisions
-
-## Why Coordination Instead of Processing?
-
-Separating coordination from content processing preserves the zero-knowledge model and enables lightweight server infrastructure.
-
----
-
-## Why Stateless Services?
-
-Stateless services simplify scaling, deployment, and fault recovery.
-
----
-
-## Why External Object Storage?
-
-Object storage is optimized for immutable binary data and scales independently of relational metadata.
-
----
-
-## Why Thin Controllers?
-
-Business logic becomes reusable across transports and easier to test.
-
----
-
-# Future Extensions
-
-Potential additions include:
-
-- WebSocket synchronization
-- Push notifications
-- Regional replication
-- Tenant-managed storage backends
-- Audit exports
-- Administrative APIs
-
-These extensions should not require changes to the client runtime.
-
----
-
-# References
-
-- `docs/architecture/16-archive-protocol.md`
-- `docs/architecture/18-cryptography.md`
-- `docs/architecture/20-deployment-and-operations.md`
+The Coordination Server synchronizes opaque encrypted Vault records without possessing plaintext or
+unwrapped Vault keys. The trusted Runtime owns semantic validation, Event replay, encryption, and
+reconciliation. The server owns only authenticated Account scope, durable opaque transfer,
+transactional publication, delivery bookkeeping, advisory wake-up hints, and recovery retention.
+
+# Current Boundary
+
+The implemented proof uses one Account principal that directly owns multiple isolated Vault replica
+records. It proves Account isolation but does not claim Device authorization, production login,
+shared Vaults, roles, invitations, billing, quotas, or recovery cryptography. Proof authentication is
+available only when Rails runs in the test environment with `AWSM_SYNC_PROOF=true`; all other
+unconfigured authentication fails closed.
+
+# Server-Visible Metadata Budget
+
+The server may know Account and Vault operational IDs; broad Object type; ciphertext byte length and
+SHA-256; encrypted Object ID; Event ordering timestamp; the exact sorted dependency Object IDs
+declared for an Event; Vault Generation identity, number, predecessor, full retained membership,
+and recovery deadline; upload state; delivery cursor; Job progress; and safe outcome codes.
+
+The server MUST NOT receive plaintext, keys, semantic Event subtype, titles, URLs, notes, tags,
+filenames, search terms, content-derived metadata, or plaintext checksums. Complete retained
+membership leaks encrypted graph shape and is accepted solely to make remote deletion safe.
+
+# Components
+
+- The HTTP control adapter implements the strict OpenAPI 3.0.3 contract under `/api`.
+- Transfer tickets authorize one opaque upload or download scope and are stored only as SHA-256
+  digests.
+- PostgreSQL stores operational metadata, immutable identity, membership, delivery changes,
+  idempotency, and Purge Job checkpoints. It never stores Object payload bytes.
+- `OpaqueByteStorage` provides immutable byte operations. The proof Disk Driver uses a private root,
+  bounded streams, fsync, and same-filesystem atomic installation.
+- Action Cable publishes `{vaultId, latestCursor}` only after a committed head change. Polling is
+  always sufficient.
+- Solid Queue runs expiry and purge work. A domain Purge Job, not queue state, owns resumability and
+  visible progress.
+
+# Publication Model
+
+Uploads become `DurableUncommitted` only after exact length and ciphertext checksum verification.
+They remain invisible. One Event closure commit locks its Vault, rechecks the active Generation and
+exact dependency declaration, commits the complete durable closure, adds active membership, assigns
+one Delivery Cursor, and records one delivery change in the same PostgreSQL transaction.
+
+Generation zero is explicit. A successor is staged as one inactive candidate with paged, globally
+sorted reachability. Activation compares predecessor ID, predecessor number, and exact observed head
+cursor. It atomically supersedes the predecessor, activates the successor membership, and advances
+the Delivery Cursor. An intervening commit makes activation fail without changing either scope.
+
+# Recovery and Deletion
+
+Superseded Generations are accessible only through explicit recovery resources until `purgeAfter`.
+The hosted default is 90 days. Manual purge requires recent Account confirmation and snapshots all
+currently superseded Generations. Automatic expiry creates the same durable Job.
+
+Purge detaches only targeted memberships, preserves every record referenced by an active, candidate,
+or other retained Generation, revokes recovery tickets, verifies byte absence, and finally leaves a
+permanent immutable tombstone. Missing committed bytes are integrity incidents, never cleanup hints.
+
+# Scaling and Production Gate
+
+The proof intentionally uses one Rails process, PostgreSQL, Disk storage, an in-process Cable
+adapter, and independent Node clients. Horizontal Rails replicas require a shared immutable-byte
+Driver and shared Cable/Job infrastructure. Production promotion additionally requires approved
+Account authentication, Device/recovery authorization, quotas and abuse controls, operational
+backup/restore, security review, and trusted client synchronization.

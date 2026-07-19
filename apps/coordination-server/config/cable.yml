@@ -6,7 +6,7 @@ development:
   adapter: async
 
 test:
-  adapter: test
+  adapter: <%= ENV.fetch("AWSM_CABLE_ADAPTER", "test") %>
 
 production:
   adapter: solid_cable

@@ -78,15 +78,18 @@ These components must operate on ciphertext, opaque identifiers, wrapped keys, p
 
 # Server-Visible Data
 
-The server may store or observe:
+The implemented Coordination Server proof may store or observe:
 
-- tenant and account identifiers
-- Device public keys and enrollment state
-- wrapped Vault keys
-- Event headers and encrypted Event payloads
-- Object identifiers, Object types, sizes, versions, and integrity metadata
-- synchronization cursors and delivery state
-- operational metrics that exclude plaintext and plaintext-derived user content
+- Account and Vault operational identifiers;
+- broad Object type, ciphertext length, ciphertext SHA-256, and encrypted Object ID;
+- Event ordering timestamp and exact declared dependency Object IDs;
+- Vault Generation identity, number, predecessor, complete retained membership, and recovery deadline;
+- upload, ticket-digest, idempotency, Delivery Cursor, and Purge Job state; and
+- safe operational counters and outcomes.
+
+Complete retained membership leaks encrypted graph shape and recovery size. This bounded leak is
+accepted to prevent unsafe remote deletion. Production promotion requires an explicit traffic-analysis
+and metadata-budget review.
 
 This data exists to coordinate replicas. It must not be sufficient to reconstruct Vault contents.
 
@@ -122,16 +125,11 @@ The Runtime is responsible for:
 
 # Server Responsibilities
 
-The Coordination Server is responsible for:
-
-- authenticating users and devices
-- authorizing protocol operations
-- storing encrypted Objects and Event payloads
-- storing wrapped keys
-- ordering and distributing Events
-- coordinating synchronization cursors
-- enforcing quotas and tenant isolation
-- delivering notifications that reveal no archive contents
+The implemented proof Coordination Server is responsible for Account authentication at its adapter
+boundary, Account-scoped Vault authorization, opaque byte durability, exact declared Event closure
+publication, independent per-Vault Delivery Cursors, Generation fencing, explicit recovery, safe
+purge, and advisory notifications. Production authentication, Device authorization, wrapped keys,
+quotas, abuse controls, and shared Vault authority remain deferred.
 
 The server never reconstructs Vault state from plaintext. It may validate protocol structure, signatures, permissions, quotas, and object integrity metadata.
 
@@ -149,7 +147,7 @@ Operational metadata may remain plaintext when required for coordination:
 - Object Identifier
 - Object Type
 - object size
-- synchronization sequence
+- Delivery Cursor
 
 User-visible metadata must be encrypted before synchronization:
 

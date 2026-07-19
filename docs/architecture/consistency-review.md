@@ -254,7 +254,11 @@ Plan section 15 replaces the pre-release `LibraryGroupRemoved` model. The canoni
 
 The owning formal contract is `docs/specifications/vault/vacuum.md`; intent and trade-offs are in `docs/architecture/21-vault-history-rewrite.md`. Vault, Event, Object Store, Runtime Storage/Jobs/Synchronization, protocol errors, Backup, Restore, content storage, glossary, and testing strategy now share the same reachability and generation-fencing model.
 
-The current browser slice implements local generation activation and collection with one IndexedDB transaction. Remote synchronization remains deferred, so its generation behavior is specified and contract-scoped rather than claimed as end-to-end evidence. Vacuum explicitly excludes old Backup Sets, exports, and offline replicas and is not Secure Scrub.
+The browser slice implements local generation activation and collection with one IndexedDB
+transaction. The Coordination Server now separately proves opaque remote Generation activation,
+recovery retention, and purge through independent HTTP/Cable replicas. Trusted Runtime integration
+remains deferred. Vacuum and remote purge explicitly exclude old Backup Sets, exports, offline
+replicas, and already transferred copies and are not Secure Scrub.
 
 # 10. Collection Management Reconciliation
 

@@ -358,6 +358,10 @@ Future AI capabilities should integrate through a provider abstraction.
 
 The platform shall synchronize immutable Bundles, Vault Events, wrapped keys, and coordination metadata between trusted devices.
 
+Implementation status: the repository proves the untrusted Account-scoped opaque Coordination
+Server boundary and independent two-replica transport. Trusted Runtime synchronization, Device/key
+authorization, and production deployment remain outside the implemented proof.
+
 Synchronization shall:
 
 - resume automatically

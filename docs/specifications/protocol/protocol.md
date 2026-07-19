@@ -6,287 +6,97 @@
 
 **Status:** Draft
 
----
+**Depends On:**
 
-# 1. Purpose
-
-This specification defines the Archive Synchronization Protocol.
-
-The protocol enables trusted clients to synchronize immutable Bundles, Events, wrapped cryptographic keys, and coordination metadata with a Coordination Server.
-
-The protocol is transport-independent.
+- architecture/glossary.md
+- event/event-format.md
+- http-api.openapi.yaml
 
 ---
 
-# 2. Goals
+# 1. Purpose and Authority
 
-The protocol MUST provide:
+This specification defines transport-independent synchronization sequencing, durability, fencing,
+recovery, and retry semantics. `http-api.openapi.yaml` owns the canonical HTTPS methods, paths,
+headers, statuses, and JSON shapes. Conflicts are specification defects and SHALL be reconciled in
+both documents.
 
-- eventual consistency
-- resumable synchronization
-- deterministic behavior
-- offline operation
-- transport independence
-- one canonical deterministic message format
+# 2. Canonical Protocol
 
----
+Before the first release, exactly one strict protocol exists. HTTPS uses unversioned `/api` routes
+and requires `Awsm-Protocol-Version: 1`; a missing or different value fails. There is no handshake,
+negotiation, alternate message envelope, unknown-field preservation, compatibility reader, or
+fallback transport.
 
-# 3. Non-Goals
+# 3. Trust Boundary
 
-The protocol does not define:
+The trusted client validates and encrypts authoritative Objects and Events. The untrusted
+Coordination Server receives immutable ciphertext plus the minimum opaque metadata needed for
+transfer, dependency closure, ordering discovery, Generation fencing, and safe retention. It never
+interprets plaintext or commands client eviction.
 
-- authentication mechanisms
-- UI behavior
-- search
-- archive rendering
-- AI processing
+# 4. Opaque Upload
 
----
+The client begins an upload with immutable identity, broad Object type, exact byte length,
+ciphertext SHA-256, and target Generation. Events additionally declare their canonical ordering
+timestamp and lexically sorted unique dependency Object IDs. Dependencies must already exist in an
+eligible upload or durable scope; placeholder records are prohibited.
 
-# 4. Architecture
+Parts use short-lived scoped tickets. Repeated identical parts succeed and conflicting parts fail.
+Finalization streams every part in order, verifies whole-Object length and checksum, durably installs
+the immutable bytes, then records `DurableUncommitted`. This state is invisible to all read paths.
 
-```
-Client
+# 5. Event Closure Publication
 
-↓
+One commit names one finalized Event, its exact bound dependency list, and the active Generation ID
+and number. Under a Vault lock, the Service requires the entire closure to be durable and eligible.
+It atomically commits newly introduced records, records active membership, persists one Event commit,
+assigns one per-Vault Delivery Cursor, and records one `EventCommitted` delivery change.
 
-Archive Protocol
+The Delivery Cursor orders acceptance for incremental discovery only. Canonical Event replay order
+continues to come from the Event specification. A late Event with an older ordering timestamp still
+receives the next Delivery Cursor and remains discoverable.
 
-↓
+# 6. Replica Reads
 
-Transport
+Active enumeration pages the complete active Generation membership in lexical Object-ID order.
+Change paging captures a snapshot cursor and returns only changes after the requested cursor and no
+later than that snapshot. Downloads require active membership and a scoped ticket; clients verify
+the reconstructed ciphertext length and SHA-256 before accepting it.
 
-↓
+Action Cable sends only a Vault ID and latest cursor as an advisory wake-up. A receiver refetches
+canonical changes. Duplicate, delayed, or absent hints do not affect correctness.
 
-Coordination Server
-```
+# 7. Generation Compare-and-Swap
 
-Transport examples include:
+Generation zero is explicit. One successor candidate may exist per Vault. The candidate declares the
+active predecessor, exact observed head cursor, successor number, and encrypted Generation Object.
+The client submits the complete retained Object-ID set in globally sorted pages and seals it with
+count and SHA-256 commitments. The Service automatically includes the successor Generation Object
+and verifies that every retained Event's declared dependencies are retained.
 
-- HTTP
-- WebSocket
-- future transports
+Activation compares predecessor ID, predecessor number, and head cursor under the Vault lock. It
+atomically commits candidate records, installs successor membership, supersedes the predecessor,
+advances the head, and records `GenerationActivated`. Any intervening active commit fails the CAS.
+A superseded Generation cannot accept writes or reactivate.
 
----
+# 8. Recovery and Purge
 
-# 5. Synchronization Model
+Superseded Generation membership remains available only through explicit recovery resources until
+its deadline. Recovery never changes active state or performs a server-side merge.
 
-Clients are authoritative for plaintext.
+A durable Purge Job snapshots targeted superseded Generations, makes them unavailable for new
+recovery transfers, detaches their memberships, and deletes only records unreferenced by every
+remaining active, candidate, or retained Generation. Success requires verified byte absence and a
+committed permanent tombstone. Jobs resume idempotently after partial failure and cannot be
+cancelled after snapshot.
 
-Servers coordinate encrypted objects.
+# 9. Idempotency and Outcomes
 
-Servers never interpret Bundle contents.
+Every mutating control request carries an idempotency UUID. The Service binds Account, operation,
+key, method, canonical path, and exact request-body digest. An identical replay reconstructs the
+same logical result with fresh ephemeral tickets; a changed request conflicts. Immutable natural
+identifiers provide additional protection but do not replace idempotency.
 
-Synchronization is append-only.
-
----
-
-# 6. Protocol Objects
-
-The protocol exchanges only protocol objects.
-
-Examples:
-
-- Bundle
-- Event
-- Wrapped Key
-- Device Record
-- Synchronization Cursor
-- Block
-
-No transport-specific objects are defined.
-
----
-
-# 7. Message Model
-
-Every interaction is represented as a protocol message.
-
-Messages are independent of transport.
-
-Each message contains:
-
-- Message Type
-- Protocol Version
-- Request Identifier
-- Payload
-
-Optional fields:
-
-- Correlation Identifier
-- Compression Information
-
----
-
-# 8. Core Messages
-
-Examples include:
-
-ClientHello
-
-ServerHello
-
-Authenticate
-
-SubmitEvents
-
-FetchEvents
-
-SubmitBundles
-
-FetchBundles
-
-SubmitBlocks
-
-FetchBlocks
-
-FetchWrappedKeys
-
-SubmitWrappedKeys
-
-FetchDevices
-
-SubmitDevice
-
-Heartbeat
-
-Error
-
----
-
-# 9. Synchronization
-
-Synchronization proceeds conceptually as:
-
-```
-Client
-
-↓
-
-Determine Differences
-
-↓
-
-Exchange Events
-
-↓
-
-Exchange Bundles
-
-↓
-
-Exchange Blocks
-
-↓
-
-Update Cursor
-
-↓
-
-Complete
-```
-
-The exact optimization strategy is implementation-defined.
-
----
-
-# 10. Idempotency
-
-Protocol messages SHOULD be safe to retry.
-
-Duplicate submissions MUST NOT corrupt Vault state.
-
----
-
-# 11. Ordering
-
-Events MUST preserve ordering.
-
-Bundles are immutable and MAY be transferred independently.
-
-Blocks MAY transfer in parallel.
-
----
-
-# 12. Protocol Selection
-
-The client and Service use the one protocol defined by this specification.
-
-No negotiation or alternate protocol path exists before the first release and an explicit compatibility decision.
-
----
-
-# 13. Compression
-
-Messages MAY be compressed.
-
-Compression negotiation occurs during session establishment.
-
-Compression MUST NOT alter protocol semantics.
-
----
-
-# 14. Encryption
-
-Protocol encryption is distinct from transport encryption.
-
-Archive objects remain encrypted before transmission.
-
-Transport security provides additional protection but is not relied upon for confidentiality of archive contents.
-
----
-
-# 15. Error Handling
-
-Errors SHALL be represented as protocol messages.
-
-Errors MUST NOT terminate synchronization unless recovery is impossible.
-
----
-
-# 16. Extensions
-
-New protocol messages MAY be introduced.
-
-Unknown messages MUST be ignored unless explicitly marked mandatory.
-
----
-
-# 17. Invariants
-
-Protocol semantics are transport-independent.
-
-Bundles remain immutable.
-
-Events remain append-only.
-
-Servers never require plaintext.
-
-Synchronization is resumable.
-
-Vault Generation activation is fenced by opaque compare-and-swap metadata.
-
----
-
-# 18. Future Capabilities
-
-Future approved work MAY introduce:
-
-- streaming synchronization
-- peer-to-peer synchronization
-- LAN discovery
-- incremental object transfer
-
-This section does not authorize alternate protocol formats or negotiation paths.
-
----
-
-# References
-
-messages.md
-
-errors.md
-
-event/event.md
-
-bundle/bundle.md
+Failures use stable outcome identifiers and never expose plaintext, credentials, cross-Account
+existence, or validation exception text.

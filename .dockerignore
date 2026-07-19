@@ -1,0 +1,13 @@
+.git
+.github
+.omo
+node_modules
+**/node_modules
+**/.output
+**/.wxt
+**/test-results
+**/log/*
+**/tmp/*
+**/storage/*
+**/config/master.key
+**/.env*
