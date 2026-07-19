@@ -44,7 +44,7 @@ This plan makes that current local model canonical:
 - the export passphrase does not become a Vault unlock method or modify local Vault state.
 
 This plan supersedes every optional local passphrase-slot requirement in the earlier multiple-Vault
-and capture plans. Account Master Passwords, Account Recovery Keys, synchronized Vault wrappers,
+and capture plans. Account passwords, Account Recovery Keys, synchronized Vault wrappers,
 and trusted-Device enrollment remain Roadmap discovery work and are not changed or implemented here.
 
 The completed feature lets a user:
@@ -1161,7 +1161,7 @@ Do not add any of the following while implementing this plan:
 - partial Export by Capture, Collection, date, tag, or folder;
 - plaintext, MHTML-directory, JSON, Markdown, or other human-readable Export;
 - Backup Sets, Snapshots, retention, scheduled Backup, Restore, or disaster-recovery automation;
-- synchronization, Accounts, Account Master Passwords, Account Recovery Keys, Account Encryption
+- synchronization, Accounts, Account passwords, Account Recovery Keys, Account Encryption
   Keys, trusted-Device enrollment, sharing, or server storage;
 - local Vault passphrase slots, passphrase unlock, passphrase change, or passphrase recovery;
 - root-key rotation, Secure Scrub, export destruction, or revocation of already exported packages;

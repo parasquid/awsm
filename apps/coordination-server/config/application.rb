@@ -22,6 +22,7 @@ module CoordinationServer
   class Application < Rails::Application
     # Initialize configuration defaults for originally generated Rails version.
     config.load_defaults 8.1
+    config.action_cable.allowed_request_origins = [ %r{\Achrome-extension://[a-p]{32}\z} ]
 
     # Please, add to the `ignore` list any other `lib` subdirectories that do
     # not contain `.rb` files, or that should not be reloaded or eager loaded.

@@ -48,6 +48,7 @@ Job revokes it and safely deletes newly unreferenced bytes.
 
 # Deferred Adapters
 
-Production Account/Device authorization, key-wrapper resources, rate limits, quotas, shared byte
-storage, alternate transports, and compression are not defined by the implemented proof. Adding any
-of them requires an explicit contract decision; it MUST NOT introduce a parallel pre-release path.
+Device authorization, rate limits, quotas, shared byte storage, alternate transports, and
+compression remain undefined. Account authentication, the password-wrapped Account Encryption Key
+envelope, and the Account-wrapped Vault slot are current protocol resources. Adding deferred
+adapters requires an explicit contract decision and MUST NOT introduce a parallel pre-release path.

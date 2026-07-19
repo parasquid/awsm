@@ -28,6 +28,7 @@ import {
   type StoredProjectionV1,
   type StoredVaultHeadV1,
   type StoredVaultNameProjectionV1,
+  type SynchronizationJobV1,
   type VaultDirectoryEntryV1,
   type WorkspaceMetadataV1,
   type WorkspaceRecordsV1,
@@ -70,6 +71,56 @@ export interface AtomicVaultImport {
   readonly vaultNameProjection: StoredVaultNameProjectionV1;
   readonly nameCache: WorkspaceVaultNameCacheV1;
   readonly preparedArtifactObjectIds: readonly string[];
+}
+
+export interface AtomicRemoteBootstrap {
+  readonly job: SynchronizationJobV1;
+  readonly records: VaultRecordsV1;
+  readonly events: readonly StoredEvent[];
+  readonly objects: readonly StoredObjectV1[];
+  readonly libraryProjections: readonly StoredProjectionV1[];
+  readonly collectionProjection: StoredCollectionProjectionV1;
+  readonly vaultNameProjection: StoredVaultNameProjectionV1;
+  readonly nameCache: WorkspaceVaultNameCacheV1;
+  readonly preparedArtifactObjectIds: readonly string[];
+}
+
+export interface AtomicRemoteReconciliation {
+  readonly expectedGenerationId: string;
+  readonly expectedDeliveryCursor: number;
+  readonly registration: import("./schema").StoredAccountVaultV1;
+  readonly job: SynchronizationJobV1;
+  readonly head: StoredVaultHeadV1;
+  readonly events: readonly StoredEvent[];
+  readonly objects: readonly StoredObjectV1[];
+  readonly libraryProjections: readonly StoredProjectionV1[];
+  readonly collectionProjection: StoredCollectionProjectionV1;
+  readonly vaultNameProjection: StoredVaultNameProjectionV1;
+  readonly nameCache: WorkspaceVaultNameCacheV1;
+}
+
+export interface AtomicStaleRecovery {
+  readonly job: SynchronizationJobV1;
+  readonly expectedStaleGenerationId: string;
+  readonly registration: import("./schema").StoredAccountVaultV1;
+  readonly originalRecords: VaultRecordsV1;
+  readonly remoteGeneration: import("./schema").StoredVaultGenerationV1;
+  readonly remoteHead: StoredVaultHeadV1;
+  readonly remoteEvents: readonly StoredEvent[];
+  readonly remoteObjects: readonly StoredObjectV1[];
+  readonly remoteLibraryProjections: readonly StoredProjectionV1[];
+  readonly remoteCollectionProjection: StoredCollectionProjectionV1;
+  readonly remoteVaultNameProjection: StoredVaultNameProjectionV1;
+  readonly remoteNameCache: WorkspaceVaultNameCacheV1;
+  readonly fork: {
+    readonly records: VaultRecordsV1;
+    readonly events: readonly StoredEvent[];
+    readonly objects: readonly StoredObjectV1[];
+    readonly libraryProjections: readonly StoredProjectionV1[];
+    readonly collectionProjection: StoredCollectionProjectionV1;
+    readonly vaultNameProjection: StoredVaultNameProjectionV1;
+    readonly nameCache: WorkspaceVaultNameCacheV1;
+  };
 }
 
 function sameIds(actual: readonly string[], expected: readonly string[]): boolean {
@@ -883,6 +934,411 @@ export class IndexedDbWorkspaceRepository {
       transaction
         .objectStore(STORES.importJobs)
         .put({ ...storedJob, state: "Succeeded" }, storedJob.jobId);
+      await transactionDone(transaction);
+    } catch (error) {
+      try {
+        transaction.abort();
+      } catch {}
+      throw storageError(error);
+    }
+  }
+
+  async commitRemoteBootstrap(input: AtomicRemoteBootstrap): Promise<void> {
+    const records = decodeVaultRecords({
+      metadata: input.records.metadata,
+      deviceSlot: input.records.deviceSlot,
+      deviceKey: input.records.deviceKey,
+      generations: [input.records.generation],
+      head: input.records.head,
+    });
+    const vaultId = records.metadata.vaultId;
+    const eventIds = input.events.map((event) => event.eventId).toSorted();
+    const objectIds = input.objects.map((object) => object.objectId).toSorted();
+    const artifactIds = input.objects
+      .filter((object) => object.objectType === "Artifact")
+      .map((object) => object.objectId)
+      .toSorted();
+    if (
+      input.job.state !== "Running" ||
+      input.job.stage !== "ActivateLocal" ||
+      input.job.vaultId !== vaultId ||
+      input.job.generationId !== records.generation.generationId ||
+      records.metadata.manuallyLocked ||
+      records.head.vaultId !== vaultId ||
+      records.head.generationId !== records.generation.generationId ||
+      input.events.some((event) => event.vaultId !== vaultId) ||
+      new Set(eventIds).size !== eventIds.length ||
+      new Set(objectIds).size !== objectIds.length ||
+      artifactIds.join("\n") !== [...input.preparedArtifactObjectIds].toSorted().join("\n") ||
+      input.collectionProjection.projectionId !== vaultId ||
+      input.vaultNameProjection.vaultId !== vaultId ||
+      input.nameCache.vaultId !== vaultId ||
+      input.nameCache.sourceEventId !== input.vaultNameProjection.sourceEventId ||
+      !eventIds.includes(input.vaultNameProjection.sourceEventId) ||
+      new Set(input.libraryProjections.map((projection) => projection.bundleId)).size !==
+        input.libraryProjections.length
+    )
+      throw storageError(new Error("Atomic remote Replica records are inconsistent."));
+
+    const database = await this.databasePromise;
+    const stores = [
+      STORES.workspaceMetadata,
+      STORES.vaultDirectory,
+      STORES.vaultNameCache,
+      STORES.vaultNameProjection,
+      STORES.vaultMetadata,
+      STORES.keySlots,
+      STORES.deviceKeys,
+      STORES.objects,
+      STORES.events,
+      STORES.libraryProjection,
+      STORES.collectionProjection,
+      STORES.vaultGenerations,
+      STORES.vaultHead,
+      STORES.synchronizationJobs,
+    ];
+    const transaction = database.transaction(stores, "readwrite");
+    try {
+      const [jobValue, workspaceValue, collision] = await Promise.all([
+        requestValue(transaction.objectStore(STORES.synchronizationJobs).get("active")),
+        requestValue(transaction.objectStore(STORES.workspaceMetadata).get("local")),
+        requestValue(transaction.objectStore(STORES.vaultDirectory).count(vaultId)),
+      ]);
+      if (jobValue === undefined || workspaceValue === undefined || collision !== 0)
+        throw Object.assign(new Error("Remote bootstrap ownership changed."), {
+          id: collision === 0 ? "VAULT_BUSY" : "VAULT_ALREADY_EXISTS",
+        });
+      const storedJob = jobValue as SynchronizationJobV1;
+      if (
+        storedJob.jobId !== input.job.jobId ||
+        storedJob.stage !== "ActivateLocal" ||
+        storedJob.state !== "Running" ||
+        storedJob.vaultId !== vaultId
+      )
+        throw Object.assign(new Error("Remote bootstrap Job changed."), { id: "VAULT_BUSY" });
+      const workspace = decodeWorkspaceMetadata(workspaceValue);
+      transaction
+        .objectStore(STORES.vaultMetadata)
+        .add(records.metadata, vaultSingletonKey(vaultId, "metadata"));
+      transaction
+        .objectStore(STORES.keySlots)
+        .add(records.deviceSlot, vaultSingletonKey(vaultId, "device"));
+      transaction
+        .objectStore(STORES.deviceKeys)
+        .add(records.deviceKey, vaultSingletonKey(vaultId, "device"));
+      transaction
+        .objectStore(STORES.vaultGenerations)
+        .add(records.generation, vaultKey(vaultId, records.generation.generationId));
+      transaction
+        .objectStore(STORES.vaultHead)
+        .add(records.head, vaultSingletonKey(vaultId, "active"));
+      for (const event of input.events)
+        transaction.objectStore(STORES.events).add(event, vaultKey(vaultId, event.eventId));
+      for (const object of input.objects)
+        transaction.objectStore(STORES.objects).add(object, vaultKey(vaultId, object.objectId));
+      for (const projection of input.libraryProjections)
+        transaction
+          .objectStore(STORES.libraryProjection)
+          .add(projection, vaultKey(vaultId, projection.bundleId));
+      transaction
+        .objectStore(STORES.collectionProjection)
+        .add(input.collectionProjection, vaultSingletonKey(vaultId, "active"));
+      transaction
+        .objectStore(STORES.vaultNameProjection)
+        .add(input.vaultNameProjection, vaultSingletonKey(vaultId, "active"));
+      transaction.objectStore(STORES.vaultNameCache).add(input.nameCache, vaultId);
+      transaction.objectStore(STORES.vaultDirectory).add(
+        {
+          version: 1,
+          vaultId,
+          createdAt: records.metadata.createdAt,
+        } satisfies VaultDirectoryEntryV1,
+        vaultId,
+      );
+      transaction
+        .objectStore(STORES.workspaceMetadata)
+        .put({ ...workspace, activeVaultId: vaultId }, "local");
+      transaction
+        .objectStore(STORES.synchronizationJobs)
+        .put({ ...storedJob, state: "Succeeded", stage: "Checkpoint" }, "active");
+      await transactionDone(transaction);
+    } catch (error) {
+      try {
+        transaction.abort();
+      } catch {}
+      throw storageError(error);
+    }
+  }
+
+  async commitRemoteReconciliation(input: AtomicRemoteReconciliation): Promise<void> {
+    const vaultId = input.registration.vaultId;
+    if (
+      input.job.vaultId !== vaultId ||
+      input.job.generationId !== input.expectedGenerationId ||
+      input.head.vaultId !== vaultId ||
+      input.head.generationId !== input.expectedGenerationId ||
+      input.registration.remoteGenerationId !== input.expectedGenerationId ||
+      input.registration.deliveryCursor < input.expectedDeliveryCursor ||
+      input.events.some((event) => event.vaultId !== vaultId) ||
+      input.collectionProjection.projectionId !== vaultId ||
+      input.vaultNameProjection.vaultId !== vaultId ||
+      input.nameCache.vaultId !== vaultId
+    )
+      throw storageError(new Error("Remote reconciliation records are inconsistent."));
+    const database = await this.databasePromise;
+    const transaction = database.transaction(
+      [
+        STORES.accountVault,
+        STORES.synchronizationJobs,
+        STORES.vaultHead,
+        STORES.objects,
+        STORES.events,
+        STORES.libraryProjection,
+        STORES.collectionProjection,
+        STORES.vaultNameProjection,
+        STORES.vaultNameCache,
+      ],
+      "readwrite",
+    );
+    try {
+      const [storedRegistrationValue, storedJobValue, storedHeadValue] = await Promise.all([
+        requestValue(transaction.objectStore(STORES.accountVault).get("active")),
+        requestValue(transaction.objectStore(STORES.synchronizationJobs).get("active")),
+        requestValue(
+          transaction.objectStore(STORES.vaultHead).get(vaultSingletonKey(vaultId, "active")),
+        ),
+      ]);
+      const storedRegistration = storedRegistrationValue as
+        | import("./schema").StoredAccountVaultV1
+        | undefined;
+      const storedJob = storedJobValue as SynchronizationJobV1 | undefined;
+      const storedHead = storedHeadValue as StoredVaultHeadV1 | undefined;
+      if (
+        storedRegistration?.vaultId !== vaultId ||
+        storedRegistration.deliveryCursor !== input.expectedDeliveryCursor ||
+        storedJob?.jobId !== input.job.jobId ||
+        storedHead?.generationId !== input.expectedGenerationId
+      )
+        throw Object.assign(new Error("Remote reconciliation ownership changed."), {
+          id: "VAULT_CONTEXT_CHANGED",
+        });
+      for (const event of input.events)
+        transaction.objectStore(STORES.events).put(event, vaultKey(vaultId, event.eventId));
+      for (const object of input.objects)
+        transaction.objectStore(STORES.objects).put(object, vaultKey(vaultId, object.objectId));
+      transaction.objectStore(STORES.libraryProjection).delete(vaultKeyRange(vaultId));
+      for (const projection of input.libraryProjections)
+        transaction
+          .objectStore(STORES.libraryProjection)
+          .put(projection, vaultKey(vaultId, projection.bundleId));
+      transaction
+        .objectStore(STORES.collectionProjection)
+        .put(input.collectionProjection, vaultSingletonKey(vaultId, "active"));
+      transaction
+        .objectStore(STORES.vaultNameProjection)
+        .put(input.vaultNameProjection, vaultSingletonKey(vaultId, "active"));
+      transaction.objectStore(STORES.vaultNameCache).put(input.nameCache, vaultId);
+      transaction
+        .objectStore(STORES.vaultHead)
+        .put(input.head, vaultSingletonKey(vaultId, "active"));
+      transaction.objectStore(STORES.accountVault).put(input.registration, "active");
+      transaction
+        .objectStore(STORES.synchronizationJobs)
+        .put({ ...input.job, state: "Succeeded", stage: "Checkpoint" }, "active");
+      await transactionDone(transaction);
+    } catch (error) {
+      try {
+        transaction.abort();
+      } catch {}
+      throw storageError(error);
+    }
+  }
+
+  async commitStaleRecovery(input: AtomicStaleRecovery): Promise<void> {
+    const vaultId = input.originalRecords.metadata.vaultId;
+    const forkVaultId = input.fork.records.metadata.vaultId;
+    if (
+      forkVaultId === vaultId ||
+      input.job.state !== "Running" ||
+      input.job.stage !== "ActivateRecovery" ||
+      input.job.vaultId !== vaultId ||
+      input.job.recoveryForkVaultId !== forkVaultId ||
+      input.registration.vaultId !== vaultId ||
+      input.registration.remoteGenerationId !== input.remoteGeneration.generationId ||
+      input.remoteHead.vaultId !== vaultId ||
+      input.remoteHead.generationId !== input.remoteGeneration.generationId ||
+      input.remoteEvents.some((event) => event.vaultId !== vaultId) ||
+      input.fork.events.some((event) => event.vaultId !== forkVaultId) ||
+      input.fork.records.head.vaultId !== forkVaultId ||
+      input.fork.records.metadata.manuallyLocked ||
+      input.fork.nameCache.vaultId !== forkVaultId ||
+      input.remoteNameCache.vaultId !== vaultId
+    )
+      throw storageError(new Error("Stale recovery records are inconsistent."));
+    const stores = [
+      STORES.workspaceMetadata,
+      STORES.accountVault,
+      STORES.synchronizationJobs,
+      STORES.vaultDirectory,
+      STORES.vaultNameCache,
+      STORES.vaultNameProjection,
+      STORES.vaultMetadata,
+      STORES.keySlots,
+      STORES.deviceKeys,
+      STORES.objects,
+      STORES.events,
+      STORES.libraryProjection,
+      STORES.collectionProjection,
+      STORES.vaultGenerations,
+      STORES.vaultHead,
+      STORES.captureJobs,
+      STORES.commandOutcomes,
+      STORES.vacuumJobs,
+      STORES.exportJobs,
+    ];
+    const database = await this.databasePromise;
+    const transaction = database.transaction(stores, "readwrite");
+    try {
+      const collisionStores = [
+        STORES.vaultDirectory,
+        STORES.vaultNameCache,
+        STORES.vaultNameProjection,
+        STORES.vaultMetadata,
+        STORES.keySlots,
+        STORES.deviceKeys,
+        STORES.objects,
+        STORES.events,
+        STORES.libraryProjection,
+        STORES.collectionProjection,
+        STORES.vaultGenerations,
+        STORES.vaultHead,
+      ];
+      const [workspaceValue, jobValue, headValue, ...forkCollisions] = await Promise.all([
+        requestValue(transaction.objectStore(STORES.workspaceMetadata).get("local")),
+        requestValue(transaction.objectStore(STORES.synchronizationJobs).get("active")),
+        requestValue(
+          transaction.objectStore(STORES.vaultHead).get(vaultSingletonKey(vaultId, "active")),
+        ),
+        ...collisionStores.map((storeName) =>
+          requestValue(
+            transaction
+              .objectStore(storeName)
+              .count(
+                storeName === STORES.vaultDirectory || storeName === STORES.vaultNameCache
+                  ? IDBKeyRange.only(forkVaultId)
+                  : vaultKeyRange(forkVaultId),
+              ),
+          ),
+        ),
+      ]);
+      const workspace = decodeWorkspaceMetadata(workspaceValue);
+      const storedJob = jobValue as SynchronizationJobV1 | undefined;
+      const staleHead = headValue as StoredVaultHeadV1 | undefined;
+      if (
+        workspace.activeVaultId !== vaultId ||
+        storedJob?.jobId !== input.job.jobId ||
+        storedJob.stage !== "ActivateRecovery" ||
+        staleHead?.generationId !== input.expectedStaleGenerationId ||
+        forkCollisions.some((count) => count !== 0)
+      )
+        throw Object.assign(new Error("Stale recovery ownership changed."), {
+          id: "VAULT_CONTEXT_CHANGED",
+        });
+
+      const clearVaultRange = (storeName: string, targetVaultId: string): void => {
+        transaction.objectStore(storeName).delete(vaultKeyRange(targetVaultId));
+      };
+      for (const storeName of [
+        STORES.objects,
+        STORES.events,
+        STORES.libraryProjection,
+        STORES.vaultGenerations,
+        STORES.captureJobs,
+        STORES.commandOutcomes,
+        STORES.vacuumJobs,
+        STORES.exportJobs,
+      ])
+        clearVaultRange(storeName, vaultId);
+      transaction
+        .objectStore(STORES.collectionProjection)
+        .delete(vaultSingletonKey(vaultId, "active"));
+      transaction
+        .objectStore(STORES.vaultNameProjection)
+        .delete(vaultSingletonKey(vaultId, "active"));
+
+      transaction
+        .objectStore(STORES.vaultMetadata)
+        .put(
+          { ...input.originalRecords.metadata, manuallyLocked: false },
+          vaultSingletonKey(vaultId, "metadata"),
+        );
+      transaction
+        .objectStore(STORES.vaultGenerations)
+        .put(input.remoteGeneration, vaultKey(vaultId, input.remoteGeneration.generationId));
+      transaction
+        .objectStore(STORES.vaultHead)
+        .put(input.remoteHead, vaultSingletonKey(vaultId, "active"));
+      for (const event of input.remoteEvents)
+        transaction.objectStore(STORES.events).put(event, vaultKey(vaultId, event.eventId));
+      for (const object of input.remoteObjects)
+        transaction.objectStore(STORES.objects).put(object, vaultKey(vaultId, object.objectId));
+      for (const projection of input.remoteLibraryProjections)
+        transaction
+          .objectStore(STORES.libraryProjection)
+          .put(projection, vaultKey(vaultId, projection.bundleId));
+      transaction
+        .objectStore(STORES.collectionProjection)
+        .put(input.remoteCollectionProjection, vaultSingletonKey(vaultId, "active"));
+      transaction
+        .objectStore(STORES.vaultNameProjection)
+        .put(input.remoteVaultNameProjection, vaultSingletonKey(vaultId, "active"));
+      transaction.objectStore(STORES.vaultNameCache).put(input.remoteNameCache, vaultId);
+
+      transaction
+        .objectStore(STORES.vaultMetadata)
+        .add(input.fork.records.metadata, vaultSingletonKey(forkVaultId, "metadata"));
+      transaction
+        .objectStore(STORES.keySlots)
+        .add(input.fork.records.deviceSlot, vaultSingletonKey(forkVaultId, "device"));
+      transaction
+        .objectStore(STORES.deviceKeys)
+        .add(input.fork.records.deviceKey, vaultSingletonKey(forkVaultId, "device"));
+      transaction
+        .objectStore(STORES.vaultGenerations)
+        .add(
+          input.fork.records.generation,
+          vaultKey(forkVaultId, input.fork.records.generation.generationId),
+        );
+      transaction
+        .objectStore(STORES.vaultHead)
+        .add(input.fork.records.head, vaultSingletonKey(forkVaultId, "active"));
+      for (const event of input.fork.events)
+        transaction.objectStore(STORES.events).add(event, vaultKey(forkVaultId, event.eventId));
+      for (const object of input.fork.objects)
+        transaction.objectStore(STORES.objects).add(object, vaultKey(forkVaultId, object.objectId));
+      for (const projection of input.fork.libraryProjections)
+        transaction
+          .objectStore(STORES.libraryProjection)
+          .add(projection, vaultKey(forkVaultId, projection.bundleId));
+      transaction
+        .objectStore(STORES.collectionProjection)
+        .add(input.fork.collectionProjection, vaultSingletonKey(forkVaultId, "active"));
+      transaction
+        .objectStore(STORES.vaultNameProjection)
+        .add(input.fork.vaultNameProjection, vaultSingletonKey(forkVaultId, "active"));
+      transaction.objectStore(STORES.vaultNameCache).add(input.fork.nameCache, forkVaultId);
+      transaction.objectStore(STORES.vaultDirectory).add(
+        {
+          version: 1,
+          vaultId: forkVaultId,
+          createdAt: input.fork.records.metadata.createdAt,
+        } satisfies VaultDirectoryEntryV1,
+        forkVaultId,
+      );
+      transaction.objectStore(STORES.accountVault).put(input.registration, "active");
+      transaction
+        .objectStore(STORES.synchronizationJobs)
+        .put({ ...input.job, state: "Succeeded", stage: "Checkpoint" }, "active");
       await transactionDone(transaction);
     } catch (error) {
       try {

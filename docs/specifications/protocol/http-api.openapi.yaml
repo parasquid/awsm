@@ -10,6 +10,137 @@ servers:
 security:
   - accountBearer: []
 paths:
+  /api/server-information:
+    get:
+      operationId: getServerInformation
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ProtocolVersion"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Coordination Server identity and supported pre-release capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerInformation"
+        default:
+          $ref: "#/components/responses/Outcome"
+  /api/authentication-parameters:
+    post:
+      operationId: getAuthenticationParameters
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ProtocolVersion"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthenticationParametersRequest"
+      responses:
+        "200":
+          description: Canonical public password derivation parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticationParameters"
+        default:
+          $ref: "#/components/responses/Outcome"
+  /api/accounts:
+    post:
+      operationId: createAccount
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ProtocolVersion"
+        - $ref: "#/components/parameters/RequestId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "201":
+          description: Account and initial authenticated session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticatedSession"
+        default:
+          $ref: "#/components/responses/Outcome"
+  /api/sessions:
+    post:
+      operationId: createSession
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ProtocolVersion"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "200":
+          description: Authenticated Account session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticatedSession"
+        default:
+          $ref: "#/components/responses/Outcome"
+  /api/session/refresh:
+    post:
+      operationId: refreshSession
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/ProtocolVersion"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshSessionRequest"
+      responses:
+        "200":
+          description: Rotated authenticated Account session credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticatedSession"
+        default:
+          $ref: "#/components/responses/Outcome"
+  /api/session:
+    delete:
+      operationId: deleteSession
+      parameters:
+        - $ref: "#/components/parameters/ProtocolVersion"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "204":
+          description: Current Account session revoked
+        default:
+          $ref: "#/components/responses/Outcome"
+  /api/cable-tickets:
+    post:
+      operationId: createCableTicket
+      parameters:
+        - $ref: "#/components/parameters/ProtocolVersion"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "201":
+          description: One-use short-lived Action Cable connection ticket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CableTicket"
+        default:
+          $ref: "#/components/responses/Outcome"
   /api/service-policy:
     get:
       operationId: getServicePolicy
@@ -31,6 +162,20 @@ paths:
         default:
           $ref: "#/components/responses/Outcome"
   /api/vaults:
+    get:
+      operationId: listVaults
+      parameters:
+        - $ref: "#/components/parameters/ProtocolVersion"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Zero or one Account-owned Vault
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VaultList"
+        default:
+          $ref: "#/components/responses/Outcome"
     post:
       operationId: attachVault
       parameters:
@@ -289,6 +434,12 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/Uuid"
+        - in: query
+          name: snapshot
+          required: false
+          description: Cursor fence returned by the first page; repeat it on later pages.
+          schema:
+            $ref: "#/components/schemas/Counter"
       responses:
         "200":
           description: Snapshot-bounded delivery changes
@@ -642,6 +793,189 @@ components:
           schema:
             $ref: "#/components/schemas/Outcome"
   schemas:
+    ServerInformation:
+      type: object
+      additionalProperties: false
+      required: [service, protocolVersion, capabilities]
+      properties:
+        service:
+          type: string
+          enum: [AWSM Coordination Server]
+        protocolVersion:
+          type: string
+          enum: ["1"]
+        capabilities:
+          type: object
+          additionalProperties: false
+          required: [accountPassword, accountVaultLimit, completeReplicaSynchronization]
+          properties:
+            accountPassword:
+              type: boolean
+              enum: [true]
+            accountVaultLimit:
+              type: integer
+              enum: [1]
+            completeReplicaSynchronization:
+              type: boolean
+              enum: [true]
+    Email:
+      type: string
+      minLength: 3
+      maxLength: 254
+      pattern: "^[^\\s@]+@[^\\s@]+$"
+    Base64Url32:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{43}$"
+    Base64Url16:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{22}$"
+    Base64Url24:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{32}$"
+    AccountKeyEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - version
+        - accountKeyId
+        - kdfAlgorithm
+        - kdfSalt
+        - kdfOperations
+        - kdfMemoryBytes
+        - wrappingAlgorithm
+        - nonce
+        - ciphertext
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        accountKeyId:
+          $ref: "#/components/schemas/Uuid"
+        kdfAlgorithm:
+          type: string
+          enum: ["kdf:argon2id13:account:v1"]
+        kdfSalt:
+          $ref: "#/components/schemas/Base64Url16"
+        kdfOperations:
+          type: integer
+          enum: [3]
+        kdfMemoryBytes:
+          type: integer
+          enum: [67108864]
+        wrappingAlgorithm:
+          type: string
+          enum: ["wrap:xchacha20poly1305:account-password:v1"]
+        nonce:
+          $ref: "#/components/schemas/Base64Url24"
+        ciphertext:
+          type: string
+          minLength: 64
+          pattern: "^[A-Za-z0-9_-]+$"
+    AccountSummary:
+      type: object
+      additionalProperties: false
+      required: [accountId, email, accountKeyEnvelope]
+      properties:
+        accountId:
+          $ref: "#/components/schemas/Uuid"
+        email:
+          $ref: "#/components/schemas/Email"
+        accountKeyEnvelope:
+          $ref: "#/components/schemas/AccountKeyEnvelope"
+    AuthenticationParametersRequest:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          $ref: "#/components/schemas/Email"
+    AuthenticationParameters:
+      type: object
+      additionalProperties: false
+      required: [accountKeyId, kdfAlgorithm, kdfSalt, kdfOperations, kdfMemoryBytes]
+      properties:
+        accountKeyId:
+          $ref: "#/components/schemas/Uuid"
+        kdfAlgorithm:
+          type: string
+          enum: ["kdf:argon2id13:account:v1"]
+        kdfSalt:
+          $ref: "#/components/schemas/Base64Url16"
+        kdfOperations:
+          type: integer
+          enum: [3]
+        kdfMemoryBytes:
+          type: integer
+          enum: [67108864]
+    CableTicket:
+      type: object
+      additionalProperties: false
+      required: [ticket, expiresAt]
+      properties:
+        ticket:
+          type: string
+          pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.[A-Za-z0-9_-]{43}$"
+        expiresAt:
+          type: string
+          format: date-time
+    CreateAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [email, authenticationSecret, accountKeyEnvelope]
+      properties:
+        email:
+          $ref: "#/components/schemas/Email"
+        authenticationSecret:
+          $ref: "#/components/schemas/Base64Url32"
+        accountKeyEnvelope:
+          $ref: "#/components/schemas/AccountKeyEnvelope"
+    CreateSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [email, authenticationSecret]
+      properties:
+        email:
+          $ref: "#/components/schemas/Email"
+        authenticationSecret:
+          $ref: "#/components/schemas/Base64Url32"
+    RefreshSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          minLength: 80
+          maxLength: 96
+    AuthenticatedSession:
+      type: object
+      additionalProperties: false
+      required:
+        - account
+        - sessionId
+        - accessToken
+        - accessExpiresAt
+        - refreshToken
+        - refreshExpiresAt
+      properties:
+        account:
+          $ref: "#/components/schemas/AccountSummary"
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        accessToken:
+          type: string
+          minLength: 80
+          maxLength: 96
+        accessExpiresAt:
+          type: string
+          format: date-time
+        refreshToken:
+          type: string
+          minLength: 80
+          maxLength: 96
+        refreshExpiresAt:
+          type: string
+          format: date-time
     Uuid:
       type: string
       format: uuid
@@ -689,7 +1023,7 @@ components:
     AttachVaultRequest:
       type: object
       additionalProperties: false
-      required: [vaultId, generationId, generationNumber, generationObject]
+      required: [vaultId, generationId, generationNumber, accountSlot, generationObject]
       properties:
         vaultId:
           $ref: "#/components/schemas/Uuid"
@@ -698,6 +1032,8 @@ components:
         generationNumber:
           type: integer
           enum: [0]
+        accountSlot:
+          $ref: "#/components/schemas/AccountSlot"
         generationObject:
           $ref: "#/components/schemas/ObjectMetadata"
     AttachVaultResponse:
@@ -721,10 +1057,12 @@ components:
     Vault:
       type: object
       additionalProperties: false
-      required: [vaultId, state, generationId, generationNumber, headCursor]
+      required: [vaultId, state, generationId, generationNumber, headCursor, accountSlot]
       properties:
         vaultId:
           $ref: "#/components/schemas/Uuid"
+        accountSlot:
+          $ref: "#/components/schemas/AccountSlot"
         state:
           type: string
           enum: [Provisional, Active]
@@ -732,8 +1070,43 @@ components:
           $ref: "#/components/schemas/Uuid"
         generationNumber:
           $ref: "#/components/schemas/Counter"
+        predecessorGenerationId:
+          $ref: "#/components/schemas/Uuid"
         headCursor:
           $ref: "#/components/schemas/Counter"
+    VaultList:
+      type: object
+      additionalProperties: false
+      required: [vaults]
+      properties:
+        vaults:
+          type: array
+          maxItems: 1
+          items:
+            $ref: "#/components/schemas/Vault"
+    AccountSlot:
+      type: object
+      additionalProperties: false
+      required: [version, slotId, vaultId, accountKeyId, algorithm, nonce, ciphertext]
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        slotId:
+          $ref: "#/components/schemas/Uuid"
+        vaultId:
+          $ref: "#/components/schemas/Uuid"
+        accountKeyId:
+          $ref: "#/components/schemas/Uuid"
+        algorithm:
+          type: string
+          enum: ["wrap:xchacha20poly1305:account:v1"]
+        nonce:
+          $ref: "#/components/schemas/Base64Url24"
+        ciphertext:
+          type: string
+          minLength: 64
+          pattern: "^[A-Za-z0-9_-]+$"
     CreateUploadRequest:
       allOf:
         - $ref: "#/components/schemas/ObjectMetadata"
@@ -1119,12 +1492,16 @@ components:
           enum:
             - AUTHENTICATION_FAILED
             - AUTHENTICATION_UNAVAILABLE
+            - ACCOUNT_UNAVAILABLE
+            - ACCOUNT_INPUT_INVALID
             - RECENT_AUTHENTICATION_REQUIRED
             - AUTHORIZATION_DENIED
             - PROTOCOL_VERSION_UNSUPPORTED
             - REQUEST_INVALID
             - IDEMPOTENCY_CONFLICT
             - VAULT_ID_UNAVAILABLE
+            - VAULT_ACCOUNT_LIMIT_REACHED
+            - VAULT_IDENTITY_MISMATCH
             - VAULT_NOT_FOUND
             - VAULT_NOT_READY
             - OBJECT_ID_CONFLICT

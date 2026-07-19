@@ -1,3 +1,4 @@
+import { browser } from "wxt/browser";
 import { base64ToBytes } from "../../src/app/base64";
 import { AppClientError, sendRequest } from "../../src/app/client";
 import type {
@@ -12,6 +13,7 @@ import type {
 import type { ArtifactRole } from "../../src/domain/artifact-graph";
 import { decodeStructuredContentSequence } from "../../src/domain/structured-content";
 import { ChromeVaultImportHost } from "../../src/hosts/chrome/import";
+import { serverPermissionPattern } from "../../src/runtime/account/server";
 import {
   captureDropRequest,
   collectionLayerBundleIds,
@@ -33,6 +35,7 @@ const app = requiredElement("#app");
 const announcer = requiredElement("#announcer");
 const pageHeader = requiredElement("header");
 const libraryTitle = requiredElement("#library-title");
+const accountSettings = requiredElement("#account-settings") as HTMLButtonElement;
 let screenshotUrl: string | undefined;
 let detailController: AbortController | undefined;
 let activeGroups: readonly LibraryPageGroupMessage[] = [];
@@ -50,6 +53,8 @@ let cancelPageOwnedImport: (() => void) | undefined;
 let pageOwnedImportJobId: string | undefined;
 let abortPageOwnedImport: (() => void) | undefined;
 let closePageOwnedImport: (() => void) | undefined;
+let renderedState: AppState | undefined;
+let staleRecoveryDialogOpened = false;
 
 function expectedVaultId(): string {
   if (activeVaultId === undefined) throw new Error("No active Vault is selected.");
@@ -73,6 +78,145 @@ function element<K extends keyof HTMLElementTagNameMap>(
   if (className !== undefined) node.className = className;
   return node;
 }
+
+function showAccountSettings(): void {
+  const state = renderedState;
+  if (state === undefined) return;
+  const { dialog, form } = dialogShell("Account and synchronization");
+  const account = state.account;
+  const server =
+    account.configuration.mode === "Configured"
+      ? account.configuration.serverOrigin
+      : account.configuration.mode === "LocalOnly"
+        ? "Local only"
+        : "Not chosen";
+  form.append(
+    element("p", `Server · ${server}`, "muted"),
+    element("p", `Account · ${account.email ?? "Not signed in"}`, "muted"),
+    element("p", `Synchronization · ${account.vaultSyncState}`, "muted"),
+  );
+  const actions = element("div", undefined, "actions");
+  if (account.vaultSyncState === "SetupRequired") {
+    const finish = element("button", "Finish setup");
+    finish.type = "button";
+    finish.addEventListener("click", () => {
+      void browser.tabs.create({ url: browser.runtime.getURL("/signup.html") });
+      dialog.close();
+    });
+    actions.append(finish);
+  }
+  if (account.vaultSyncState === "Failed" || account.vaultSyncState === "Offline") {
+    const retry = element("button", "Retry synchronization");
+    retry.type = "button";
+    retry.addEventListener("click", () => {
+      retry.disabled = true;
+      void sendRequest<AppState>({ type: "RetrySynchronization" }).then(
+        (next) => {
+          dialog.close();
+          renderVaultBar(next);
+        },
+        () => {
+          retry.disabled = false;
+        },
+      );
+    });
+    actions.append(retry);
+  }
+  if (account.accountState === "Authenticated") {
+    const logout = element("button", "Sign out");
+    logout.type = "button";
+    logout.addEventListener("click", () => {
+      logout.disabled = true;
+      void sendRequest<AppState>({ type: "LogoutAccount" }).then((next) => {
+        dialog.close();
+        renderVaultBar(next);
+      });
+    });
+    actions.append(logout);
+  }
+  form.append(actions);
+  const serverLabel = element(
+    "label",
+    account.configuration.mode === "Configured"
+      ? "Change synchronization server"
+      : "Add synchronization server",
+  );
+  const origin = element("input");
+  origin.type = "url";
+  origin.required = true;
+  origin.placeholder = "https://sync.example.com";
+  origin.value =
+    account.configuration.mode === "Configured"
+      ? account.configuration.serverOrigin
+      : "https://awsm.foo";
+  serverLabel.append(origin);
+  form.append(serverLabel);
+  if (account.configuration.mode === "Configured") {
+    const warning = element("label", undefined, "warning-confirmation");
+    const confirmed = element("input");
+    confirmed.type = "checkbox";
+    confirmed.required = true;
+    warning.append(
+      confirmed,
+      document.createTextNode(
+        " Changing servers signs out this Account. Local Vault data remains on this device.",
+      ),
+    );
+    form.append(warning);
+  }
+  const controls = element("div", undefined, "actions");
+  const save = element(
+    "button",
+    account.configuration.mode === "Configured" ? "Change server" : "Connect server",
+  );
+  save.type = "submit";
+  const cancel = element("button", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => dialog.close());
+  controls.append(save, cancel);
+  form.append(controls);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    save.disabled = true;
+    void browser.permissions
+      .request({ origins: [serverPermissionPattern(origin.value)] })
+      .then((granted) => {
+        if (!granted)
+          throw new AppClientError(
+            "SERVER_PERMISSION_DENIED",
+            "Chrome did not grant access to that synchronization server.",
+          );
+        return sendRequest<AppState>({
+          type:
+            account.configuration.mode === "Configured"
+              ? "ChangeSyncServer"
+              : "ConfigureSyncServer",
+          serverOrigin: origin.value,
+        });
+      })
+      .then(
+        (next) => {
+          dialog.close();
+          renderVaultBar(next);
+        },
+        (error) => {
+          save.disabled = false;
+          form.querySelector(".error")?.remove();
+          form.append(
+            element(
+              "p",
+              error instanceof AppClientError ? error.message : "The server could not be changed.",
+              "notice error",
+            ),
+          );
+        },
+      );
+  });
+  dialog.addEventListener("close", () => accountSettings.focus(), { once: true });
+  dialog.showModal();
+}
+
+accountSettings.addEventListener("click", showAccountSettings);
 
 async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
   const suggestion = await sendRequest<{ readonly name: string }>({
@@ -485,6 +629,184 @@ function showExportVaultDialog(restoreFocus: HTMLElement): void {
   passphrase.focus();
 }
 
+function showStaleReplicaRecoveryDialog(restoreFocus: HTMLElement): void {
+  const state = renderedState;
+  const active = state?.workspace.vaults.find((vault) => vault.active);
+  if (state === undefined || active === undefined || !active.unlocked) return;
+  const { dialog, form } = dialogShell("Resolve stale synchronized Vault");
+  const warning = element("section", undefined, "notice recovery-warning");
+  warning.append(
+    element("h3", "The server copy will replace this Vault"),
+    element(
+      "p",
+      "AWSM will first preserve the current local state as a new local-only Vault with fresh identifiers. It will then completely overwrite this stale synchronized Vault with the server-authoritative data.",
+    ),
+    element(
+      "p",
+      "Exporting first is strongly recommended. The encrypted .awsm package can later be imported as another local-only Vault.",
+      "warning",
+    ),
+  );
+  const exportHeading = element("h3", "Recommended: export before replacing");
+  const passphraseLabel = element("label", "Export passphrase");
+  const passphrase = element("input");
+  passphrase.type = "password";
+  passphrase.autocomplete = "new-password";
+  passphraseLabel.append(passphrase);
+  const confirmationLabel = element("label", "Confirm export passphrase");
+  const confirmation = element("input");
+  confirmation.type = "password";
+  confirmation.autocomplete = "new-password";
+  confirmationLabel.append(confirmation);
+  const exportButton = element("button", "Export encrypted Vault");
+  exportButton.type = "button";
+  const exportStatus = element("p", "No recovery Export has been created yet.", "muted");
+  const skipHeading = element("h3", "Continue without an Export");
+  const skip = element("label", undefined, "warning-confirmation");
+  const skipCheckbox = element("input");
+  skipCheckbox.type = "checkbox";
+  skip.append(
+    skipCheckbox,
+    document.createTextNode(" I understand that I am declining the recommended encrypted Export."),
+  );
+  const overwrite = element("label", undefined, "warning-confirmation");
+  const overwriteCheckbox = element("input");
+  overwriteCheckbox.type = "checkbox";
+  overwrite.append(
+    overwriteCheckbox,
+    document.createTextNode(
+      " I understand that the stale synchronized Vault will be completely overwritten by server data.",
+    ),
+  );
+  const feedback = element("p", "", "notice error");
+  feedback.hidden = true;
+  const actions = element("div", undefined, "actions");
+  const resolve = element("button", "Preserve local copy and use server data");
+  resolve.type = "submit";
+  resolve.className = "danger-action";
+  resolve.disabled = true;
+  const cancel = element("button", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => dialog.close());
+  actions.append(resolve, cancel);
+  let exported = false;
+  let activating = false;
+  const updateResolve = (): void => {
+    resolve.disabled = !exported && !(skipCheckbox.checked && overwriteCheckbox.checked);
+  };
+  skipCheckbox.addEventListener("change", updateResolve);
+  overwriteCheckbox.addEventListener("change", updateResolve);
+  exportButton.addEventListener("click", () => {
+    feedback.hidden = true;
+    if (
+      Array.from(passphrase.value).length < 12 ||
+      new TextEncoder().encode(passphrase.value).byteLength > 1024
+    ) {
+      feedback.textContent = "Use at least 12 characters and no more than 1,024 UTF-8 bytes.";
+      feedback.hidden = false;
+      passphrase.focus();
+      return;
+    }
+    if (passphrase.value !== confirmation.value) {
+      feedback.textContent = "The passphrases do not match.";
+      feedback.hidden = false;
+      confirmation.focus();
+      return;
+    }
+    exportButton.disabled = true;
+    exportButton.textContent = "Preparing encrypted Export…";
+    const request = sendRequest<{ readonly jobId: string; readonly filename: string }>({
+      type: "ExportVault",
+      expectedVaultId: active.vaultId,
+      passphrase: passphrase.value,
+    });
+    passphrase.value = "";
+    confirmation.value = "";
+    void request.then(
+      (result) => {
+        exported = true;
+        exportButton.textContent = "Export downloaded";
+        exportStatus.textContent = `Encrypted recovery Export downloaded as ${result.filename}.`;
+        skipCheckbox.checked = false;
+        overwriteCheckbox.checked = false;
+        skipCheckbox.disabled = true;
+        overwriteCheckbox.disabled = true;
+        updateResolve();
+      },
+      (error) => {
+        exportButton.disabled = false;
+        exportButton.textContent = "Try Export again";
+        feedback.textContent =
+          error instanceof AppClientError ? error.message : "The encrypted Export failed safely.";
+        feedback.hidden = false;
+      },
+    );
+  });
+  form.append(
+    warning,
+    exportHeading,
+    passphraseLabel,
+    confirmationLabel,
+    exportButton,
+    exportStatus,
+    skipHeading,
+    skip,
+    overwrite,
+    feedback,
+    actions,
+  );
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (resolve.disabled) return;
+    activating = true;
+    resolve.disabled = true;
+    cancel.disabled = true;
+    exportButton.disabled = true;
+    skipCheckbox.disabled = true;
+    overwriteCheckbox.disabled = true;
+    resolve.textContent = "Preserving and replacing…";
+    feedback.className = "notice";
+    feedback.textContent =
+      "Keep this page open. AWSM is verifying the server copy before changing either Vault.";
+    feedback.hidden = false;
+    const minimumBusyDisplay = new Promise<void>((resolveDelay) => {
+      window.setTimeout(resolveDelay, 750);
+    });
+    void sendRequest<{ readonly forkVaultId: string }>({
+      type: "ResolveStaleReplica",
+      expectedVaultId: active.vaultId,
+      exportDecision: exported ? "Exported" : "SkipConfirmed",
+    }).then(
+      async () => {
+        await minimumBusyDisplay;
+        activating = false;
+        dialog.close();
+        announcer.textContent =
+          "The synchronized Vault now matches the server. A local-only recovered copy was created.";
+        await initialize();
+      },
+      async (error) => {
+        await minimumBusyDisplay;
+        activating = false;
+        cancel.disabled = false;
+        resolve.textContent = "Preserve local copy and use server data";
+        updateResolve();
+        feedback.className = "notice error";
+        feedback.textContent =
+          error instanceof AppClientError
+            ? error.message
+            : "Recovery stopped safely before activation. Try again.";
+      },
+    );
+  });
+  dialog.addEventListener("cancel", (event) => {
+    if (activating) event.preventDefault();
+  });
+  dialog.addEventListener("close", () => restoreFocus.focus(), { once: true });
+  dialog.showModal();
+  passphrase.focus();
+}
+
 function renderLibraryTitle(state: AppState, restoreFocus = false): void {
   const view = vaultManagementView(state.workspace);
   const active = state.workspace.vaults.find((vault) => vault.active);
@@ -644,6 +966,7 @@ function appendImportJobStatus(bar: HTMLElement, state: AppState, currentVaultId
 }
 
 function renderVaultBar(state: AppState): void {
+  renderedState = state;
   activeVaultId = state.workspace.activeVaultId;
   document.querySelector("#vault-management")?.remove();
   const view = vaultManagementView(state.workspace);
@@ -669,6 +992,19 @@ function renderVaultBar(state: AppState): void {
   const bar = element("section", undefined, "vault-control");
   bar.id = "vault-management";
   bar.append(element("p", active.unlocked ? "Unlocked" : "Locked", "muted"));
+  if (state.account.staleResolutionRequired === true) {
+    bar.append(
+      element(
+        "p",
+        "Synchronization paused: this local Replica is stale and remains read-only until resolved.",
+        "notice error",
+      ),
+    );
+    const resolveStale = element("button", "Resolve stale Vault");
+    resolveStale.disabled = !active.unlocked;
+    resolveStale.addEventListener("click", () => showStaleReplicaRecoveryDialog(resolveStale));
+    bar.append(resolveStale);
+  }
   if (view.busyText !== undefined) bar.append(element("p", view.busyText, "muted"));
   const actions = element("div", undefined, "actions");
   const switcher = element("button", "Switch Vault");
@@ -1931,6 +2267,17 @@ async function initialize(): Promise<void> {
     if (!active.unlocked) {
       await showUnlock();
       return;
+    }
+    if (
+      !staleRecoveryDialogOpened &&
+      state.account.staleResolutionRequired === true &&
+      new URLSearchParams(window.location.search).get("resolveStale") === "1"
+    ) {
+      staleRecoveryDialogOpened = true;
+      const trigger = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent === "Resolve stale Vault",
+      );
+      if (trigger !== undefined) showStaleReplicaRecoveryDialog(trigger);
     }
     if (requestedBundleId === null) await loadList();
     else await loadDetail(requestedBundleId);

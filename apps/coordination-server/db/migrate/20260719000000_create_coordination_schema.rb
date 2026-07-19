@@ -3,12 +3,80 @@ class CreateCoordinationSchema < ActiveRecord::Migration[8.1]
     enable_extension "pgcrypto"
 
     create_table :accounts, id: :uuid do |table|
+      table.string :email, null: false
+      table.string :authentication_secret_digest, null: false
+      table.uuid :account_key_id, null: false
+      table.binary :kdf_salt, null: false
+      table.integer :kdf_operations, null: false, default: 3
+      table.bigint :kdf_memory_bytes, null: false, default: 67_108_864
+      table.string :key_envelope_algorithm, null: false,
+        default: "wrap:xchacha20poly1305:account-password:v1"
+      table.binary :key_envelope_nonce, null: false
+      table.binary :key_envelope_ciphertext, null: false
+      table.timestamps
+    end
+    add_index :accounts, :email, unique: true
+    add_index :accounts, :account_key_id, unique: true
+    add_check_constraint :accounts, "email = lower(email)", name: "accounts_normalized_email"
+    add_check_constraint :accounts, "octet_length(kdf_salt) = 16", name: "accounts_kdf_salt"
+    add_check_constraint :accounts, "kdf_operations = 3", name: "accounts_kdf_operations"
+    add_check_constraint :accounts, "kdf_memory_bytes = 67108864", name: "accounts_kdf_memory"
+    add_check_constraint :accounts, "octet_length(key_envelope_nonce) = 24",
+      name: "accounts_key_envelope_nonce"
+    add_check_constraint :accounts, "octet_length(key_envelope_ciphertext) >= 48",
+      name: "accounts_key_envelope_ciphertext"
+
+    create_table :account_sessions, id: :uuid do |table|
+      table.references :account, null: false, type: :uuid, foreign_key: true
+      table.datetime :confirmed_at, null: false
+      table.datetime :revoked_at
       table.timestamps
     end
 
-    create_table :vault_replicas, id: :uuid do |table|
+    create_table :session_credentials, id: :uuid do |table|
+      table.references :account_session, null: false, type: :uuid, foreign_key: true
+      table.string :kind, null: false
+      table.binary :secret_digest, null: false
+      table.datetime :expires_at, null: false
+      table.datetime :consumed_at
+      table.datetime :revoked_at
+      table.timestamps
+    end
+    add_index :session_credentials, [ :account_session_id, :kind ]
+    add_check_constraint :session_credentials, "kind IN ('Access', 'Refresh')",
+      name: "session_credentials_kind"
+    add_check_constraint :session_credentials, "octet_length(secret_digest) = 32",
+      name: "session_credentials_digest"
+
+    create_table :signup_registrations, id: :uuid do |table|
       table.references :account, null: false, type: :uuid, foreign_key: true
+      table.uuid :idempotency_key, null: false
+      table.binary :request_sha256, null: false
+      table.timestamps
+    end
+    add_index :signup_registrations, :idempotency_key, unique: true
+    add_check_constraint :signup_registrations, "octet_length(request_sha256) = 32",
+      name: "signup_registrations_request_sha256"
+
+    create_table :cable_tickets, id: :uuid do |table|
+      table.references :account, null: false, type: :uuid, foreign_key: true
+      table.binary :secret_digest, null: false
+      table.datetime :expires_at, null: false
+      table.timestamps
+    end
+    add_check_constraint :cable_tickets, "octet_length(secret_digest) = 32",
+      name: "cable_tickets_digest"
+
+    create_table :vault_replicas, id: :uuid do |table|
+      table.references :account, null: false, type: :uuid, foreign_key: true,
+        index: { unique: true }
       table.uuid :vault_id, null: false
+      table.uuid :account_slot_id, null: false
+      table.uuid :account_key_id, null: false
+      table.string :account_slot_algorithm, null: false,
+        default: "wrap:xchacha20poly1305:account:v1"
+      table.binary :account_slot_nonce, null: false
+      table.binary :account_slot_ciphertext, null: false
       table.string :state, null: false
       table.uuid :active_generation_id
       table.bigint :active_generation_number
@@ -17,8 +85,16 @@ class CreateCoordinationSchema < ActiveRecord::Migration[8.1]
       table.timestamps
     end
     add_index :vault_replicas, :vault_id, unique: true
+    add_index :vault_replicas, :account_slot_id, unique: true
     add_check_constraint :vault_replicas, "state IN ('Provisional', 'Active')", name: "vault_replicas_state"
     add_check_constraint :vault_replicas, "head_cursor >= 0", name: "vault_replicas_head_cursor"
+    add_check_constraint :vault_replicas, "octet_length(account_slot_nonce) = 24",
+      name: "vault_replicas_account_slot_nonce"
+    add_check_constraint :vault_replicas, "octet_length(account_slot_ciphertext) >= 48",
+      name: "vault_replicas_account_slot_ciphertext"
+    add_check_constraint :vault_replicas,
+      "account_slot_algorithm = 'wrap:xchacha20poly1305:account:v1'",
+      name: "vault_replicas_account_slot_algorithm"
     add_check_constraint :vault_replicas,
       "active_generation_number IS NULL OR active_generation_number >= 0",
       name: "vault_replicas_generation_number"

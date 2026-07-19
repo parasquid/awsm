@@ -675,7 +675,12 @@ export class IndexedDbDriver {
     const database = await this.databasePromise;
     const transaction = database.transaction([STORES.vacuumJobs, STORES.importJobs], "readwrite");
     await assertNoActiveImport(transaction);
-    transaction.objectStore(STORES.vacuumJobs).delete(vaultKey(this.vaultId, jobId));
+    const store = transaction.objectStore(STORES.vacuumJobs);
+    const job = (await requestValue(store.get(vaultKey(this.vaultId, jobId)))) as
+      | import("./schema").StoredVacuumJobV1
+      | undefined;
+    if (job?.stage !== "ActivateRemote" && job?.stage !== "ActivateLocal")
+      store.delete(vaultKey(this.vaultId, jobId));
     await transactionDone(transaction);
   }
 
@@ -698,6 +703,60 @@ export class IndexedDbDriver {
     await transactionDone(transaction);
   }
 
+  async persistSynchronizedVacuumCandidate(
+    jobId: string,
+    candidate: import("../../runtime/library/vacuum").VacuumCandidate,
+  ): Promise<void> {
+    if (candidate.jobId !== jobId || candidate.expectedGenerationId === undefined)
+      throw storageError(new Error("Synchronized Vacuum candidate is incomplete."));
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.vacuumJobs, "readwrite");
+    const store = transaction.objectStore(STORES.vacuumJobs);
+    const value = (await requestValue(store.get(vaultKey(this.vaultId, jobId)))) as
+      | import("./schema").StoredVacuumJobV1
+      | undefined;
+    if (value === undefined || value.sourceGenerationId !== candidate.expectedGenerationId) {
+      abortTransaction(transaction);
+      throw storageError(new Error("Synchronized Vacuum lease is missing or stale."));
+    }
+    store.put({ ...value, stage: "ActivateRemote", candidate }, vaultKey(this.vaultId, jobId));
+    await transactionDone(transaction);
+  }
+
+  async markSynchronizedVacuumActivated(jobId: string, headCursor: number): Promise<void> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.vacuumJobs, "readwrite");
+    const store = transaction.objectStore(STORES.vacuumJobs);
+    const value = (await requestValue(store.get(vaultKey(this.vaultId, jobId)))) as
+      | import("./schema").StoredVacuumJobV1
+      | undefined;
+    if (
+      value?.stage !== "ActivateRemote" ||
+      value.candidate === undefined ||
+      !Number.isSafeInteger(headCursor) ||
+      headCursor < 0
+    ) {
+      abortTransaction(transaction);
+      throw storageError(new Error("Synchronized Vacuum activation is inconsistent."));
+    }
+    store.put(
+      { ...value, stage: "ActivateLocal", activatedHeadCursor: headCursor },
+      vaultKey(this.vaultId, jobId),
+    );
+    await transactionDone(transaction);
+  }
+
+  async latestVacuumJob(): Promise<import("./schema").StoredVacuumJobV1 | undefined> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.vacuumJobs, "readonly");
+    const values = (await requestValue(
+      transaction.objectStore(STORES.vacuumJobs).getAll(vaultKeyRange(this.vaultId)),
+    )) as import("./schema").StoredVacuumJobV1[];
+    await transactionDone(transaction);
+    if (values.length > 1) throw storageError(new Error("Multiple Vault Vacuum leases exist."));
+    return values[0];
+  }
+
   async getVaultGeneration(
     generationId: string,
   ): Promise<import("./schema").StoredVaultGenerationV1 | undefined> {
@@ -713,7 +772,21 @@ export class IndexedDbDriver {
   async reconcileInterruptedVacuum(): Promise<void> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.vacuumJobs, "readwrite");
-    transaction.objectStore(STORES.vacuumJobs).delete(vaultKeyRange(this.vaultId));
+    const store = transaction.objectStore(STORES.vacuumJobs);
+    const jobs = (await requestValue(
+      store.getAll(vaultKeyRange(this.vaultId)),
+    )) as import("./schema").StoredVacuumJobV1[];
+    for (const job of jobs) {
+      if (job.stage !== "ActivateRemote" && job.stage !== "ActivateLocal")
+        store.delete(vaultKey(this.vaultId, job.jobId));
+    }
+    await transactionDone(transaction);
+  }
+
+  async discardSynchronizedVacuum(jobId: string): Promise<void> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.vacuumJobs, "readwrite");
+    transaction.objectStore(STORES.vacuumJobs).delete(vaultKey(this.vaultId, jobId));
     await transactionDone(transaction);
   }
 

@@ -64,7 +64,7 @@ warning but SHALL NOT invalidate a valid MHTML Capture.
 
 ## 2.2 Explicitly deferred
 
-- Account creation, Account Master Passwords, Account Recovery Keys, and recovery ceremonies;
+- Account creation, Account passwords, Account Recovery Keys, and recovery ceremonies;
 - Coordination Server, synchronization, web client, cursors, upload, and remote retrieval;
 - local retention profiles, pinning, eviction, and user-created unavailable Artifact state;
 - a user control that intentionally excludes locally present Artifacts from Export;

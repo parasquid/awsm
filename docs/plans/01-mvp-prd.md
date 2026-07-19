@@ -358,9 +358,10 @@ Future AI capabilities should integrate through a provider abstraction.
 
 The platform shall synchronize immutable Bundles, Vault Events, wrapped keys, and coordination metadata between trusted devices.
 
-Implementation status: the repository proves the untrusted Account-scoped opaque Coordination
-Server boundary and independent two-replica transport. Trusted Runtime synchronization, Device/key
-authorization, and production deployment remain outside the implemented proof.
+Implementation status: the Chrome extension and untrusted Coordination Server implement
+email/password Account authentication, client-only Account-key enrollment, one Complete
+synchronized Vault, background convergence, synchronized Vacuum, and stale-Replica recovery.
+Device signing/revocation, Selective Replicas, and production deployment hardening remain future.
 
 Synchronization shall:
 

@@ -2,8 +2,15 @@ Rails.application.routes.draw do
   mount ActionCable.server => "/cable"
 
   namespace :api do
+    resource :server_information, only: :show, path: "server-information"
+    resources :accounts, only: :create
+    resources :authentication_parameters, only: :create, path: "authentication-parameters"
+    resources :sessions, only: :create
+    post "session/refresh", to: "sessions#refresh"
+    delete "session", to: "session#destroy"
+    resources :cable_tickets, only: :create, path: "cable-tickets"
     resource :service_policy, only: :show, path: "service-policy"
-    resources :vaults, only: [ :create, :show ], param: :vault_id do
+    resources :vaults, only: [ :index, :create, :show ], param: :vault_id do
       post :complete, on: :member
     end
     post "vaults/:vault_id/uploads", to: "uploads#create"

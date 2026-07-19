@@ -23,7 +23,8 @@ The goal is to protect Vault contents while allowing an untrusted Coordination S
 
 This document defines cryptographic responsibilities and key relationships.
 
-It intentionally does not prescribe specific algorithms for the MVP. Algorithm choices are defined separately to allow future upgrades without changing the architecture.
+Formal cryptographic specifications own the exact canonical algorithms and vectors. This document
+owns responsibilities and relationships and must remain consistent with those specifications.
 
 ---
 
@@ -86,7 +87,20 @@ Plaintext never crosses the encryption boundary.
 # Key Hierarchy
 
 ```
-Master Secret
+Account password
+
+├── Authentication derivative
+└── Password-wrapping derivative
+        ↓
+  Account Encryption Key
+        ↓
+  Account Vault slot (synchronized Vault only)
+
+Independent local device key
+        ↓
+  Device Vault slot
+
+Both slots unwrap the same random
 
 ↓
 
@@ -101,15 +115,24 @@ Vault Root Key
 
 Keys should be derived rather than randomly generated independently where appropriate.
 
+The Account password and Account Encryption Key are not Vault ownership boundaries. The random
+Vault Root Key remains the cryptographic root of one Vault. Local-only Vaults have only the
+mandatory device slot. A synchronized Vault has both the device slot and one Account slot.
+
 ---
 
 # Key Responsibilities
 
-## Master Secret
+## Account Password
 
-Used only to derive or protect Vault-level secrets.
+Argon2id13 derives one master value, and HKDF-SHA256 domain-separates the authentication derivative
+from the Account-key password-wrapping derivative. The password and derived values never persist as
+plaintext or cross the server boundary.
 
-Never used directly for encrypting application data.
+## Account Encryption Key
+
+Random client-generated key wrapped by the password-wrapping derivative. It wraps the synchronized
+Vault Root Key in an authenticated Account slot and never encrypts archive Objects directly.
 
 ---
 

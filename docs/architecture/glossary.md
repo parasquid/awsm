@@ -34,11 +34,24 @@ Implementation-specific terminology SHALL NOT replace architectural terminology.
 
 ## Account
 
-The authenticated principal that owns one or more Vault replica records at a Coordination Server.
+The authenticated principal that owns at most one synchronized Vault replica record at a
+Coordination Server.
 
-In the current proof boundary, an Account owns Vaults directly. Memberships, shared Vault authority,
-Organizations, and Device authorization remain future concepts and MUST NOT be inferred from Account
-authentication alone.
+An Account owns its Vault directly, but authentication alone does not grant cryptographic access.
+The trusted client must unwrap the Account Encryption Key and the Vault's Account slot. Memberships,
+shared Vault authority, Organizations, and Device authorization remain future concepts.
+
+## Account Encryption Key
+
+A random client-created key that wraps the Account's single synchronized Vault Root Key slot. The
+login password derives independent authentication and wrapping material; the Coordination Server
+stores only the password-wrapped Account Encryption Key envelope and cannot unwrap either key.
+
+## Local recovery fork
+
+A fresh local-only Vault re-authored from the current logical state of a stale Replica before the
+original synchronized Vault is replaced with server-authoritative data. It uses fresh identities and
+is not Backup, Restore, Import, or a continuation of the stale Vault's history.
 
 ## Replica
 

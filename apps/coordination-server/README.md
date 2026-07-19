@@ -23,6 +23,12 @@ container, and the application runs in the standard `development` environment, s
 application constants, templates, and other watched files are reloaded without rebuilding the
 image or restarting the server.
 
+The server exposes strict `/api` Account and opaque synchronization endpoints. Account signup uses
+email and a client-derived authentication secret without email delivery; the raw password and
+unwrapped Account/Vault keys must never reach Rails. Configure
+`AWSM_SYNTHETIC_ACCOUNT_SECRET` with a stable private deployment secret so authentication-parameter
+responses for unknown emails remain deterministic without disclosing Account existence.
+
 The server waits for PostgreSQL and runs `bin/rails db:prepare` each time it starts. PostgreSQL data
 is retained in a named Docker volume across container restarts.
 
@@ -40,7 +46,9 @@ docker compose down
 ```
 
 To discard the local development database and other named-volume state, add `--volumes` to that
-command. This is destructive and is not required for routine development.
+command. This is destructive. Because the repository remains pre-release and canonical migrations
+are replaced in place, discard development volumes whenever the current schema changes; do not add
+or rely on migrations from superseded drafts.
 
 ## When to rebuild
 

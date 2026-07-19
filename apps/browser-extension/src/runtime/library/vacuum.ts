@@ -33,16 +33,22 @@ export interface VacuumRepository {
   ): Promise<void>;
   getVaultGeneration(generationId: string): Promise<StoredVaultGenerationV1 | undefined>;
   releaseVacuum(jobId: string): Promise<void>;
-  commitVacuum(input: {
-    readonly jobId: string;
-    readonly objectIds: readonly string[];
-    readonly eventIds: readonly string[];
-    readonly eventsToAdd: readonly StoredEvent[];
-    readonly bundleIds: readonly string[];
-    readonly expectedGenerationId?: string;
-    readonly generation: StoredVaultGenerationV1;
-    readonly head: StoredVaultHeadV1;
-  }): Promise<void>;
+  commitVacuum(input: VacuumCommitInput): Promise<void>;
+}
+
+export interface VacuumCommitInput {
+  readonly jobId: string;
+  readonly objectIds: readonly string[];
+  readonly eventIds: readonly string[];
+  readonly eventsToAdd: readonly StoredEvent[];
+  readonly bundleIds: readonly string[];
+  readonly expectedGenerationId?: string;
+  readonly generation: StoredVaultGenerationV1;
+  readonly head: StoredVaultHeadV1;
+}
+
+export interface VacuumCandidate extends VacuumCommitInput {
+  readonly deletedArtifactObjectIds: readonly string[];
 }
 
 export interface VacuumResult {
@@ -228,6 +234,7 @@ export class VaultVacuumService {
     readonly vaultId: string,
     readonly deviceId: string,
     readonly artifactStore: ArtifactStore,
+    readonly activateCandidate?: (candidate: VacuumCandidate) => Promise<void>,
   ) {}
 
   async execute(): Promise<VacuumResult> {
@@ -465,7 +472,10 @@ export class VaultVacuumService {
     });
     await this.repository.updateVacuumStage(jobId, "Verify");
     await verifyVaultGeneration(this.rootKey, this.vaultId, generation);
-    await this.repository.commitVacuum({
+    const deletedArtifacts = objects.filter(
+      (object) => object.objectType === "Artifact" && deletedObjectIds.has(object.objectId),
+    );
+    const candidate: VacuumCandidate = {
       jobId,
       objectIds: [...deletedObjectIds].toSorted(),
       eventIds: eventIds.toSorted(),
@@ -474,13 +484,14 @@ export class VaultVacuumService {
       expectedGenerationId: currentHead.generationId,
       generation,
       head,
-    });
-    const deletedArtifacts = objects.filter(
-      (object) => object.objectType === "Artifact" && deletedObjectIds.has(object.objectId),
-    );
-    await Promise.all(
-      deletedArtifacts.map((object) => this.artifactStore.remove(this.vaultId, object.objectId)),
-    );
+      deletedArtifactObjectIds: deletedArtifacts.map((object) => object.objectId),
+    };
+    if (this.activateCandidate === undefined) {
+      await this.repository.commitVacuum(candidate);
+      await Promise.all(
+        deletedArtifacts.map((object) => this.artifactStore.remove(this.vaultId, object.objectId)),
+      );
+    } else await this.activateCandidate(candidate);
     didCommit();
     return {
       deletedCaptureCount: deleted.length,

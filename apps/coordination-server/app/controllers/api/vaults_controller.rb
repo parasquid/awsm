@@ -10,14 +10,19 @@ module Api
       body = request.request_parameters
       object = body.fetch("generationObject")
       validate_attachment!(body, object)
+      if current_account.vault_replicas.exists?
+        raise Coordination::OutcomeError.new("VAULT_ACCOUNT_LIMIT_REACHED", status: :conflict)
+      end
       if VaultReplica.exists?(vault_id: body.fetch("vaultId"))
         raise Coordination::OutcomeError.new("VAULT_ID_UNAVAILABLE", status: :conflict)
       end
+      slot = Coordination::AccountPayload.decode_slot(body.fetch("accountSlot"),
+        vault_id: body.fetch("vaultId"), account: current_account)
 
       vault = nil
       VaultReplica.transaction do
         vault = current_account.vault_replicas.create!(vault_id: body.fetch("vaultId"),
-          state: "Provisional", head_cursor: 0,
+          state: "Provisional", head_cursor: 0, **slot,
           provisional_expires_at: Coordination::ServicePolicy.current.upload_staging_expiry_hours.hours.from_now)
         generation = vault.vault_generations.create!(generation_id: body.fetch("generationId"),
           generation_number: 0, state: "Candidate")
@@ -37,6 +42,10 @@ module Api
       raise Coordination::OutcomeError.new("REQUEST_INVALID", status: :bad_request)
     rescue ActiveRecord::RecordNotUnique
       raise Coordination::OutcomeError.new("VAULT_ID_UNAVAILABLE", status: :conflict)
+    end
+
+    def index
+      render json: { vaults: current_account.vault_replicas.map { |vault| Coordination::Serializers.vault(vault) } }
     end
 
     def show

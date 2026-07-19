@@ -2,7 +2,7 @@ require "rails_helper"
 
 RSpec.describe "Service policy", type: :request do
   before do
-    account = Account.create!
+    account = create_account
     allow(Coordination::AccountAuthenticator).to receive(:authenticate).and_return(
       Coordination::AccountPrincipal.new(account:, confirmed_at: Time.current)
     )

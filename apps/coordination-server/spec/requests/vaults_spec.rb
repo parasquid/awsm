@@ -3,10 +3,21 @@ require "base64"
 require "digest"
 
 RSpec.describe "Vault lifecycle", type: :request do
-  let(:account) { Account.create! }
+  let(:account) { create_account }
   let(:vault_id) { "01900000-0000-7000-8000-000000000010" }
   let(:generation_id) { "01900000-0000-7000-8000-000000000011" }
   let(:checksum) { Base64.urlsafe_encode64(Digest::SHA256.digest("generation"), padding: false) }
+  let(:account_slot) do
+    {
+      version: 1,
+      slotId: "01900000-0000-7000-8000-000000000015",
+      vaultId: vault_id,
+      accountKeyId: account.account_key_id,
+      algorithm: "wrap:xchacha20poly1305:account:v1",
+      nonce: Base64.urlsafe_encode64("n" * 24, padding: false),
+      ciphertext: Base64.urlsafe_encode64("c" * 48, padding: false)
+    }
+  end
   let(:headers) do
     {
       "Awsm-Protocol-Version" => "1",
@@ -21,6 +32,7 @@ RSpec.describe "Vault lifecycle", type: :request do
       vaultId: vault_id,
       generationId: generation_id,
       generationNumber: 0,
+      accountSlot: account_slot,
       generationObject: {
         objectId: generation_id,
         objectType: "VaultGeneration",
@@ -44,6 +56,7 @@ RSpec.describe "Vault lifecycle", type: :request do
     expect(response.parsed_body.dig("upload", "objectId")).to eq(generation_id)
     expect(response.parsed_body.dig("ticket", "method")).to eq("PUT")
     expect(VaultReplica.find_by!(vault_id:).account).to eq(account)
+    expect(response.parsed_body.dig("vault", "accountSlot")).to eq(account_slot.deep_stringify_keys)
   end
 
   it "returns the same logical attachment for an identical idempotent replay" do
@@ -69,8 +82,9 @@ RSpec.describe "Vault lifecycle", type: :request do
   end
 
   it "does not reveal a Vault owned by another Account" do
-    other = Account.create!
-    VaultReplica.create!(account: other, vault_id:, state: "Provisional", head_cursor: 0,
+    other = create_account
+    VaultReplica.create!(account: other, vault_id:, **vault_slot_attributes(account: other, vault_id:),
+      state: "Provisional", head_cursor: 0,
       provisional_expires_at: 1.day.from_now)
 
     post "/api/vaults", params: attach_body.to_json, headers: headers
@@ -112,5 +126,39 @@ RSpec.describe "Vault lifecycle", type: :request do
 
     expect(response).to have_http_status(:ok)
     expect(response.parsed_body).to include("vaultId" => vault_id, "state" => "Provisional")
+  end
+
+  it "lists zero or one Vault and enforces the Account limit before revealing other identity state" do
+    get "/api/vaults", headers: headers.except("Idempotency-Key", "Content-Type")
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to eq("vaults" => [])
+
+    post "/api/vaults", params: attach_body.to_json, headers: headers
+    get "/api/vaults", headers: headers.except("Idempotency-Key", "Content-Type")
+    expect(response.parsed_body.fetch("vaults").sole.fetch("accountSlot"))
+      .to eq(account_slot.deep_stringify_keys)
+
+    second = attach_body.deep_dup
+    second[:vaultId] = "01900000-0000-7000-8000-000000000016"
+    second[:generationId] = "01900000-0000-7000-8000-000000000017"
+    second[:generationObject][:objectId] = second[:generationId]
+    second[:accountSlot][:slotId] = "01900000-0000-7000-8000-000000000018"
+    second[:accountSlot][:vaultId] = second[:vaultId]
+    post "/api/vaults", params: second.to_json,
+      headers: headers.merge("Idempotency-Key" => "01900000-0000-7000-8000-000000000019")
+
+    expect(response).to have_http_status(:conflict)
+    expect(response.parsed_body.fetch("outcome")).to eq("VAULT_ACCOUNT_LIMIT_REACHED")
+  end
+
+  it "rejects Account slots whose authenticated identity metadata does not match" do
+    mismatched = attach_body.deep_dup
+    mismatched[:accountSlot][:accountKeyId] = SecureRandom.uuid
+
+    post "/api/vaults", params: mismatched.to_json, headers: headers
+
+    expect(response).to have_http_status(:conflict)
+    expect(response.parsed_body.fetch("outcome")).to eq("VAULT_IDENTITY_MISMATCH")
+    expect(VaultReplica.where(account:).count).to eq(0)
   end
 end

@@ -79,15 +79,15 @@ These goals take precedence over implementation convenience.
 
                            ▼
 
-                Rails Synchronization Service
+                  Coordination Server
 
         Authentication
-        Device Registry
-        Object Coordination
-        Billing
-        Sharing Coordination
-        Event Metadata
-        Notifications
+        Opaque Object Coordination
+        Delivery Cursors and Hints
+        Generation and Purge Coordination
+
+        Future: Device Registry, Billing,
+                Sharing Coordination
 
                            │
 
@@ -290,9 +290,9 @@ It is not responsible for capture.
 
 ---
 
-## Synchronization Service
+## Coordination Server
 
-Coordinates encrypted data exchange.
+Coordinates encrypted data exchange for one synchronized Vault per authenticated Account.
 
 Responsibilities:
 
@@ -300,7 +300,8 @@ Responsibilities:
 - receive encrypted objects
 - distribute updates
 - resolve synchronization metadata
-- maintain object manifests
+- maintain opaque Generation membership and delivery cursors
+- issue content-free Action Cable wake-up hints
 
 It never decrypts user data.
 

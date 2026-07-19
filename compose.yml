@@ -13,6 +13,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      AWSM_SYNTHETIC_ACCOUNT_SECRET: development-only-synthetic-account-parameter-secret
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/coordination_server_development
       TEST_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/coordination_server_test
       RAILS_ENV: development

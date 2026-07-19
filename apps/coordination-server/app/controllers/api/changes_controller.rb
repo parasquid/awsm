@@ -16,7 +16,8 @@ module Api
       limit = Integer(params.fetch(:limit, 100).to_s, 10)
       maximum = Coordination::ServicePolicy.current.maximum_changes_page_size
       raise ArgumentError unless after >= 0 && limit.between?(1, maximum)
-      snapshot = vault.head_cursor
+      snapshot = params[:snapshot].present? ? Integer(params[:snapshot].to_s, 10) : vault.head_cursor
+      raise ArgumentError unless snapshot.between?(after, vault.head_cursor)
       rows = vault.delivery_changes.where(cursor: (after + 1)..snapshot).order(:cursor).limit(limit + 1).to_a
       has_more = rows.length > limit
       rows = rows.first(limit)

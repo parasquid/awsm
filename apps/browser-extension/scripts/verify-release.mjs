@@ -10,7 +10,9 @@ const approvedPermissions = [
   "offscreen",
   "unlimitedStorage",
   "downloads",
+  "alarms",
 ];
+const approvedOptionalOrigins = ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -36,7 +38,10 @@ assert(
   !("host_permissions" in manifest),
   "The shipping manifest must not contain host permissions.",
 );
-assert(!("optional_host_permissions" in manifest), "Optional host permissions are prohibited.");
+assert(
+  JSON.stringify(manifest.optional_host_permissions) === JSON.stringify(approvedOptionalOrigins),
+  "Built optional origins differ from the approved allowlist.",
+);
 assert(manifest.minimum_chrome_version === "116", "The minimum Chrome version must remain 116.");
 const csp = manifest.content_security_policy?.extension_pages;
 assert(

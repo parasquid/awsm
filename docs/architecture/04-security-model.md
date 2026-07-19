@@ -91,16 +91,19 @@ Account
 Vault
 ```
 
-This direct ownership is the current Coordination Server proof boundary. A future separately
-approved authorization model may add:
+One Account owns at most one synchronized Vault directly. A future separately approved
+authorization model may add:
 
 - shared vaults
 - organization vaults
 - delegated access
 
-Account authentication in the proof does not establish Device trust or cryptographic Vault access.
-The fixed proof credential is accepted only in the Rails test environment when explicitly enabled;
-development and production fail closed without a real authenticator.
+Account authentication does not establish Device trust or by itself grant cryptographic Vault
+access. The client derives an authentication secret and Account-key wrapping key from the password,
+unwraps the Account Encryption Key locally, and then unwraps the Vault Root Key's Account slot. The
+server never receives the password or unwrapped keys. The isolated black-box proof creates and
+authenticates an ordinary test Account through the same public Account/session contract as clients;
+there is no alternate credential path.
 
 ---
 
@@ -313,16 +316,23 @@ This is outside the MVP.
 
 ---
 
-# Account Recovery
+# Account and Stale-Replica Recovery
 
 Archive Platform deliberately separates:
 
 - account recovery
 - vault recovery
 
-Losing account credentials should not automatically compromise encrypted vault contents.
+Losing Account credentials does not erase an already enrolled device's local access because its
+device slot remains sufficient. No email, administrator, or server-side reset can recover an Account
+Encryption Key. If all enrolled local credentials and the password are lost, synchronized content
+is unrecoverable in the current product.
 
-Possible recovery mechanisms include:
+Stale-Replica recovery is different: it offers a Complete Export, creates a fresh local-only recovery
+fork from current logical state, and then atomically replaces the original synchronized Vault with
+verified server data.
+
+Future Account recovery mechanisms may include:
 
 - recovery keys
 - recovery devices
@@ -330,7 +340,7 @@ Possible recovery mechanisms include:
 
 No recovery mechanism should require backend access to plaintext vault keys.
 
-This remains an open design area.
+Account Recovery Keys and recovery Devices remain future design work.
 
 ---
 

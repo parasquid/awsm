@@ -1,0 +1,191 @@
+import type {
+  StoredAccountVaultV1,
+  StoredEvent,
+  StoredObjectV1,
+  StoredVaultGenerationV1,
+  SynchronizationJobV1,
+} from "../../drivers/indexeddb/schema";
+import type { AtomicRemoteReconciliation } from "../../drivers/indexeddb/workspace-repository";
+import type { ArtifactStore } from "../artifact";
+import { LibraryProjectionRebuilder } from "../library/rebuild";
+import { encryptWorkspaceVaultName } from "../vault";
+import { type RemoteReplicaDownloader, verifyPreparedRemoteReplica } from "./download";
+
+interface PullAccountStore {
+  latestSynchronizationJob(): Promise<SynchronizationJobV1 | undefined>;
+  loadAccountVault(): Promise<StoredAccountVaultV1 | undefined>;
+}
+
+interface PullSource {
+  listStoredEvents(): Promise<readonly StoredEvent[]>;
+  listStoredObjects(): Promise<readonly StoredObjectV1[]>;
+  getVaultGeneration(generationId: string): Promise<StoredVaultGenerationV1 | undefined>;
+}
+
+interface PullWorkspaceStore {
+  load(): Promise<
+    | {
+        readonly metadata: { readonly workspaceId: string };
+        readonly nameCacheKey: CryptoKey;
+      }
+    | undefined
+  >;
+  commitRemoteReconciliation(input: AtomicRemoteReconciliation): Promise<void>;
+}
+
+interface PullTransport {
+  request(
+    method: string,
+    path: string,
+  ): Promise<{ readonly status: number; readonly body: unknown }>;
+}
+
+function integrity(message: string): Error {
+  return Object.assign(new Error(message), { id: "SYNCHRONIZATION_INTEGRITY_FAILED" });
+}
+
+function object(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw integrity("Change page is invalid");
+  return value as Record<string, unknown>;
+}
+
+function cursor(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw integrity("Change cursor is invalid");
+  return value;
+}
+
+export class IncrementalPullRunner {
+  constructor(
+    private readonly accounts: PullAccountStore,
+    private readonly source: PullSource,
+    private readonly workspace: PullWorkspaceStore,
+    private readonly artifacts: ArtifactStore,
+    private readonly transport: PullTransport,
+    private readonly downloader: Pick<RemoteReplicaDownloader, "prepare">,
+  ) {}
+
+  async run(rootKey: CryptoKey, now = new Date().toISOString()): Promise<boolean> {
+    const job = await this.accounts.latestSynchronizationJob();
+    const registration = await this.accounts.loadAccountVault();
+    if (
+      job?.stage !== "FetchChanges" ||
+      job.vaultId === undefined ||
+      job.generationId === undefined ||
+      job.generationNumber === undefined ||
+      registration === undefined
+    )
+      return false;
+    if (
+      registration.vaultId !== job.vaultId ||
+      registration.remoteGenerationId !== job.generationId ||
+      registration.remoteGenerationNumber !== job.generationNumber
+    )
+      throw integrity("Pull Account/Vault context differs");
+    const snapshotCursor = await this.fetchChangeFence(
+      job.vaultId,
+      job.generationId,
+      registration.deliveryCursor,
+    );
+    const [generation, events, objects] = await Promise.all([
+      this.source.getVaultGeneration(job.generationId),
+      this.source.listStoredEvents(),
+      this.source.listStoredObjects(),
+    ]);
+    if (generation === undefined) throw integrity("Local Generation is unavailable");
+    const prepared = await this.downloader.prepare(
+      { ...job, state: "Running", stage: "DownloadRecords", updatedAt: now },
+      rootKey,
+      { generation, events, objects },
+    );
+    let committed = false;
+    try {
+      const verified = await verifyPreparedRemoteReplica({
+        vaultId: job.vaultId,
+        prepared,
+        rootKey,
+        artifacts: this.artifacts,
+      });
+      const allObjects = new Map(verified.objects.map((entry) => [entry.objectId, entry]));
+      const projections = await new LibraryProjectionRebuilder(
+        {
+          listStoredEvents: () => Promise.resolve(verified.events),
+          getStoredObject: (objectId) => Promise.resolve(allObjects.get(objectId)),
+          replaceLibraryProjections: () => Promise.resolve(),
+        },
+        rootKey,
+        job.vaultId,
+        this.artifacts,
+      ).prepare(new AbortController().signal);
+      const workspace = await this.workspace.load();
+      if (workspace === undefined) throw integrity("Workspace is unavailable");
+      const nameCache = await encryptWorkspaceVaultName({
+        key: workspace.nameCacheKey,
+        workspaceId: workspace.metadata.workspaceId,
+        vaultId: job.vaultId,
+        sourceEventId: projections.vaultNameProjection.sourceEventId,
+        name: verified.currentVaultName,
+      });
+      await this.workspace.commitRemoteReconciliation({
+        expectedGenerationId: job.generationId,
+        expectedDeliveryCursor: registration.deliveryCursor,
+        registration: { ...registration, deliveryCursor: snapshotCursor },
+        job: { ...job, snapshotCursor, updatedAt: now },
+        head: verified.head,
+        events: verified.events,
+        objects: verified.objects,
+        libraryProjections: projections.itemProjections,
+        collectionProjection: projections.collectionProjection,
+        vaultNameProjection: projections.vaultNameProjection,
+        nameCache,
+      });
+      committed = true;
+      return true;
+    } finally {
+      if (!committed)
+        await Promise.all(
+          prepared.preparedArtifactObjectIds.map((objectId) =>
+            this.artifacts.remove(job.vaultId as string, objectId).catch(() => undefined),
+          ),
+        );
+    }
+  }
+
+  private async fetchChangeFence(
+    vaultId: string,
+    generationId: string,
+    after: number,
+  ): Promise<number> {
+    let next = after;
+    let snapshot: number | undefined;
+    for (;;) {
+      const response = object(
+        (
+          await this.transport.request(
+            "GET",
+            `/api/vaults/${vaultId}/changes?after=${next}&limit=100&generationId=${generationId}${snapshot === undefined ? "" : `&snapshot=${snapshot}`}`,
+          )
+        ).body,
+      );
+      if (response.generationId !== generationId || !Array.isArray(response.changes))
+        throw integrity("Change page Generation differs");
+      const pageSnapshot = cursor(response.snapshotCursor);
+      snapshot ??= pageSnapshot;
+      if (pageSnapshot !== snapshot) throw integrity("Change snapshot changed between pages");
+      let prior = next;
+      for (const value of response.changes) {
+        const change = object(value);
+        const current = cursor(change.cursor);
+        if (current <= prior || current > snapshot) throw integrity("Changes are not ordered");
+        prior = current;
+      }
+      const reportedNext = cursor(response.nextCursor);
+      if (reportedNext !== prior) throw integrity("Change page cursor differs");
+      next = reportedNext;
+      if (response.hasMore === false) return snapshot;
+      if (response.hasMore !== true || response.changes.length === 0)
+        throw integrity("Change page cannot advance");
+    }
+  }
+}

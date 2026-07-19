@@ -1,6 +1,13 @@
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { type BrowserContext, chromium, expect, type Page, test } from "@playwright/test";
+import {
+  type BrowserContext,
+  chromium,
+  expect,
+  type Page,
+  type TestInfo,
+  test,
+} from "@playwright/test";
 import { BlobWriter } from "@zip.js/zip.js";
 import { writeArtifactEnvelope } from "../../src/crypto/artifact-envelope";
 import { deriveContextKeyFromCryptoKey } from "../../src/crypto/hkdf";
@@ -98,6 +105,224 @@ async function extensionPopup(context: BrowserContext, extensionId: string): Pro
   return popup;
 }
 
+async function packagedAccountContext(
+  testInfo: TestInfo,
+  name: string,
+): Promise<{ context: BrowserContext; extensionId: string; popup: Page }> {
+  const extensionPath = testInfo.outputPath(`${name}-extension`);
+  await cp(resolve(".output/chrome-mv3"), extensionPath, { recursive: true });
+  const manifestPath = resolve(extensionPath, "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+  manifest.host_permissions = ["http://127.0.0.1:3300/*"];
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const context = await chromium.launchPersistentContext(testInfo.outputPath(`${name}-profile`), {
+    channel: "chromium",
+    headless: true,
+    args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
+  });
+  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+  const extensionId = new URL(worker.url()).host;
+  await Promise.all(context.pages().map((page) => page.close()));
+  return { context, extensionId, popup: await extensionPopup(context, extensionId) };
+}
+
+async function appRequest<T>(page: Page, request: Record<string, unknown>): Promise<T> {
+  return page.evaluate(
+    ({ message }) =>
+      new Promise<T>((resolveValue, reject) => {
+        const extensionApi = (
+          globalThis as unknown as {
+            chrome: {
+              runtime: {
+                sendMessage(
+                  value: unknown,
+                  callback: (response: { ok: boolean; value?: T; error?: unknown }) => void,
+                ): void;
+              };
+            };
+          }
+        ).chrome;
+        extensionApi.runtime.sendMessage(
+          message,
+          (response: { ok: boolean; value?: T; error?: unknown }) => {
+            if (response?.ok && response.value !== undefined) resolveValue(response.value);
+            else reject(new Error(JSON.stringify(response?.error ?? response)));
+          },
+        );
+      }),
+    { message: request },
+  );
+}
+
+test("converges two packaged Chrome Replicas through the real Coordination Server", async ({
+  browserName,
+}, testInfo) => {
+  test.setTimeout(240_000);
+  expect(browserName).toBe("chromium");
+  const email = `packaged-${crypto.randomUUID()}@example.test`;
+  const password = "correct horse archive battery";
+  const first = await packagedAccountContext(testInfo, "account-first");
+  let second: Awaited<ReturnType<typeof packagedAccountContext>> | undefined;
+  try {
+    await first.popup
+      .getByRole("textbox", { name: "Self-hosted server origin" })
+      .fill("http://127.0.0.1:3300");
+    await first.popup.getByRole("button", { name: "Use self-hosted server" }).click();
+    await expect(first.popup.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    const enrolled = await appRequest<{
+      account: { vaultSyncState: string };
+      workspace: { activeVaultId?: string; vaults: { vaultId: string; name: string }[] };
+    }>(first.popup, {
+      type: "SignupAccount",
+      email,
+      password,
+      recoveryAcknowledged: true,
+      newVaultName: "Server convergence",
+    });
+    expect(enrolled.account.vaultSyncState).toBe("UpToDate");
+    const vaultId = enrolled.workspace.activeVaultId;
+    expect(vaultId).toBeTruthy();
+
+    second = await packagedAccountContext(testInfo, "account-second");
+    await second.popup
+      .getByRole("textbox", { name: "Self-hosted server origin" })
+      .fill("http://127.0.0.1:3300");
+    await second.popup.getByRole("button", { name: "Use self-hosted server" }).click();
+    await expect(second.popup.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await appRequest(second.popup, { type: "LoginAccount", email, password });
+    await expect
+      .poll(async () => {
+        const state = await appRequest<{
+          account: { vaultSyncState: string };
+          workspace: { activeVaultId?: string; vaults: { vaultId: string; name: string }[] };
+        }>(second?.popup as Page, { type: "GetState" });
+        return {
+          sync: state.account.vaultSyncState,
+          vaultId: state.workspace.activeVaultId,
+          name: state.workspace.vaults.find((vault) => vault.vaultId === vaultId)?.name,
+        };
+      })
+      .toEqual({ sync: "UpToDate", vaultId, name: "Server convergence" });
+
+    const secondLibrary = await second.context.newPage();
+    await secondLibrary.goto(`chrome-extension://${second.extensionId}/library.html`);
+    await expect(
+      secondLibrary.getByRole("button", { name: "Rename Server convergence" }),
+    ).toBeVisible();
+    await expect(second.popup.getByText(/Vault · Server convergence · Unlocked/u)).toBeVisible();
+
+    await appRequest(first.popup, {
+      type: "RenameVault",
+      expectedActiveVaultId: vaultId,
+      vaultId,
+      name: "Converged from first Replica",
+    });
+    await expect
+      .poll(async () => {
+        const state = await appRequest<{
+          account: { vaultSyncState: string };
+          workspace: { vaults: { vaultId: string; name: string }[] };
+        }>(second?.popup as Page, { type: "GetState" });
+        return {
+          sync: state.account.vaultSyncState,
+          name: state.workspace.vaults.find((vault) => vault.vaultId === vaultId)?.name,
+        };
+      })
+      .toEqual({ sync: "UpToDate", name: "Converged from first Replica" });
+    await expect(
+      secondLibrary.getByRole("button", { name: "Rename Converged from first Replica" }),
+    ).toBeVisible();
+    await expect(
+      second.popup.getByText(/Vault · Converged from first Replica · Unlocked/u),
+    ).toBeVisible();
+  } finally {
+    await second?.context.close();
+    await first.context.close();
+  }
+});
+
+test("renders Account onboarding, signup, progress, success, and settings states", async ({
+  browserName,
+}, testInfo) => {
+  test.setTimeout(240_000);
+  expect(browserName).toBe("chromium");
+  const client = await packagedAccountContext(testInfo, "account-visual");
+  try {
+    await client.popup.setViewportSize({ width: 420, height: 760 });
+    await expect(
+      client.popup.getByRole("heading", { name: "Choose synchronization" }),
+    ).toBeVisible();
+    await client.popup.screenshot({
+      path: testInfo.outputPath("account-server-choice-desktop.png"),
+    });
+    await client.popup.setViewportSize({ width: 340, height: 700 });
+    await client.popup.screenshot({
+      path: testInfo.outputPath("account-server-choice-narrow.png"),
+    });
+    await client.popup.setViewportSize({ width: 420, height: 760 });
+    await client.popup
+      .getByRole("textbox", { name: "Self-hosted server origin" })
+      .fill("http://127.0.0.1:3300");
+    await client.popup.getByRole("button", { name: "Use self-hosted server" }).click();
+    await expect(client.popup.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await client.popup.getByRole("textbox", { name: "Email" }).focus();
+    await client.popup.screenshot({ path: testInfo.outputPath("account-login-focus.png") });
+
+    const signup = await client.context.newPage();
+    await signup.goto(`chrome-extension://${client.extensionId}/signup.html`);
+    await signup.setViewportSize({ width: 720, height: 900 });
+    await expect(signup.getByRole("heading", { name: "Create your Account" })).toBeVisible();
+    await signup.getByRole("textbox", { name: "Email" }).focus();
+    await signup.screenshot({ path: testInfo.outputPath("account-signup-focus.png") });
+    await signup.setViewportSize({ width: 360, height: 760 });
+    await signup.screenshot({ path: testInfo.outputPath("account-signup-narrow.png") });
+    await signup.setViewportSize({ width: 720, height: 900 });
+    await signup
+      .getByRole("textbox", { name: "Email" })
+      .fill(`visual-${crypto.randomUUID()}@example.test`);
+    await signup.getByLabel("Password", { exact: true }).fill("correct horse archive battery");
+    await signup.getByLabel("Confirm password").fill("incorrect horse archive battery");
+    await signup.getByLabel(/no password recovery/u).check();
+    await signup.getByRole("button", { name: "Create Account" }).click();
+    await expect(signup.getByRole("alert")).toHaveText("Passwords do not match.");
+    await signup.screenshot({ path: testInfo.outputPath("account-signup-validation.png") });
+    await signup.getByLabel("Confirm password").fill("correct horse archive battery");
+    await signup.getByRole("button", { name: "Create Account" }).click();
+    await expect(signup.getByRole("status")).toContainText("Creating Account");
+    await expect(signup.getByRole("button", { name: "Create Account" })).toBeDisabled();
+    await signup.screenshot({ path: testInfo.outputPath("account-signup-progress.png") });
+    await expect(signup.getByRole("status")).toHaveText(
+      "Account created. You may close this tab.",
+      {
+        timeout: 90_000,
+      },
+    );
+    await expect(signup.locator("#signup-form")).toBeHidden();
+    await signup.screenshot({ path: testInfo.outputPath("account-signup-success.png") });
+
+    const library = await client.context.newPage();
+    await library.goto(`chrome-extension://${client.extensionId}/library.html`);
+    await expect(library.getByRole("button", { name: "Settings" })).toBeVisible();
+    await library.getByRole("button", { name: "Settings" }).click();
+    await expect(
+      library.getByRole("dialog", { name: "Account and synchronization" }),
+    ).toBeVisible();
+    await library.screenshot({ path: testInfo.outputPath("account-settings.png") });
+    await library.setViewportSize({ width: 360, height: 760 });
+    await library.screenshot({ path: testInfo.outputPath("account-settings-narrow.png") });
+  } finally {
+    await client.context.close();
+  }
+});
+
+async function chooseLocalOnlyOnFirstLaunch(popup: Page): Promise<void> {
+  const decision = popup.getByRole("button", { name: "Continue without sync" });
+  const vaultName = popup.getByRole("textbox", { name: "Vault name" });
+  await expect(decision.or(vaultName)).toBeVisible();
+  if (await decision.isVisible()) await decision.click();
+  await expect(vaultName).toBeVisible();
+}
+
 async function setLatestImportJobForVisual(
   page: Page,
   patch: Record<string, unknown>,
@@ -133,6 +358,106 @@ async function setLatestImportJobForVisual(
     });
     database.close();
   }, patch);
+}
+
+async function seedStaleAccountVisual(page: Page, vaultId: string): Promise<void> {
+  await page.evaluate(async (activeVaultId) => {
+    const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
+      const request = indexedDB.open("awsm-vault");
+      request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const stores = [
+      "account_configuration",
+      "account_metadata",
+      "account_keys",
+      "account_secrets",
+      "account_vault",
+      "synchronization_jobs",
+    ];
+    const transaction = database.transaction(stores, "readwrite");
+    const accountId = "01900000-0000-7000-8000-000000000801";
+    const sessionId = "01900000-0000-7000-8000-000000000802";
+    const accountKeyId = "01900000-0000-7000-8000-000000000803";
+    const remoteGenerationId = "01900000-0000-7000-8000-000000000804";
+    transaction
+      .objectStore("account_configuration")
+      .put({ version: 1, mode: "Configured", serverOrigin: "https://awsm.invalid" }, "active");
+    transaction.objectStore("account_metadata").put(
+      {
+        version: 1,
+        accountId,
+        sessionId,
+        email: "archive@example.test",
+        accountKeyId,
+        accountKeyEnvelope: {},
+      },
+      "active",
+    );
+    const wrappingKey = await crypto.subtle.generateKey({ name: "AES-KW", length: 256 }, false, [
+      "wrapKey",
+      "unwrapKey",
+    ]);
+    const sessionKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
+      "encrypt",
+      "decrypt",
+    ]);
+    transaction.objectStore("account_keys").put(wrappingKey, "account-wrapping");
+    transaction.objectStore("account_keys").put(sessionKey, "session-storage");
+    transaction.objectStore("account_secrets").put(
+      {
+        version: 1,
+        accountId,
+        sessionId,
+        wrappedAccountEncryptionKey: new Uint8Array(40),
+        refreshNonce: new Uint8Array(12),
+        refreshCiphertext: new Uint8Array(16),
+      },
+      "active",
+    );
+    transaction.objectStore("account_vault").put(
+      {
+        version: 1,
+        accountId,
+        vaultId: activeVaultId,
+        accountKeyId,
+        accountSlot: {},
+        remoteGenerationId,
+        remoteGenerationNumber: 2,
+        deliveryCursor: 8,
+      },
+      "active",
+    );
+    transaction.objectStore("synchronization_jobs").put(
+      {
+        version: 1,
+        jobId: "01900000-0000-7000-8000-000000000805",
+        accountId,
+        vaultId: activeVaultId,
+        generationId: remoteGenerationId,
+        generationNumber: 2,
+        state: "Conflict",
+        stage: "Checkpoint",
+        createdAt: "2026-07-19T00:00:00.000Z",
+        updatedAt: "2026-07-19T00:00:00.000Z",
+        snapshotCursor: 8,
+        completedItems: 0,
+        totalItems: 0,
+        processedBytes: 0,
+        totalBytes: 0,
+        retryCount: 0,
+        errorId: "SYNCHRONIZATION_CONFLICT",
+        attachIdempotencyKey: "01900000-0000-7000-8000-000000000806",
+      },
+      "active",
+    );
+    await new Promise<void>((resolveTransaction, reject) => {
+      transaction.addEventListener("complete", () => resolveTransaction(), { once: true });
+      transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+      transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+    });
+    database.close();
+  }, vaultId);
 }
 
 test("captures MHTML and a full-page screenshot, then opens and downloads them offline", async ({
@@ -183,6 +508,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       await extensionApi.action.openPopup();
     });
     const popup = await extensionPopup(context, extensionId);
+    await chooseLocalOnlyOnFirstLaunch(popup);
     await popup.locator("body").press("Tab");
     await expect(popup.getByRole("textbox", { name: "Vault name" })).toBeFocused();
     await popup.keyboard.press("Tab");
@@ -793,6 +1119,117 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
   }
 });
 
+test("renders export-first stale Replica recovery at desktop and narrow widths", async ({
+  browserName,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  expect(browserName).toBe("chromium");
+  const extensionPath = testInfo.outputPath("stale-recovery-extension");
+  await cp(resolve(".output/chrome-mv3"), extensionPath, { recursive: true });
+  const context = await chromium.launchPersistentContext(
+    testInfo.outputPath("stale-recovery-profile"),
+    {
+      channel: "chromium",
+      headless: true,
+      args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
+    },
+  );
+  try {
+    const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
+    const extensionId = new URL(worker.url()).host;
+    const popup = await extensionPopup(context, extensionId);
+    await popup.getByRole("button", { name: "Continue without sync" }).click();
+    await popup.getByRole("button", { name: "Create Vault" }).click();
+    await expect(popup.getByRole("button", { name: "Archive this page" })).toBeVisible();
+    const state = await popup.evaluate(async () => {
+      const extensionApi = (
+        globalThis as unknown as {
+          chrome: {
+            runtime: { sendMessage(value: unknown, callback: (response: unknown) => void): void };
+          };
+        }
+      ).chrome;
+      return new Promise<{ workspace: { activeVaultId?: string } }>((resolveState) => {
+        extensionApi.runtime.sendMessage({ type: "GetState" }, (response) => {
+          resolveState((response as { value: { workspace: { activeVaultId?: string } } }).value);
+        });
+      });
+    });
+    if (state.workspace.activeVaultId === undefined) throw new Error("No active Vault.");
+    const library = await context.newPage();
+    await library.goto(`chrome-extension://${extensionId}/library.html`);
+    await seedStaleAccountVisual(library, state.workspace.activeVaultId);
+    await library.reload();
+    const resolveButton = library.getByRole("button", { name: "Resolve stale Vault" });
+    await expect(resolveButton).toBeVisible();
+    await resolveButton.click();
+    const dialog = library.getByRole("dialog", { name: "Resolve stale synchronized Vault" });
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "Preserve local copy and use server data" }),
+    ).toBeDisabled();
+    await library.setViewportSize({ width: 1280, height: 900 });
+    await library.screenshot({ path: testInfo.outputPath("stale-recovery-desktop.png") });
+    await dialog.getByLabel(/declining the recommended encrypted Export/u).check();
+    await expect(
+      dialog.getByRole("button", { name: "Preserve local copy and use server data" }),
+    ).toBeDisabled();
+    await dialog.getByLabel(/completely overwritten by server data/u).check();
+    await expect(
+      dialog.getByRole("button", { name: "Preserve local copy and use server data" }),
+    ).toBeEnabled();
+    await library.setViewportSize({ width: 390, height: 844 });
+    await library.screenshot({ path: testInfo.outputPath("stale-recovery-narrow-confirmed.png") });
+    const replacementVaultId = await library.evaluate(async (expectedActiveVaultId) => {
+      const extensionApi = (
+        globalThis as unknown as {
+          chrome: {
+            runtime: { sendMessage(value: unknown, callback: (response: unknown) => void): void };
+          };
+        }
+      ).chrome;
+      return new Promise<string>((resolveVaultId, reject) => {
+        extensionApi.runtime.sendMessage(
+          { type: "CreateVault", expectedActiveVaultId, name: "Recovery failure fixture" },
+          (response) => {
+            const result = response as {
+              ok: boolean;
+              value?: { workspace: { activeVaultId?: string } };
+            };
+            const activeVaultId = result.value?.workspace.activeVaultId;
+            if (!result.ok || activeVaultId === undefined)
+              reject(new Error("Vault replacement failed"));
+            else resolveVaultId(activeVaultId);
+          },
+        );
+      });
+    }, state.workspace.activeVaultId);
+    await dialog.getByRole("button", { name: "Preserve local copy and use server data" }).click();
+    await expect(dialog.getByText(/active Vault changed|context changed/iu)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    await library.screenshot({ path: testInfo.outputPath("stale-recovery-failure.png") });
+    await library.close();
+
+    const busyLibrary = await context.newPage();
+    await busyLibrary.goto(`chrome-extension://${extensionId}/library.html`);
+    await seedStaleAccountVisual(busyLibrary, replacementVaultId);
+    await busyLibrary.reload();
+    await busyLibrary.getByRole("button", { name: "Resolve stale Vault" }).click();
+    const busyDialog = busyLibrary.getByRole("dialog", {
+      name: "Resolve stale synchronized Vault",
+    });
+    await busyDialog.getByLabel(/declining the recommended encrypted Export/u).check();
+    await busyDialog.getByLabel(/completely overwritten by server data/u).check();
+    await busyDialog
+      .getByRole("button", { name: "Preserve local copy and use server data" })
+      .click();
+    await expect(busyDialog.getByText(/Keep this page open/u)).toBeVisible();
+    await busyLibrary.screenshot({ path: testInfo.outputPath("stale-recovery-busy.png") });
+  } finally {
+    await context.close();
+  }
+});
+
 test("exports a Vault and imports it into a fresh Workspace", async ({ browserName }, testInfo) => {
   test.setTimeout(120_000);
   expect(browserName).toBe("chromium");
@@ -1140,6 +1577,7 @@ test("exports a Vault and imports it into a fresh Workspace", async ({ browserNa
       (await populatedDestination.waitForEvent("serviceworker"));
     const extensionId = new URL(worker.url()).host;
     const popup = await extensionPopup(populatedDestination, extensionId);
+    await chooseLocalOnlyOnFirstLaunch(popup);
     await popup.getByRole("textbox", { name: "Vault name" }).fill("Existing Vault");
     await popup.getByRole("button", { name: "Create Vault" }).click();
     await expect(popup.getByText(/Vault · Existing Vault · Unlocked/u)).toBeVisible();
@@ -1243,6 +1681,7 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
     const fixture = await context.newPage();
     await fixture.goto("http://127.0.0.1:4174/fixture");
     const popup = await extensionPopup(context, extensionId);
+    await chooseLocalOnlyOnFirstLaunch(popup);
     const activateFixture = async (): Promise<void> => {
       await popup.evaluate(async () => {
         const extensionApi = (
@@ -1513,6 +1952,7 @@ test("worker termination during acquisition leaves no partial authoritative capt
     await cdp.send("ServiceWorker.enable");
     const serviceWorkerVersionId = await serviceWorkerVersion;
     const popup = await extensionPopup(context, extensionId);
+    await chooseLocalOnlyOnFirstLaunch(popup);
     await popup.getByRole("button", { name: "Create Vault" }).click();
     await expect(popup.getByRole("button", { name: "Archive this page" })).toBeVisible();
     await popup.evaluate(async () => {

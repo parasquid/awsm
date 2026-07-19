@@ -4,8 +4,13 @@ module Coordination
 
     def vault(vault)
       generation = vault.active_generation || vault.vault_generations.find_by!(generation_number: 0)
-      { vaultId: vault.vault_id, state: vault.state, generationId: generation.generation_id,
-       generationNumber: generation.generation_number, headCursor: vault.head_cursor }
+      result = { vaultId: vault.vault_id, state: vault.state, generationId: generation.generation_id,
+       generationNumber: generation.generation_number, headCursor: vault.head_cursor,
+       accountSlot: AccountPayload.slot(vault) }
+      if generation.predecessor_generation
+        result[:predecessorGenerationId] = generation.predecessor_generation.generation_id
+      end
+      result
     end
 
     def upload(upload)

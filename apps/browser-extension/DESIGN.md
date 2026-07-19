@@ -1,6 +1,6 @@
 # Browser Extension UI Design
 
-The first slice uses a quiet archival-tool aesthetic: warm paper background, dark green primary actions, serif headings, and compact system typography. It uses no UI framework and makes no network requests.
+The extension uses a quiet archival-tool aesthetic: warm paper background, dark green primary actions, serif headings, and compact system typography. It uses no UI framework. Network access is optional, limited to the exact user-approved Coordination Server origin, and carries only Account authentication material and opaque encrypted synchronization data.
 
 The popup is a 360 px task surface with explicit onboarding, locked, capturing, success, warning, and failure states. Capture continues in the background if the popup closes. Reopening the popup derives its state from the persisted Runtime job.
 

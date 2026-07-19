@@ -5,6 +5,11 @@ import { popupView, recentCaptureMatchesActiveUrl } from "../../src/ui/popup-vie
 const vaultId = "00000000-0000-4000-8000-000000000000";
 
 const base: AppState = {
+  account: {
+    configuration: { mode: "LocalOnly" },
+    accountState: "SignedOut",
+    vaultSyncState: "LocalOnly",
+  },
   workspace: {
     workspaceId: vaultId,
     activeVaultId: vaultId,
@@ -22,6 +27,31 @@ const base: AppState = {
 };
 
 describe("popup state model", () => {
+  it("requires an explicit synchronization decision before local Vault onboarding", () => {
+    expect(
+      popupView({
+        ...base,
+        account: {
+          configuration: { mode: "Unconfigured" },
+          accountState: "SignedOut",
+          vaultSyncState: "LocalOnly",
+        },
+      }),
+    ).toEqual({ screen: "server-choice", hostedOrigin: "https://awsm.foo" });
+  });
+
+  it("shows popup login after a server is configured and no Account is authenticated", () => {
+    expect(
+      popupView({
+        ...base,
+        account: {
+          configuration: { mode: "Configured", serverOrigin: "https://sync.example.test" },
+          accountState: "SignedOut",
+          vaultSyncState: "AuthenticationRequired",
+        },
+      }),
+    ).toEqual({ screen: "login", serverOrigin: "https://sync.example.test" });
+  });
   it("shows a recent capture only on the same fragmentless URL", () => {
     expect(
       recentCaptureMatchesActiveUrl(

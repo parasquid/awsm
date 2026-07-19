@@ -1,5 +1,6 @@
 import {
   type AtomicRegistrationV1,
+  IndexedDbAccountRepository,
   IndexedDbDriver,
   IndexedDbImportRepository,
   IndexedDbVaultRepository,
@@ -29,6 +30,67 @@ function object(objectId: string, byte: number): StoredBundleDescriptorObjectV1 
     objectId,
     objectType: "BundleDescriptor",
     envelopeBytes: new Uint8Array([byte]),
+  };
+}
+
+async function accountPersistenceScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const repository = new IndexedDbAccountRepository(databaseName);
+  const accountId = id("810");
+  const sessionId = id("811");
+  const accountKeyId = id("812");
+  await repository.saveAuthenticated({
+    metadata: {
+      version: 1,
+      accountId,
+      sessionId,
+      email: "reader@example.test",
+      accountKeyId,
+      accountKeyEnvelope: { version: 1 },
+    },
+    accountEncryptionKey: new Uint8Array(32).fill(0x42),
+    refreshToken: "refresh-token-secret",
+  });
+
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const seed = database.transaction("objects", "readwrite");
+  seed.objectStore("objects").put({ localVaultData: true }, [id("813"), id("814")]);
+  await new Promise<void>((resolve, reject) => {
+    seed.addEventListener("complete", () => resolve(), { once: true });
+    seed.addEventListener("error", () => reject(seed.error), { once: true });
+  });
+  database.close();
+
+  const afterRestart = await new IndexedDbAccountRepository(databaseName).loadAuthenticated();
+  await repository.logout();
+  const afterLogout = await repository.loadAuthenticated();
+  const retainedMetadata = await repository.loadMetadata();
+  const reopened = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const read = reopened.transaction("objects", "readonly");
+  const localObjectCount = await new Promise<number>((resolve, reject) => {
+    const request = read.objectStore("objects").count();
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  reopened.close();
+
+  return {
+    email: afterRestart?.metadata.email,
+    accountKeyRestored: afterRestart?.accountEncryptionKey.every((byte) => byte === 0x42),
+    refreshRestored: afterRestart?.refreshToken === "refresh-token-secret",
+    accountWrappingKeyExtractable: afterRestart?.wrappingKey.extractable,
+    sessionKeyExtractable: afterRestart?.sessionKey.extractable,
+    signedOut: afterLogout === undefined,
+    retainedEmail: retainedMetadata?.email,
+    localObjectCount,
   };
 }
 
@@ -1232,6 +1294,62 @@ async function vacuumLeaseScenario(): Promise<unknown> {
   return result;
 }
 
+async function synchronizedVacuumJournalScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const vaultId = id("0");
+  const jobId = id("984");
+  const first = new IndexedDbDriver(databaseName, vaultId);
+  await seedHead(first);
+  await first.acquireVacuum(jobId, "2026-07-19T03:00:00.000Z");
+  const candidate = {
+    jobId,
+    objectIds: [] as string[],
+    eventIds: [] as string[],
+    eventsToAdd: [],
+    bundleIds: [] as string[],
+    expectedGenerationId: id("990"),
+    generation: {
+      version: 1 as const,
+      generationId: id("985"),
+      generationNumber: 1,
+      predecessorGenerationId: id("990"),
+      envelopeBytes: new Uint8Array([9, 8, 5]),
+    },
+    head: {
+      version: 1 as const,
+      vaultId,
+      generationId: id("985"),
+      generationNumber: 1,
+      appendedObjectIds: [] as string[],
+      appendedEventIds: [] as string[],
+    },
+    deletedArtifactObjectIds: [] as string[],
+  };
+  await first.persistSynchronizedVacuumCandidate(jobId, candidate);
+  await first.close();
+
+  const afterRemoteIntent = new IndexedDbDriver(databaseName, vaultId);
+  await afterRemoteIntent.reconcileInterruptedVacuum();
+  const remoteIntent = await afterRemoteIntent.latestVacuumJob();
+  await afterRemoteIntent.markSynchronizedVacuumActivated(jobId, 17);
+  await afterRemoteIntent.close();
+
+  const afterRemoteActivation = new IndexedDbDriver(databaseName, vaultId);
+  await afterRemoteActivation.reconcileInterruptedVacuum();
+  const localPending = await afterRemoteActivation.latestVacuumJob();
+  await afterRemoteActivation.discardSynchronizedVacuum(jobId);
+  const discarded = await afterRemoteActivation.latestVacuumJob();
+  const result = {
+    remoteIntentStage: remoteIntent?.stage,
+    candidateGenerationId: remoteIntent?.candidate?.generation.generationId,
+    localPendingStage: localPending?.stage,
+    activatedHeadCursor: localPending?.activatedHeadCursor,
+    discarded: discarded === undefined,
+  };
+  await afterRemoteActivation.deleteDatabase();
+  return result;
+}
+
 async function collectionOperationScenario(): Promise<unknown> {
   const driver = new IndexedDbDriver(`awsm-integration-${crypto.randomUUID()}`, id("0"));
   await seedHead(driver);
@@ -1896,6 +2014,246 @@ async function atomicVaultImportScenario(): Promise<unknown> {
   return result;
 }
 
+async function atomicStaleRecoveryScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const workspaceRepository = new IndexedDbWorkspaceRepository(databaseName);
+  const workspace = await workspaceRepository.bootstrap("2026-07-19T04:00:00.000Z");
+  const staleVaultId = await prepareAndCommitVault(
+    databaseName,
+    workspaceRepository,
+    "Stale source",
+    "2026-07-19T04:01:00.000Z",
+  );
+  const vaultRepository = new IndexedDbVaultRepository(databaseName);
+  const originalRecords = await vaultRepository.load(staleVaultId);
+  if (originalRecords === undefined) throw new Error("Stale source is unavailable");
+  const staleDriver = new IndexedDbDriver(databaseName, staleVaultId);
+  const originalEvents = await staleDriver.listStoredEvents();
+  const remoteGenerationId = id("850");
+  const remoteEventId = id("851");
+  const remoteObjectId = id("852");
+  const forkRecordsBase = await makeVaultRecords(860);
+  const forkVaultId = forkRecordsBase.metadata.vaultId;
+  const forkEventId = id("870");
+  const forkObjectId = id("871");
+  const remoteGeneration = {
+    version: 1 as const,
+    generationId: remoteGenerationId,
+    generationNumber: 1,
+    predecessorGenerationId: originalRecords.generation.generationId,
+    envelopeBytes: new Uint8Array([8, 5, 0]),
+  };
+  const remoteHead = {
+    version: 1 as const,
+    vaultId: staleVaultId,
+    generationId: remoteGenerationId,
+    generationNumber: 1,
+    appendedObjectIds: [remoteObjectId],
+    appendedEventIds: [remoteEventId],
+  };
+  const remoteEvent = {
+    version: 1 as const,
+    vaultId: staleVaultId,
+    eventId: remoteEventId,
+    referencedObjectIds: [remoteObjectId],
+    orderingTimestamp: "2026-07-19T04:02:00.000Z",
+    envelopeBytes: new Uint8Array([8, 5, 1]),
+  };
+  const remoteObject = object(remoteObjectId, 85);
+  const forkRecords: VaultRecordsV1 = {
+    ...forkRecordsBase,
+    head: {
+      ...forkRecordsBase.head,
+      appendedObjectIds: [forkObjectId],
+      appendedEventIds: [forkEventId],
+    },
+  };
+  const forkEvent = {
+    version: 1 as const,
+    vaultId: forkVaultId,
+    eventId: forkEventId,
+    referencedObjectIds: [forkObjectId],
+    orderingTimestamp: "2026-07-19T04:03:00.000Z",
+    envelopeBytes: new Uint8Array([8, 7, 0]),
+  };
+  const forkObject = object(forkObjectId, 87);
+  const remoteNameCache = await encryptWorkspaceVaultName({
+    key: workspace.nameCacheKey,
+    workspaceId: workspace.metadata.workspaceId,
+    vaultId: staleVaultId,
+    sourceEventId: remoteEventId,
+    name: "Server source",
+  });
+  const forkNameCache = await encryptWorkspaceVaultName({
+    key: workspace.nameCacheKey,
+    workspaceId: workspace.metadata.workspaceId,
+    vaultId: forkVaultId,
+    sourceEventId: forkEventId,
+    name: "Stale source — recovered local copy",
+  });
+  const registration = {
+    version: 1 as const,
+    accountId: id("880"),
+    vaultId: staleVaultId,
+    accountKeyId: id("881"),
+    accountSlot: { ciphertext: "opaque" },
+    remoteGenerationId,
+    remoteGenerationNumber: 1,
+    deliveryCursor: 9,
+  };
+  const job = {
+    version: 1 as const,
+    jobId: id("882"),
+    accountId: registration.accountId,
+    vaultId: staleVaultId,
+    generationId: remoteGenerationId,
+    generationNumber: 1,
+    state: "Running" as const,
+    stage: "ActivateRecovery" as const,
+    createdAt: "2026-07-19T04:04:00.000Z",
+    updatedAt: "2026-07-19T04:04:00.000Z",
+    snapshotCursor: 9,
+    completedItems: 0,
+    totalItems: 0,
+    processedBytes: 0,
+    totalBytes: 0,
+    retryCount: 0,
+    attachIdempotencyKey: id("883"),
+    recoveryForkVaultId: forkVaultId,
+  };
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const seed = database.transaction(["account_vault", "synchronization_jobs"], "readwrite");
+  seed.objectStore("account_vault").put(registration, "active");
+  seed.objectStore("synchronization_jobs").put(job, "active");
+  await new Promise<void>((resolve, reject) => {
+    seed.addEventListener("complete", () => resolve(), { once: true });
+    seed.addEventListener("error", () => reject(seed.error), { once: true });
+  });
+  database.close();
+  const accountRepository = new IndexedDbAccountRepository(databaseName);
+  const input = {
+    job,
+    expectedStaleGenerationId: originalRecords.head.generationId,
+    registration,
+    originalRecords,
+    remoteGeneration,
+    remoteHead,
+    remoteEvents: [remoteEvent],
+    remoteObjects: [remoteObject],
+    remoteLibraryProjections: [
+      { version: 1 as const, bundleId: id("853"), envelopeBytes: new Uint8Array([8, 5, 3]) },
+    ],
+    remoteCollectionProjection: {
+      version: 1 as const,
+      projectionId: staleVaultId,
+      envelopeBytes: new Uint8Array([8, 5, 4]),
+    },
+    remoteVaultNameProjection: {
+      version: 1 as const,
+      vaultId: staleVaultId,
+      sourceEventId: remoteEventId,
+      envelopeBytes: new Uint8Array([8, 5, 5]),
+    },
+    remoteNameCache,
+    fork: {
+      records: forkRecords,
+      events: [forkEvent],
+      objects: [forkObject],
+      libraryProjections: [
+        { version: 1 as const, bundleId: id("872"), envelopeBytes: new Uint8Array([8, 7, 2]) },
+      ],
+      collectionProjection: {
+        version: 1 as const,
+        projectionId: forkVaultId,
+        envelopeBytes: new Uint8Array([8, 7, 3]),
+      },
+      vaultNameProjection: {
+        version: 1 as const,
+        vaultId: forkVaultId,
+        sourceEventId: forkEventId,
+        envelopeBytes: new Uint8Array([8, 7, 4]),
+      },
+      nameCache: forkNameCache,
+    },
+  };
+  const rollbackResults: boolean[] = [];
+  for (let failAt = 1; failAt <= 23; failAt += 1) {
+    const originalAdd = IDBObjectStore.prototype.add;
+    const originalPut = IDBObjectStore.prototype.put;
+    let write = 0;
+    const inject = <T extends typeof originalAdd | typeof originalPut>(original: T) =>
+      function (this: IDBObjectStore, ...args: Parameters<T>): IDBRequest<IDBValidKey> {
+        write += 1;
+        if (write === failAt) throw new DOMException("Injected recovery failure", "AbortError");
+        return original.apply(this, args) as IDBRequest<IDBValidKey>;
+      };
+    IDBObjectStore.prototype.add = inject(originalAdd);
+    IDBObjectStore.prototype.put = inject(originalPut);
+    try {
+      await workspaceRepository.commitStaleRecovery(input);
+    } catch {
+      // Every injected request failure must abort the complete recovery activation.
+    } finally {
+      IDBObjectStore.prototype.add = originalAdd;
+      IDBObjectStore.prototype.put = originalPut;
+    }
+    const [afterWorkspace, afterOriginal, forkCollision, afterEvents, afterJob] = await Promise.all(
+      [
+        workspaceRepository.load(),
+        vaultRepository.load(staleVaultId),
+        workspaceRepository.hasVaultCollision(forkVaultId),
+        staleDriver.listStoredEvents(),
+        accountRepository.latestSynchronizationJob(),
+      ],
+    );
+    rollbackResults.push(
+      write === failAt &&
+        afterWorkspace?.metadata.activeVaultId === staleVaultId &&
+        afterOriginal?.head.generationId === originalRecords.head.generationId &&
+        !forkCollision &&
+        afterEvents.map((event) => event.eventId).join("\n") ===
+          originalEvents.map((event) => event.eventId).join("\n") &&
+        afterJob?.state === "Running" &&
+        afterJob.stage === "ActivateRecovery",
+    );
+  }
+  await workspaceRepository.commitStaleRecovery(input);
+  const forkDriver = new IndexedDbDriver(databaseName, forkVaultId);
+  const [afterOriginal, afterFork, directory, finalJob] = await Promise.all([
+    vaultRepository.load(staleVaultId),
+    vaultRepository.load(forkVaultId),
+    workspaceRepository.listVaultDirectory(),
+    accountRepository.latestSynchronizationJob(),
+  ]);
+  const result = {
+    rollbackFailurePoints: rollbackResults.length,
+    rollbackAlwaysAtomic: rollbackResults.every(Boolean),
+    originalUsesServerGeneration: afterOriginal?.head.generationId === remoteGenerationId,
+    originalEventIds: (await staleDriver.listStoredEvents()).map((event) => event.eventId),
+    forkGenerationIndependent:
+      afterFork?.head.generationId !== originalRecords.head.generationId &&
+      afterFork?.metadata.vaultId === forkVaultId,
+    forkEventIds: (await forkDriver.listStoredEvents()).map((event) => event.eventId),
+    directoryContainsBoth:
+      directory
+        .map((entry) => entry.vaultId)
+        .toSorted()
+        .join("\n") === [forkVaultId, staleVaultId].toSorted().join("\n"),
+    jobState: finalJob?.state,
+  };
+  await forkDriver.close();
+  await staleDriver.close();
+  await accountRepository.close();
+  await vaultRepository.close();
+  await workspaceRepository.close();
+  await new IndexedDbDriver(databaseName, staleVaultId).deleteDatabase();
+  return result;
+}
+
 async function artifactStoreScenario(): Promise<unknown> {
   const store = new ChromeArtifactStore();
   const vaultId = crypto.randomUUID();
@@ -2086,69 +2444,78 @@ async function importSourceStagingScenario(): Promise<unknown> {
 async function run(): Promise<void> {
   const scenario = new URL(location.href).searchParams.get("scenario");
   const result =
-    scenario === "vault"
-      ? await vaultScenario()
-      : scenario === "workspace"
-        ? await workspaceScenario()
-        : scenario === "atomic-vault-create"
-          ? await atomicVaultCreateScenario()
-          : scenario === "atomic-vault-create-failures"
-            ? await atomicVaultCreateFailureScenario()
-            : scenario === "atomic-vault-select"
-              ? await atomicVaultSelectScenario()
-              : scenario === "atomic-vault-select-failures"
-                ? await atomicVaultSelectFailureScenario()
-                : scenario === "atomic-vault-rename"
-                  ? await atomicVaultRenameScenario()
-                  : scenario === "atomic-vault-rename-failures"
-                    ? await atomicVaultRenameFailureScenario()
-                    : scenario === "vault-record-isolation"
-                      ? await vaultRecordIsolationScenario()
-                      : scenario === "immutable"
-                        ? await immutableScenario()
-                        : scenario === "vault-isolation"
-                          ? await vaultIsolationScenario()
-                          : scenario === "capture-job-vault-isolation"
-                            ? await captureJobVaultIsolationScenario()
-                            : scenario === "event-vault-mismatch"
-                              ? await eventVaultMismatchScenario()
-                              : scenario === "atomic"
-                                ? await atomicScenario()
-                                : scenario === "rollback"
-                                  ? await rollbackScenario()
-                                  : scenario === "projection"
-                                    ? await projectionScenario()
-                                    : scenario === "interruption"
-                                      ? await interruptionScenario()
-                                      : scenario === "dismissal"
-                                        ? await dismissalScenario()
-                                        : scenario === "library-state"
-                                          ? await libraryStateScenario()
-                                          : scenario === "vacuum-rollback"
-                                            ? await vacuumRollbackScenario()
-                                            : scenario === "vacuum-cas-conflict"
-                                              ? await vacuumCasConflictScenario()
-                                              : scenario === "vacuum-lease"
-                                                ? await vacuumLeaseScenario()
-                                                : scenario === "collection-operation"
-                                                  ? await collectionOperationScenario()
-                                                  : scenario === "management-busy"
-                                                    ? await managementBusyScenario()
-                                                    : scenario === "export-lease"
-                                                      ? await exportLeaseScenario()
-                                                      : scenario === "import-lease"
-                                                        ? await importLeaseScenario()
-                                                        : scenario === "artifact-store"
-                                                          ? await artifactStoreScenario()
-                                                          : scenario === "import-source-staging"
-                                                            ? await importSourceStagingScenario()
-                                                            : scenario === "import-job-lifecycle"
-                                                              ? await importJobLifecycleScenario()
-                                                              : scenario === "atomic-vault-import"
-                                                                ? await atomicVaultImportScenario()
-                                                                : {
-                                                                    error: "unknown scenario",
-                                                                  };
+    scenario === "account-persistence"
+      ? await accountPersistenceScenario()
+      : scenario === "vault"
+        ? await vaultScenario()
+        : scenario === "workspace"
+          ? await workspaceScenario()
+          : scenario === "atomic-vault-create"
+            ? await atomicVaultCreateScenario()
+            : scenario === "atomic-vault-create-failures"
+              ? await atomicVaultCreateFailureScenario()
+              : scenario === "atomic-vault-select"
+                ? await atomicVaultSelectScenario()
+                : scenario === "atomic-vault-select-failures"
+                  ? await atomicVaultSelectFailureScenario()
+                  : scenario === "atomic-vault-rename"
+                    ? await atomicVaultRenameScenario()
+                    : scenario === "atomic-vault-rename-failures"
+                      ? await atomicVaultRenameFailureScenario()
+                      : scenario === "vault-record-isolation"
+                        ? await vaultRecordIsolationScenario()
+                        : scenario === "immutable"
+                          ? await immutableScenario()
+                          : scenario === "vault-isolation"
+                            ? await vaultIsolationScenario()
+                            : scenario === "capture-job-vault-isolation"
+                              ? await captureJobVaultIsolationScenario()
+                              : scenario === "event-vault-mismatch"
+                                ? await eventVaultMismatchScenario()
+                                : scenario === "atomic"
+                                  ? await atomicScenario()
+                                  : scenario === "rollback"
+                                    ? await rollbackScenario()
+                                    : scenario === "projection"
+                                      ? await projectionScenario()
+                                      : scenario === "interruption"
+                                        ? await interruptionScenario()
+                                        : scenario === "dismissal"
+                                          ? await dismissalScenario()
+                                          : scenario === "library-state"
+                                            ? await libraryStateScenario()
+                                            : scenario === "vacuum-rollback"
+                                              ? await vacuumRollbackScenario()
+                                              : scenario === "vacuum-cas-conflict"
+                                                ? await vacuumCasConflictScenario()
+                                                : scenario === "vacuum-lease"
+                                                  ? await vacuumLeaseScenario()
+                                                  : scenario === "synchronized-vacuum-journal"
+                                                    ? await synchronizedVacuumJournalScenario()
+                                                    : scenario === "collection-operation"
+                                                      ? await collectionOperationScenario()
+                                                      : scenario === "management-busy"
+                                                        ? await managementBusyScenario()
+                                                        : scenario === "export-lease"
+                                                          ? await exportLeaseScenario()
+                                                          : scenario === "import-lease"
+                                                            ? await importLeaseScenario()
+                                                            : scenario === "artifact-store"
+                                                              ? await artifactStoreScenario()
+                                                              : scenario === "import-source-staging"
+                                                                ? await importSourceStagingScenario()
+                                                                : scenario ===
+                                                                    "import-job-lifecycle"
+                                                                  ? await importJobLifecycleScenario()
+                                                                  : scenario ===
+                                                                      "atomic-vault-import"
+                                                                    ? await atomicVaultImportScenario()
+                                                                    : scenario ===
+                                                                        "atomic-stale-recovery"
+                                                                      ? await atomicStaleRecoveryScenario()
+                                                                      : {
+                                                                          error: "unknown scenario",
+                                                                        };
   const output = document.querySelector("#result");
   if (output !== null) {
     output.textContent = JSON.stringify(result);

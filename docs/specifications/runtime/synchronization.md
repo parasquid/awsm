@@ -16,9 +16,8 @@
 
 # Purpose
 
-This specification defines trusted Runtime responsibilities when integration with the implemented
-opaque Coordination Server is approved. The server proof exists; client integration remains future
-work.
+This specification defines trusted Runtime responsibilities for the implemented opaque
+Coordination Server integration.
 
 # Responsibilities
 
@@ -38,8 +37,21 @@ reset, merge recovery history, or append against a stale Generation.
 
 # Recovery
 
-Recovery downloads one exact superseded Generation into an isolated trusted workflow. It never
-updates the active head automatically. Import, Restore, and Recovery remain distinct operations.
+On a stale Generation, the Runtime SHALL make the synchronized Vault read-only except for reads and
+Complete Export. Resolution SHALL require either a successful Export or an explicit two-part skip
+confirmation. It SHALL re-author the stale Replica's current logical state into a fresh local-only
+Vault with fresh identities, verify a complete server download, and atomically install the fork
+while replacing the original synchronized Vault. No server response may cause partial local
+activation. Interrupted preparation SHALL clean uncommitted Artifact wrappers and return to
+Conflict. Import, Restore, and stale-Replica recovery remain distinct operations.
+
+# Account Scope
+
+One Account owns at most one synchronized Vault. The Runtime creates and retains the Account
+Encryption Key only in trusted client storage, sends only its password-wrapped envelope and the
+Account-wrapped Vault Root Key slot, and retains the device-local slot for offline access after
+logout. Account Commands, credentials, Jobs, checkpoints, Delivery Cursors, and wake-up hints are
+operational state and never authoritative Vault history.
 
 # Operational State
 

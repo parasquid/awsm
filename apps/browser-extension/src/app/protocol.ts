@@ -13,6 +13,29 @@ type ExpectedVault = { readonly expectedVaultId: string };
 
 export type AppRequest =
   | { readonly type: "GetState" }
+  | { readonly type: "ChooseLocalOnly" }
+  | { readonly type: "ConfigureSyncServer"; readonly serverOrigin: string }
+  | { readonly type: "ChangeSyncServer"; readonly serverOrigin: string }
+  | { readonly type: "RetrySynchronization" }
+  | ({
+      readonly type: "ResolveStaleReplica";
+      readonly exportDecision: "Exported" | "SkipConfirmed";
+    } & ExpectedVault)
+  | { readonly type: "LoginAccount"; readonly email: string; readonly password: string }
+  | {
+      readonly type: "SignupAccount";
+      readonly email: string;
+      readonly password: string;
+      readonly recoveryAcknowledged: true;
+      readonly existingVaultId?: string;
+      readonly newVaultName?: string;
+    }
+  | { readonly type: "LogoutAccount" }
+  | {
+      readonly type: "CompleteAccountVault";
+      readonly existingVaultId?: string;
+      readonly newVaultName?: string;
+    }
   | { readonly type: "SuggestVaultName" }
   | {
       readonly type: "CreateVault";
@@ -74,6 +97,15 @@ export type AppRequest =
 
 const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "GetState",
+  "ChooseLocalOnly",
+  "ConfigureSyncServer",
+  "ChangeSyncServer",
+  "RetrySynchronization",
+  "ResolveStaleReplica",
+  "LoginAccount",
+  "SignupAccount",
+  "LogoutAccount",
+  "CompleteAccountVault",
   "SuggestVaultName",
   "CreateVault",
   "SelectActiveVault",
@@ -113,6 +145,83 @@ export function isAppRequest(value: unknown): value is AppRequest {
     typeof value.type === "string" &&
     APP_REQUEST_TYPES.has(value.type as AppRequest["type"]);
   if (!recognized) return false;
+  if (
+    value.type === "LoginAccount" &&
+    (Object.keys(value).some((key) => key !== "type" && key !== "email" && key !== "password") ||
+      !("email" in value) ||
+      typeof value.email !== "string" ||
+      !("password" in value) ||
+      typeof value.password !== "string")
+  )
+    return false;
+  if (value.type === "SignupAccount") {
+    const allowed = new Set([
+      "type",
+      "email",
+      "password",
+      "recoveryAcknowledged",
+      "existingVaultId",
+      "newVaultName",
+    ]);
+    const validChoice =
+      ("existingVaultId" in value &&
+        typeof value.existingVaultId === "string" &&
+        !("newVaultName" in value)) ||
+      ("newVaultName" in value &&
+        typeof value.newVaultName === "string" &&
+        !("existingVaultId" in value));
+    if (
+      Object.keys(value).some((key) => !allowed.has(key)) ||
+      !("email" in value) ||
+      typeof value.email !== "string" ||
+      !("password" in value) ||
+      typeof value.password !== "string" ||
+      !("recoveryAcknowledged" in value) ||
+      value.recoveryAcknowledged !== true ||
+      !validChoice
+    )
+      return false;
+  }
+  if (value.type === "LogoutAccount" && Object.keys(value).some((key) => key !== "type"))
+    return false;
+  if (
+    (value.type === "ConfigureSyncServer" || value.type === "ChangeSyncServer") &&
+    (Object.keys(value).some((key) => key !== "type" && key !== "serverOrigin") ||
+      !("serverOrigin" in value) ||
+      typeof value.serverOrigin !== "string")
+  )
+    return false;
+  if (value.type === "ChooseLocalOnly" && Object.keys(value).some((key) => key !== "type"))
+    return false;
+  if (value.type === "RetrySynchronization" && Object.keys(value).some((key) => key !== "type"))
+    return false;
+  if (
+    value.type === "ResolveStaleReplica" &&
+    (Object.keys(value).some(
+      (key) => key !== "type" && key !== "expectedVaultId" && key !== "exportDecision",
+    ) ||
+      !("expectedVaultId" in value) ||
+      typeof value.expectedVaultId !== "string" ||
+      !("exportDecision" in value) ||
+      (value.exportDecision !== "Exported" && value.exportDecision !== "SkipConfirmed"))
+  )
+    return false;
+  if (value.type === "CompleteAccountVault") {
+    const validChoice =
+      ("existingVaultId" in value &&
+        typeof value.existingVaultId === "string" &&
+        !("newVaultName" in value)) ||
+      ("newVaultName" in value &&
+        typeof value.newVaultName === "string" &&
+        !("existingVaultId" in value));
+    if (
+      !validChoice ||
+      Object.keys(value).some(
+        (key) => key !== "type" && key !== "existingVaultId" && key !== "newVaultName",
+      )
+    )
+      return false;
+  }
   if (
     value.type === "BeginVaultImport" &&
     (Object.keys(value).some((key) => key !== "type" && key !== "sourceByteLength") ||
@@ -182,12 +291,35 @@ export function isAppRequest(value: unknown): value is AppRequest {
 }
 
 export interface AppState {
+  readonly account: AccountView;
   readonly workspace: WorkspaceState;
   readonly latestJob?: CaptureJob;
   readonly latestWarnings?: readonly CaptureWarningId[];
   readonly recentCapture?: RecentCapture;
   readonly latestExportJob?: ExportJobV1;
   readonly latestImportJob?: ImportJobV1;
+}
+
+export interface AccountView {
+  readonly configuration:
+    | { readonly mode: "Unconfigured" }
+    | { readonly mode: "LocalOnly" }
+    | { readonly mode: "Configured"; readonly serverOrigin: string };
+  readonly email?: string;
+  readonly accountState: "SignedOut" | "Authenticating" | "Authenticated" | "Expired";
+  readonly vaultSyncState:
+    | "LocalOnly"
+    | "Enrolling"
+    | "Uploading"
+    | "Downloading"
+    | "UpToDate"
+    | "Offline"
+    | "AuthenticationRequired"
+    | "Conflict"
+    | "Failed"
+    | "SetupRequired";
+  readonly errorId?: string;
+  readonly staleResolutionRequired?: boolean;
 }
 
 export interface RecentCapture {
@@ -254,6 +386,7 @@ export type AppValue =
   | { readonly jobId: string; readonly filename: string }
   | { readonly jobId: string }
   | { readonly jobId: string; readonly vaultId: string }
+  | { readonly forkVaultId: string }
   | { readonly deletedCaptureCount: number; readonly reclaimedBytes: number }
   | { readonly deletedCaptureCount: number; readonly reclaimableBytes: number }
   | null;

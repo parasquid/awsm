@@ -2,8 +2,10 @@ require "rails_helper"
 
 RSpec.describe DispatchExpiredPurgesJob, type: :job do
   it "snapshots every expired superseded Generation for one Vault into an automatic purge" do
-    account = Account.create!
-    vault = account.vault_replicas.create!(vault_id: "01900000-0000-7000-8000-000000000070",
+    account = create_account
+    vault_id = "01900000-0000-7000-8000-000000000070"
+    vault = account.vault_replicas.create!(vault_id:,
+      **vault_slot_attributes(account:, vault_id:),
       state: "Active", head_cursor: 1, active_generation_number: 1)
     expired = vault.vault_generations.create!(generation_id: "01900000-0000-7000-8000-000000000071",
       generation_number: 0, state: "Superseded", superseded_at: 2.days.ago,

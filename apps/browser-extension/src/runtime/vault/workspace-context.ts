@@ -97,6 +97,15 @@ export class WorkspaceContextManager {
     }
   }
 
+  async reloadFromAuthority(): Promise<void> {
+    const previous = this.context;
+    this.context = undefined;
+    previous?.vault.releaseRootKey();
+    await previous?.driver.close().catch(() => undefined);
+    await this.initialize();
+    await this.dependencies.notify({ type: "AppStateChanged" });
+  }
+
   active(): ActiveVaultContext | undefined {
     return this.context;
   }

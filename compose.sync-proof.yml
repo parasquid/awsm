@@ -24,7 +24,6 @@ services:
       - -c
       - >-
         bin/rails db:prepare &&
-        bin/rails runner 'Account.find_or_create_by!(id: ENV.fetch("AWSM_PROOF_ACCOUNT_ID"))' &&
         exec bin/rails server --binding 0.0.0.0 --port 3000
     depends_on:
       postgres-proof:
@@ -34,8 +33,7 @@ services:
       AWSM_JOB_QUEUE_ADAPTER: async
       AWSM_OPENAPI_PATH: /docs/specifications/protocol/http-api.openapi.yaml
       AWSM_OPAQUE_STORAGE_PATH: /opaque-storage
-      AWSM_PROOF_ACCOUNT_ID: 01900000-0000-7000-8000-000000000001
-      AWSM_PROOF_ACCOUNT_TOKEN: awsm-compose-proof-only-token-not-a-production-secret
+      AWSM_SYNTHETIC_ACCOUNT_SECRET: awsm-proof-synthetic-account-parameter-secret
       AWSM_SYNC_PROOF: "true"
       RAILS_ENV: test
       TEST_DATABASE_URL: postgresql://proof:proof-only@postgres-proof:5432/coordination_server_proof
@@ -55,7 +53,6 @@ services:
         condition: service_healthy
     environment:
       AWSM_PROOF_BASE_URL: http://coordination-proof:3000
-      AWSM_PROOF_CREDENTIAL: awsm-compose-proof-only-token-not-a-production-secret
     volumes:
       - ./apps/coordination-server/script:/proof:ro
 

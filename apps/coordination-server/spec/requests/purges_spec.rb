@@ -3,7 +3,7 @@ require "digest"
 require "fileutils"
 
 RSpec.describe "Recovery purge safety", type: :request do
-  let(:account) { Account.create! }
+  let(:account) { create_account }
   let(:vault_id) { "01900000-0000-7000-8000-000000000060" }
   let(:old_generation_id) { "01900000-0000-7000-8000-000000000061" }
   let(:active_generation_id) { "01900000-0000-7000-8000-000000000062" }
@@ -79,7 +79,8 @@ RSpec.describe "Recovery purge safety", type: :request do
   private
 
   def vault_with_recovery
-    replica = account.vault_replicas.create!(vault_id:, state: "Active", head_cursor: 3,
+    replica = account.vault_replicas.create!(vault_id:, **vault_slot_attributes(account:, vault_id:),
+      state: "Active", head_cursor: 3,
       active_generation_number: 1)
     old_generation = replica.vault_generations.create!(generation_id: old_generation_id,
       generation_number: 0, state: "Superseded", activated_at: 2.days.ago,

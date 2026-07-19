@@ -202,6 +202,12 @@ Every slot SHALL include an explicit slot version, wrapping algorithm identifier
 
 A local AES-KW device slot SHALL be verified after unwrap using a Vault verifier derived from the Vault Root Key and bound to the slot metadata.
 
+A synchronized Vault SHALL also have one Account slot that wraps the same Vault Root Key under the
+client-owned Account Encryption Key. One Account SHALL own at most one synchronized Vault. The
+Account slot is opaque to the Coordination Server and SHALL bind its slot ID, Vault ID, Account Key
+ID, algorithm, and nonce as authenticated associated data. Additional Vaults in the local Workspace
+remain local-only unless a future contract changes the one-Vault Account rule.
+
 An export key envelope belongs to a Vault Package, not to the Vault Trust Registry or local key-slot collection.
 
 The Vault Root Key MUST NOT be persisted unwrapped.

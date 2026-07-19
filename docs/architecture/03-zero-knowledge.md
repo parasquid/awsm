@@ -78,7 +78,7 @@ These components must operate on ciphertext, opaque identifiers, wrapped keys, p
 
 # Server-Visible Data
 
-The implemented Coordination Server proof may store or observe:
+The Coordination Server may store or observe:
 
 - Account and Vault operational identifiers;
 - broad Object type, ciphertext length, ciphertext SHA-256, and encrypted Object ID;
@@ -125,11 +125,12 @@ The Runtime is responsible for:
 
 # Server Responsibilities
 
-The implemented proof Coordination Server is responsible for Account authentication at its adapter
-boundary, Account-scoped Vault authorization, opaque byte durability, exact declared Event closure
-publication, independent per-Vault Delivery Cursors, Generation fencing, explicit recovery, safe
-purge, and advisory notifications. Production authentication, Device authorization, wrapped keys,
-quotas, abuse controls, and shared Vault authority remain deferred.
+The Coordination Server is responsible for email/password Account authentication without receiving
+the password, one-Vault Account authorization, opaque Account/Vault key envelopes, opaque byte
+durability, exact declared Event closure publication, independent per-Vault Delivery Cursors,
+Generation fencing, explicit recovery retention, safe purge, and advisory notifications. Device
+authorization, Account Recovery Keys, quotas, abuse controls, and shared Vault authority remain
+deferred.
 
 The server never reconstructs Vault state from plaintext. It may validate protocol structure, signatures, permissions, quotas, and object integrity metadata.
 

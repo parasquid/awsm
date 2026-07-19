@@ -3,7 +3,7 @@ require "digest"
 require "fileutils"
 
 RSpec.describe "Active replica reads", type: :request do
-  let(:account) { Account.create! }
+  let(:account) { create_account }
   let(:vault_id) { "01900000-0000-7000-8000-000000000040" }
   let(:generation_id) { "01900000-0000-7000-8000-000000000041" }
   let(:event_id) { "01900000-0000-7000-8000-000000000042" }
@@ -47,6 +47,25 @@ RSpec.describe "Active replica reads", type: :request do
         "headCursor" => 2)
   end
 
+  it "keeps later change pages fenced when the server head advances" do
+    get "/api/vaults/#{vault_id}/changes", params: { after: 0, limit: 1 }, headers: headers
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to include("nextCursor" => 1, "snapshotCursor" => 2,
+                                            "hasMore" => true)
+    vault.update!(head_cursor: 3)
+    DeliveryChange.create!(vault_replica: vault, vault_generation: vault.active_generation,
+      cursor: 3, kind: "GenerationActivated", accepted_at: Time.current)
+
+    get "/api/vaults/#{vault_id}/changes",
+      params: { after: 1, limit: 100, snapshot: 2 }, headers: headers
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to include("nextCursor" => 2, "snapshotCursor" => 2,
+                                            "hasMore" => false)
+    expect(response.parsed_body.fetch("changes").map { |change| change.fetch("cursor") }).to eq([ 2 ])
+  end
+
   it "issues an active-only ticket and serves a single verified byte range" do
     post "/api/vaults/#{vault_id}/records/#{event_id}/downloads", headers: headers.merge(
       "Idempotency-Key" => "01900000-0000-7000-8000-000000000044"
@@ -69,7 +88,8 @@ RSpec.describe "Active replica reads", type: :request do
   private
 
   def active_vault_with_event
-    replica = account.vault_replicas.create!(vault_id:, state: "Active", head_cursor: 2,
+    replica = account.vault_replicas.create!(vault_id:, **vault_slot_attributes(account:, vault_id:),
+      state: "Active", head_cursor: 2,
       active_generation_number: 0)
     generation = replica.vault_generations.create!(generation_id:, generation_number: 0,
       state: "Active", activated_at: Time.current)

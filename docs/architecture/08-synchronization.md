@@ -69,9 +69,18 @@ and deliberately rebuild or reconcile. The Service never silently resets or merg
 
 # Recovery
 
-Superseded Generation membership leaves the active path and remains temporarily available only
-through explicit recovery resources. A trusted client downloads it into an isolated recovery or
-import workflow. Recovery is not synchronization and never mutates the active head.
+When discovery proves that a local Complete Replica names a superseded Generation, the Runtime
+makes that Vault read-only while preserving Export and read access. Resolution first offers a
+Complete encrypted Export. It then re-authors the stale Replica's current logical state into a fresh
+local-only Vault with fresh Vault, Generation, Device, Object, Bundle, Artifact, Event, and
+Collection identifiers. Only after both the local fork and server Replica validate does one local
+transaction install the fork and replace the original synchronized Vault with server-authoritative
+data. A failure before that transaction changes neither authority; an interrupted attempt returns
+to the explicit Conflict state.
+
+Superseded server membership remains temporarily available only through explicit recovery
+resources. Server recovery retention supports diagnosis and controlled retrieval but never decides
+client semantic truth.
 
 # Retry and Isolation
 
@@ -80,8 +89,10 @@ Event, Vault, and Generation identifiers additionally prevent conflicting reuse.
 from the authenticated Account's Vault scope. Durable-uncommitted, candidate, superseded, recovery,
 and active records MUST NOT leak into one another's read paths.
 
-# Deferred Work
+# Current Product Boundary
 
-The current server proof does not implement trusted Runtime synchronization, Device authorization,
-production Account authentication, shared Vaults, quotas, a shared-storage Driver, retention UI, or
-client recovery cryptography. Those boundaries require separate approved work.
+The Chrome Host implements Account authentication, client-only Account-key enrollment, one Complete
+synchronized Vault per Account, polling and advisory Cable wakes, remote bootstrap, incremental
+reconciliation, synchronized Vacuum, and stale-Replica recovery. Device request signing and
+revocation, shared Vaults, Selective Replicas, quotas, shared immutable-byte storage, password
+change, and Account Recovery Keys remain future work.

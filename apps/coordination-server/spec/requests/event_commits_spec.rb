@@ -3,7 +3,7 @@ require "base64"
 require "digest"
 
 RSpec.describe "One-Event closure commits", type: :request do
-  let(:account) { Account.create! }
+  let(:account) { create_account }
   let(:vault_id) { "01900000-0000-7000-8000-000000000030" }
   let(:generation_id) { "01900000-0000-7000-8000-000000000031" }
   let(:artifact_id) { "01900000-0000-7000-8000-000000000032" }
@@ -81,7 +81,8 @@ RSpec.describe "One-Event closure commits", type: :request do
   private
 
   def active_vault
-    replica = account.vault_replicas.create!(vault_id:, state: "Active", head_cursor: 1,
+    replica = account.vault_replicas.create!(vault_id:, **vault_slot_attributes(account:, vault_id:),
+      state: "Active", head_cursor: 1,
       active_generation_number: 0)
     generation = replica.vault_generations.create!(generation_id:, generation_number: 0,
       state: "Active", activated_at: Time.current)

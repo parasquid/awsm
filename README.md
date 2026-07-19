@@ -35,11 +35,17 @@ All critical functionality—including capture, search, AI processing, projectio
 
 The cloud exists to synchronize data, not to enable the application.
 
-The repository now includes a pre-release Coordination Server proof: a strict Account-scoped opaque
-HTTP/Cable adapter backed by PostgreSQL and immutable Disk bytes, with Generation fencing, explicit
-recovery, and verified purge. It proves the untrusted server boundary and two-replica transport; it
-is not released production synchronization. Production authentication, Device trust, shared
-storage, quotas, and trusted client integration remain future work.
+The Chrome extension can run local-only or connect to a user-selected compatible Coordination
+Server. An Account uses email/password authentication without email delivery, enrolls exactly one
+Vault through a client-created Account Encryption Key slot, and synchronizes the Complete encrypted
+Replica while retaining offline access through its device-local slot. The server stores opaque
+ciphertext and wrapped keys only. Polling is sufficient for convergence; Action Cable is advisory.
+When a local Replica is stale, AWSM offers a Complete Export, re-authors its current logical state as
+a fresh local-only Vault, and only then replaces the synchronized Vault with verified server data.
+
+The implementation remains pre-release. Device signing/revocation, Account Recovery Keys, password
+change, quotas, shared object storage, billing, and production deployment hardening remain future
+work.
 
 ---
 
@@ -98,11 +104,10 @@ The backend provides:
 
 - authentication
 - account management
-- billing
 - encrypted object coordination
-- device coordination
 - encrypted storage
-- sharing coordination
+
+Billing, Device coordination, and sharing coordination remain future capabilities.
 
 The backend is intentionally unaware of archive contents.
 

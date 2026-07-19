@@ -187,6 +187,28 @@ The derivation or wrapping context SHALL include:
 
 The Coordination Server stores wrapped keys only.
 
+## 12.1 Account Password Derivation and Wrapping
+
+Account signup creates a random 16-byte salt and a random 32-byte Account Encryption Key. The
+trusted client applies Argon2id13 to the normalized UTF-8 password with three operations and
+67,108,864 bytes of memory. Using the 16 raw bytes of the lowercase Account Key UUID as HKDF salt,
+it derives two independent 32-byte values with HKDF-SHA256:
+
+```text
+account:authentication:v1
+account:password-wrapping:v1
+```
+
+The first value is base64url encoded and sent as the authentication secret. The second wraps the
+Account Encryption Key with XChaCha20-Poly1305 using a random 24-byte nonce and canonical envelope
+metadata as associated data. The server stores the authentication-secret bcrypt digest and opaque
+Account-key envelope; it receives neither the password nor either derived/wrapped plaintext key.
+
+The Account Encryption Key wraps exactly one synchronized Vault Root Key with
+`wrap:xchacha20poly1305:account:v1`. Associated data binds slot version, slot ID, Vault ID, Account
+Key ID, algorithm, and nonce. Account and device slots are independent: logout destroys local
+Account credentials but leaves the device slot sufficient for offline Vault access.
+
 ---
 
 # 13. Rotation

@@ -26,11 +26,17 @@ transactional publication, delivery bookkeeping, advisory wake-up hints, and rec
 
 # Current Boundary
 
-The implemented proof uses one Account principal that directly owns multiple isolated Vault replica
-records. It proves Account isolation but does not claim Device authorization, production login,
-shared Vaults, roles, invitations, billing, quotas, or recovery cryptography. Proof authentication is
-available only when Rails runs in the test environment with `AWSM_SYNC_PROOF=true`; all other
-unconfigured authentication fails closed.
+An Account authenticates with a normalized email and a client-derived authentication secret; the
+server never receives the password. Signup has no email verification or delivery. Rotating opaque
+access and refresh credentials are digest-only at rest, and reuse of a consumed refresh credential
+revokes its logical session. Each Account owns at most one Vault replica record. That record stores
+one opaque Account-wrapped Vault slot and exactly one active Generation.
+
+The server does not authorize Devices or possess the Account Encryption Key, Vault Root Key, or
+device-local slot. Shared Vaults, roles, invitations, Device signing/revocation, billing, quotas,
+password change, and Account Recovery Keys remain outside the current boundary. The black-box proof
+uses the same public Account/session resources as the extension; `AWSM_SYNC_PROOF` selects test
+adapters only and never changes authentication semantics.
 
 # Server-Visible Metadata Budget
 
@@ -53,7 +59,8 @@ membership leaks encrypted graph shape and is accepted solely to make remote del
 - `OpaqueByteStorage` provides immutable byte operations. The proof Disk Driver uses a private root,
   bounded streams, fsync, and same-filesystem atomic installation.
 - Action Cable publishes `{vaultId, latestCursor}` only after a committed head change. Polling is
-  always sufficient.
+  always sufficient. A 60-second, digest-only, Account-bound Cable ticket is atomically consumed
+  once and scrubbed from retained request URL state.
 - Solid Queue runs expiry and purge work. A domain Purge Job, not queue state, owns resumability and
   visible progress.
 
@@ -79,10 +86,11 @@ Purge detaches only targeted memberships, preserves every record referenced by a
 or other retained Generation, revokes recovery tickets, verifies byte absence, and finally leaves a
 permanent immutable tombstone. Missing committed bytes are integrity incidents, never cleanup hints.
 
-# Scaling and Production Gate
+# Scaling and Remaining Production Gate
 
-The proof intentionally uses one Rails process, PostgreSQL, Disk storage, an in-process Cable
-adapter, and independent Node clients. Horizontal Rails replicas require a shared immutable-byte
-Driver and shared Cable/Job infrastructure. Production promotion additionally requires approved
-Account authentication, Device/recovery authorization, quotas and abuse controls, operational
-backup/restore, security review, and trusted client synchronization.
+The current deployment uses PostgreSQL, Disk storage, and process-local or database-backed adapters.
+Horizontal Rails replicas require a shared immutable-byte Driver and shared Cable/Job
+infrastructure. Production promotion still requires Device/recovery authorization, quotas and abuse
+controls, operational backup/restore, independent security review, and deployment-specific
+hardening. Redis-backed ephemeral Cable tickets and a Redis Action Cable adapter remain Roadmap
+candidates, not current dependencies.

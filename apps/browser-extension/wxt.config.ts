@@ -13,7 +13,9 @@ export default defineConfig({
       "offscreen",
       "unlimitedStorage",
       "downloads",
+      "alarms",
     ],
+    optional_host_permissions: ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
     content_security_policy: {
       extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
     },

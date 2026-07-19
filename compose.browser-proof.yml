@@ -1,0 +1,4 @@
+services:
+  coordination-proof:
+    ports:
+      - "127.0.0.1:3300:3000"

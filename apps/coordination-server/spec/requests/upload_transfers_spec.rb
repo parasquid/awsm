@@ -3,7 +3,7 @@ require "base64"
 require "digest"
 
 RSpec.describe "Opaque upload transfers", type: :request do
-  let(:account) { Account.create! }
+  let(:account) { create_account }
   let(:vault_id) { "01900000-0000-7000-8000-000000000020" }
   let(:generation_id) { "01900000-0000-7000-8000-000000000021" }
   let(:bytes) { "opaque-gen".b }
@@ -25,6 +25,12 @@ RSpec.describe "Opaque upload transfers", type: :request do
   it "accepts, verifies, atomically installs, and finalizes opaque bytes" do
     post "/api/vaults", params: {
       vaultId: vault_id, generationId: generation_id, generationNumber: 0,
+      accountSlot: {
+        version: 1, slotId: "01900000-0000-7000-8000-000000000028", vaultId: vault_id,
+        accountKeyId: account.account_key_id, algorithm: Account::VAULT_SLOT_ALGORITHM,
+        nonce: Base64.urlsafe_encode64("n" * 24, padding: false),
+        ciphertext: Base64.urlsafe_encode64("c" * 48, padding: false)
+      },
       generationObject: { objectId: generation_id, objectType: "VaultGeneration",
                          byteLength: bytes.bytesize, sha256: checksum }
     }.to_json, headers: base_headers.merge(
@@ -76,7 +82,8 @@ RSpec.describe "Opaque upload transfers", type: :request do
   private
 
   def create_upload_and_token
-    vault = account.vault_replicas.create!(vault_id:, state: "Provisional", head_cursor: 0,
+    vault = account.vault_replicas.create!(vault_id:, **vault_slot_attributes(account:, vault_id:),
+      state: "Provisional", head_cursor: 0,
       provisional_expires_at: 1.day.from_now)
     generation = vault.vault_generations.create!(generation_id:, generation_number: 0,
       state: "Candidate")

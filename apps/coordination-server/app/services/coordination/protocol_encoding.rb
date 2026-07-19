@@ -14,7 +14,19 @@ module Coordination
     end
 
     def encode_sha256(value)
+      encode_base64url(value)
+    end
+
+    def encode_base64url(value)
       Base64.urlsafe_encode64(value, padding: false)
+    end
+
+    def decode_base64url(value, bytes:)
+      decoded = Base64.urlsafe_decode64(value.to_s)
+      raise ArgumentError unless decoded.bytesize == bytes && encode_base64url(decoded) == value
+      decoded
+    rescue ArgumentError
+      raise ArgumentError, "invalid base64url value"
     end
 
     def timestamp(value)

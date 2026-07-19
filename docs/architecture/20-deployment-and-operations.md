@@ -14,22 +14,23 @@
 
 ---
 
-# Current Proof Topology
+# Isolated Synchronization Proof
 
 `compose.sync-proof.yml` creates an explicitly named isolated project containing PostgreSQL 17, one
 Rails test/proof process, a private Disk byte volume, and an independent pinned Node 24 client. The
 Rails process uses in-process Action Cable and Job adapters so actual WebSocket and asynchronous
 purge behavior cross the same process boundary. Proof volumes never reuse development data.
 
-Run and remove the proof only with:
+Run the proof only through its cleanup wrapper, which removes the explicitly named proof containers,
+network, PostgreSQL volume, and opaque-byte volume both before and after execution:
 
 ```bash
-docker compose -f compose.sync-proof.yml up --build --abort-on-container-exit --exit-code-from replica-proof
-docker compose -f compose.sync-proof.yml down --volumes --remove-orphans
+corepack pnpm test:sync-proof
 ```
 
-The fixed credential in that isolated file is test-only and activates only when Rails runs in the
-test environment with `AWSM_SYNC_PROOF=true`. Development and production accept no proof credential.
+The isolated clients create and authenticate an ordinary test Account through the public API.
+`AWSM_SYNC_PROOF=true` selects only test process behavior such as the in-process Cable adapter; it
+does not activate an alternate authenticator or credential.
 
 # Storage
 
@@ -62,8 +63,10 @@ integrity without logging membership lists or ciphertext identifiers by default.
 Normal logs may contain request ID, internal operational row IDs, operation, stable outcome, broad
 Object type, counters, duration, and retry count. They MUST NOT contain bearer credentials, transfer
 tickets, Cable credentials, request/response bodies, ciphertext, storage paths, plaintext-derived
-metadata, keys, or full recovery memberships. Parameter filtering covers authorization, credential,
-token, ticket, secret, and key names.
+metadata, keys, or full recovery memberships. Parameter filtering covers email/password variants,
+authentication derivatives, authorization, credentials, tokens, tickets, Account keys, envelopes,
+ciphertext, and salts. Cable ticket consumption removes the raw ticket from retained request
+parameters and URL state.
 
 # Backup and Restore
 
@@ -74,7 +77,8 @@ resurrection of purged tombstones or reuse of discarded pre-release formats.
 
 # Production Gate
 
-Production promotion requires real Account authentication, Device/recovery authorization, quotas
-and abuse controls, a shared storage Driver, recurring Job deployment, shared notifications,
-backup/restore exercises, alerting, incident response, metadata/traffic analysis, and independent
-security review. No product UI or administration surface is supplied by the proof.
+Production promotion still requires Device/recovery authorization, quotas and abuse controls, a
+shared storage Driver, shared notifications, backup/restore exercises, alerting, incident response,
+metadata/traffic analysis, and independent security review. Email/password Account authentication,
+one-Vault synchronization, recurring Jobs, extension onboarding/settings, and stale-Replica
+recovery are implemented.

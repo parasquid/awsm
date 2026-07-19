@@ -109,6 +109,15 @@ The following invariants are fundamental.
   offline Events.
 - Generation tests cover paged reachability, dependency closure, predecessor/head races, explicit
   recovery, and stale-write rejection.
+- Account tests cover password-derived authentication/key separation, normalized email privacy,
+  rotating one-use refresh credentials, digest-only Cable tickets, logout erasure, and filtered
+  secret sentinels.
+- Trusted Runtime tests cover existing/new Vault enrollment, remote bootstrap, snapshot-bounded
+  pull, canonical replay independent of cursor order, malicious metadata rejection, Artifact
+  streaming beyond 4 GiB, and polling-only convergence.
+- Synchronized Vacuum tests prove server-first activation and journaled local resume. Stale-Replica
+  tests prove read-only fencing, fresh-identity recovery forks, atomic server replacement, rollback,
+  and export-first confirmation.
 - Purge fault tests prove restart safety, ticket revocation, active/shared-byte retention, permanent
   tombstones, and verified absence before success.
 

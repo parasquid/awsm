@@ -1,0 +1,87 @@
+:root {
+  color-scheme: light dark;
+  font:
+    16px / 1.5 system-ui,
+    sans-serif;
+}
+body {
+  margin: 0;
+  background: #f3efe7;
+  color: #201d18;
+}
+[hidden] {
+  display: none;
+}
+main {
+  box-sizing: border-box;
+  width: min(42rem, 100%);
+  margin: 3rem auto;
+  padding: 2rem;
+  background: #fffdf8;
+  border: 1px solid #d7cdbc;
+  border-radius: 1rem;
+}
+.eyebrow {
+  margin: 0;
+  color: #675a45;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+h1 {
+  margin-top: 0.25rem;
+}
+form,
+fieldset {
+  display: grid;
+  gap: 1rem;
+}
+label {
+  display: grid;
+  gap: 0.35rem;
+}
+input[type="email"],
+input[type="password"],
+input[type="text"] {
+  min-height: 2.75rem;
+  box-sizing: border-box;
+  padding: 0.6rem 0.75rem;
+  font: inherit;
+}
+.acknowledgement,
+fieldset label {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+}
+button {
+  min-height: 2.75rem;
+  padding: 0.6rem 1rem;
+  border: 0;
+  border-radius: 0.55rem;
+  background: #4b3d25;
+  color: white;
+  font: inherit;
+  font-weight: 700;
+}
+button:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+#status:not(:empty) {
+  padding: 0.75rem;
+  border-left: 0.25rem solid #ba7a22;
+  background: #f6ead8;
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid #ba7a22;
+  outline-offset: 2px;
+}
+@media (max-width: 36rem) {
+  main {
+    margin: 0;
+    min-height: 100vh;
+    border: 0;
+    border-radius: 0;
+    padding: 1.25rem;
+  }
+}

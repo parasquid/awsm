@@ -137,6 +137,13 @@ Workspace selects it without retaining the recovered Root Key; a populated Works
 active Vault unchanged. Import never appends an Event, creates a Generation, merges, replaces,
 repairs, or synchronizes an existing Vault.
 
+A Local recovery fork created during stale-Replica resolution is not Import or Restore. The Runtime
+re-authors the stale Vault's current logical state under fresh Vault, Generation, Event, Object,
+Bundle, Artifact, Collection, key, and device identities. It does not consume a Vault Package and
+does not claim to preserve operation or Undo history. The separately offered Complete Export is an
+exact preservation option before that re-authoring step and remains importable later as the same
+original stale Vault identity when no local collision exists.
+
 # 9. Import Job and Recovery
 
 One non-terminal Workspace Import Job owns an exclusive management lease. It fences Vault Create,

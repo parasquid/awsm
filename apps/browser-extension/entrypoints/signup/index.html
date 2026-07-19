@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Create an AWSM Account</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">AWSM</p>
+      <h1>Create your Account</h1>
+      <p>Your password encrypts your Account key. AWSM cannot recover it for you.</p>
+      <p>AWSM does not send a verification email. Your address is used only to sign in.</p>
+      <form id="signup-form">
+        <label>Email <input name="email" type="email" autocomplete="email" required /></label>
+        <label>Password <input name="password" type="password" autocomplete="new-password" minlength="12" required /></label>
+        <label>Confirm password <input name="confirmation" type="password" autocomplete="new-password" minlength="12" required /></label>
+        <label class="acknowledgement"><input name="acknowledgement" type="checkbox" required /> I understand that there is no password recovery.</label>
+        <fieldset id="vault-choice"><legend>Vault to synchronize</legend><p>Loading local Vaults…</p></fieldset>
+        <label id="new-vault-name">Vault name <input name="vault-name" maxlength="64" required /></label>
+        <button type="submit">Create Account</button>
+      </form>
+      <p id="status" role="status" aria-live="polite"></p>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

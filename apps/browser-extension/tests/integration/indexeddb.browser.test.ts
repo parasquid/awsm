@@ -29,6 +29,21 @@ test("persists a non-exportable device key and Vault records", async ({ page }) 
   });
 });
 
+test("restores encrypted Account credentials and erases only Account state on logout", async ({
+  page,
+}) => {
+  await expect(scenario(page, "account-persistence")).resolves.toEqual({
+    email: "reader@example.test",
+    accountKeyRestored: true,
+    refreshRestored: true,
+    accountWrappingKeyExtractable: false,
+    sessionKeyExtractable: false,
+    signedOut: true,
+    retainedEmail: "reader@example.test",
+    localObjectCount: 1,
+  });
+});
+
 test("isolates Vault metadata, key slots, device keys, generations, and heads", async ({
   page,
 }) => {
@@ -228,6 +243,18 @@ test("blocks writes while Vacuum owns the Vault and recovers an abandoned pre-ac
   });
 });
 
+test("retains synchronized Vacuum remote and local activation checkpoints across restart", async ({
+  page,
+}) => {
+  await expect(scenario(page, "synchronized-vacuum-journal")).resolves.toEqual({
+    remoteIntentStage: "ActivateRemote",
+    candidateGenerationId: "00000000-0000-4000-8000-000000000985",
+    localPendingStage: "ActivateLocal",
+    activatedHeadCursor: 17,
+    discarded: true,
+  });
+});
+
 test("atomically commits a Collection Event, item rows, topology, and generation tail", async ({
   page,
 }) => {
@@ -312,6 +339,21 @@ test("atomically activates an imported Vault and rejects destination collisions"
     directoryCountAfterCollision: 1,
     rollbackFailurePoints: 14,
     rollbackAlwaysAtomic: true,
+  });
+});
+
+test("atomically replaces a stale Replica and activates an independent local recovery fork", async ({
+  page,
+}) => {
+  await expect(scenario(page, "atomic-stale-recovery")).resolves.toEqual({
+    rollbackFailurePoints: 23,
+    rollbackAlwaysAtomic: true,
+    originalUsesServerGeneration: true,
+    originalEventIds: ["00000000-0000-4000-8000-000000000851"],
+    forkGenerationIndependent: true,
+    forkEventIds: ["00000000-0000-4000-8000-000000000870"],
+    directoryContainsBoth: true,
+    jobState: "Succeeded",
   });
 });
 

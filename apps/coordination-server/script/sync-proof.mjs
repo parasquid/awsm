@@ -1,8 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 
 const baseUrl = process.env.AWSM_PROOF_BASE_URL;
-const credential = process.env.AWSM_PROOF_CREDENTIAL;
+let credential;
 let requestSequence = 0;
 
 function sha256(bytes) {
@@ -21,10 +21,10 @@ async function control(
   { idempotencyKey, expected = [200] } = {},
 ) {
   const headers = {
-    Authorization: `Bearer ${credential}`,
     "Awsm-Protocol-Version": "1",
     "Awsm-Request-ID": requestId(),
   };
+  if (credential) headers.Authorization = `Bearer ${credential}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
   const response = await fetch(`${baseUrl}${path}`, {
@@ -105,9 +105,12 @@ async function finishUpload(vaultId, started, startAt = 0) {
 }
 
 async function openCable(vaultId) {
+  const issued = await control("POST", "/api/cable-tickets", undefined, {
+    expected: [201],
+  });
   const socketUrl =
     baseUrl.replace(/^http/, "ws") +
-    `/cable?credential=${encodeURIComponent(credential)}`;
+    `/cable?ticket=${encodeURIComponent(issued.payload.ticket)}`;
   const socket = new WebSocket(socketUrl, [
     "actioncable-v1-json",
     "actioncable-unsupported",
@@ -152,6 +155,46 @@ async function waitFor(predicate, label, timeout = 15_000) {
   throw new Error(`Timed out waiting for ${label}`);
 }
 
+const authenticationSecret = randomBytes(32).toString("base64url");
+const accountKeyId = randomUUID();
+const signup = await control(
+  "POST",
+  "/api/accounts",
+  {
+    email: `proof-${randomUUID()}@example.test`,
+    authenticationSecret,
+    accountKeyEnvelope: {
+      version: 1,
+      accountKeyId,
+      kdfAlgorithm: "kdf:argon2id13:account:v1",
+      kdfSalt: randomBytes(16).toString("base64url"),
+      kdfOperations: 3,
+      kdfMemoryBytes: 67_108_864,
+      wrappingAlgorithm: "wrap:xchacha20poly1305:account-password:v1",
+      nonce: randomBytes(24).toString("base64url"),
+      ciphertext: randomBytes(48).toString("base64url"),
+    },
+  },
+  { idempotencyKey: randomUUID(), expected: [201] },
+);
+credential = signup.payload.accessToken;
+const refreshed = await control(
+  "POST",
+  "/api/session/refresh",
+  { refreshToken: signup.payload.refreshToken },
+  { expected: [200] },
+);
+credential = refreshed.payload.accessToken;
+await control("DELETE", "/api/session", undefined, { expected: [204] });
+credential = undefined;
+const login = await control(
+  "POST",
+  "/api/sessions",
+  { email: signup.payload.account.email, authenticationSecret },
+  { expected: [200] },
+);
+credential = login.payload.accessToken;
+
 const policy = (await control("GET", "/api/service-policy")).payload;
 assert.equal(policy.recoveryRetentionDays, 90);
 assert.equal(policy.uploadPartSizeBytes, 8_388_608);
@@ -168,6 +211,15 @@ const attached = (
       vaultId,
       generationId: generationZeroId,
       generationNumber: 0,
+      accountSlot: {
+        version: 1,
+        slotId: randomUUID(),
+        vaultId,
+        accountKeyId,
+        algorithm: "wrap:xchacha20poly1305:account:v1",
+        nonce: randomBytes(24).toString("base64url"),
+        ciphertext: randomBytes(48).toString("base64url"),
+      },
       generationObject: {
         objectId: generationZeroId,
         objectType: "VaultGeneration",

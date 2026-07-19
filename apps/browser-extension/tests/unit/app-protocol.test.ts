@@ -29,6 +29,24 @@ describe("application request routing", () => {
     ).toBe(true);
   });
 
+  it("requires an explicit stale Replica recovery decision", () => {
+    expect(
+      isAppRequest({
+        type: "ResolveStaleReplica",
+        expectedVaultId: "vault",
+        exportDecision: "Exported",
+      }),
+    ).toBe(true);
+    expect(
+      isAppRequest({
+        type: "ResolveStaleReplica",
+        expectedVaultId: "vault",
+        exportDecision: "SkipConfirmed",
+      }),
+    ).toBe(true);
+    expect(isAppRequest({ type: "ResolveStaleReplica", expectedVaultId: "vault" })).toBe(false);
+  });
+
   it("routes only canonical Workspace-scoped Import requests", () => {
     expect(isAppRequest({ type: "BeginVaultImport", sourceByteLength: 42 })).toBe(true);
     expect(isAppRequest({ type: "BeginVaultImport", sourceByteLength: -1 })).toBe(false);

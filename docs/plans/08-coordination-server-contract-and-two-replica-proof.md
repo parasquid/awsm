@@ -1,12 +1,17 @@
 # Coordination Server Contract and Two-Replica Proof
 
 **Document:** `docs/plans/08-coordination-server-contract-and-two-replica-proof.md`
-**Status:** Approved implementation plan
+**Status:** Implemented foundation; Account and client boundaries superseded by Plan 09
 **Owner:** Engineering
 **Last Updated:** 2026-07-19
 **Depends On:** `docs/plans/06-independent-artifact-vault-graph-and-selective-export.md`,
 `docs/plans/07-complete-vault-package-import.md`, and the architecture and specifications
 reconciled by this plan
+
+Plan 09 replaced this plan's proof-only authentication, Account/Vault cardinality, and deferred
+trusted-client assumptions in place. The opaque coordination, Generation, cursor, purge, and
+black-box proof decisions remain historical implementation rationale; current behavior is owned by
+Plan 09 and the reconciled specifications.
 
 ---
 
@@ -35,12 +40,10 @@ application to:
 10. preserve the zero-knowledge boundary throughout storage, transfer, diagnostics, testing, and
     failure recovery.
 
-This plan intentionally proves synchronization coordination before the full Account, recovery-key,
-and Device-trust security program proposed by the Roadmap. The proof is not authorized for
-production use. Production promotion remains blocked until real Account authentication, Device
-trust and revocation, Account-key enrollment and recovery, quotas and abuse controls, a shared
-storage adapter, the trusted client Synchronization Service, and the required independent security
-review are complete.
+The resulting proof remains non-production. Plan 09 subsequently added real Account
+authentication, Account-key enrollment, and the trusted extension Synchronization Service.
+Production promotion remains blocked on Device trust and revocation, Account recovery, quotas and
+abuse controls, a shared storage adapter, and independent security review.
 
 The formal transport-independent synchronization specifications own protocol semantics. The
 OpenAPI document introduced by this plan owns the exact HTTPS resource contract. Rails is one
@@ -52,8 +55,8 @@ reference implementation and SHALL NOT redefine the architecture in framework-sp
 
 ## 2.1 In scope
 
-- one Account directly owning multiple independent Vault replicas;
-- an Account-authentication interface with a proof-only adapter;
+- one Account directly owning at most one synchronized Vault replica;
+- real email/password-derived Account authentication through the public Account/session contract;
 - client-generated stable Vault, Generation, Event, Object, request, upload, and Job identifiers;
 - one canonical pre-release synchronization and HTTP contract at protocol version `1`;
 - an OpenAPI-first JSON control plane and opaque binary transfer plane;
@@ -80,16 +83,15 @@ reference implementation and SHALL NOT redefine the architecture in framework-sp
 
 ## 2.2 Explicitly deferred
 
-- verified email/password, magic-link, passkey, OAuth, or other production Account login;
-- Account Master Password, Account Encryption Key, Account Recovery Key, or recovery ceremonies;
+- verified email delivery, magic-link, passkey, OAuth, password change, Account Recovery Key, or
+  recovery ceremonies;
 - Device authentication, Device signing keys, signed requests, enrollment, approval, trust,
   revocation, wrapped Vault keys, or Device-specific authorization;
 - shared Vaults, Account memberships, roles, invitations, organizations, tenants, or collaboration;
 - billing, subscriptions, plans, storage quotas, reservations, and rate limiting;
-- browser-extension integration or a trusted client Synchronization Service;
-- the web Library, Account pages, recovery pages, administration pages, or any product UI;
+- a trusted web Synchronization Service or web Account/recovery product;
 - local Full and Selective Replica retention profiles, cache budgets, pinning, and eviction;
-- client recovery UX for unpublished stale work;
+- automatic semantic merge or selective reapplication of unpublished stale work;
 - automatic merging of a superseded Vault Generation;
 - S3, MinIO, cloud-provider, or other shared byte-storage adapters;
 - horizontal or multi-region production deployment;
@@ -726,9 +728,10 @@ must expose readable canonical values and reject unknown values at the database 
 - internal UUID primary key;
 - created/updated timestamps.
 
-Do not add credential columns. The proof setup creates one Account with the UUID supplied through
-proof environment configuration. The proof authenticator constant-time compares the presented
-credential with the environment-provided proof credential, then loads that configured Account.
+The canonical Account row stores normalized email, a BCrypt digest of the client-derived
+authentication secret, public Account KDF parameters, and the authenticated Account Encryption Key
+envelope. Sessions and rotating access/refresh credentials use digest-only rows. The server never
+receives the raw password or Account Encryption Key.
 
 `vault_replicas`:
 
@@ -1007,22 +1010,21 @@ must never be described as guaranteed erasure of a client or already transferred
 
 ---
 
-# 11. Proof Authentication and Environment Isolation
+# 11. Account Authentication and Test Isolation
 
-Create a proof-only authenticator selected only when both `Rails.env.test?` and
-`AWSM_SYNC_PROOF=true`. It maps a high-entropy bearer credential digest to a preprovisioned Account
-and returns a recent-confirmation timestamp for purge tests.
+The black-box proof signs up and logs in an ordinary test Account through the public Account and
+session resources. `AWSM_SYNC_PROOF=true` may select isolated test adapters, but never an alternate
+authentication path.
 
 Requirements:
 
-- production and development never accept the proof credential path;
-- Rails boot in a production-like environment without a configured authenticator leaves `/api` and
-  `/cable` fail closed;
+- every environment uses the same Account/session authenticator;
+- Rails fails closed when Account or session credentials are absent or invalid;
 - raw bearer credentials and Cable query credentials are filtered from logs and exceptions;
-- proof Accounts are created through a Rails runner/setup script, never a public endpoint;
-- both synthetic replicas use the same Account credential but maintain independent local state;
+- proof Accounts are created through the public Account endpoint;
+- both synthetic replicas log in to the same Account but maintain independent local state;
 - cross-Account tests use a second credential and prove non-disclosure; and
-- no proof secret is committed as a production secret. A fixed non-secret Compose-only value may be
+- no Account secret is committed. A fixed non-secret Compose-only synthetic-parameter HMAC key may be
   supplied through the isolated proof file and must be clearly labeled test-only.
 
 ---
@@ -1162,8 +1164,8 @@ consumers in the same work:
     synchronization.
 11. Verify and update `consistency-review.md` as a review record; do not treat it as authority.
 12. At completion, rewrite the Roadmap initiative to remove the now-implemented contract/proof work
-    and retain only unresolved production authentication, Device/recovery cryptography, quotas,
-    shared storage, trusted client synchronization, retention UI, web client, and security review.
+    and retain only unresolved Device/recovery cryptography, quotas, shared storage, retention UI,
+    web client, and security review.
 
 Search all documentation for stale affected language before completion, including:
 
@@ -1365,9 +1367,8 @@ The work is complete only when all statements are true:
 
 1. One canonical strict OpenAPI HTTP contract exists and loads in Rails and CI.
 2. Protocol version `1` has no negotiation, alternate route, fallback, or compatibility reader.
-3. An Account directly owns multiple isolated Vault replica records.
-4. Production fails closed without a real authenticator; proof authentication cannot activate in
-   development or production.
+3. An Account directly owns at most one synchronized Vault replica record.
+4. Every environment uses real Account/session authentication and fails closed without credentials.
 5. PostgreSQL never stores opaque Object payload bytes.
 6. Disk upload and download remain bounded-memory beyond 4 GiB.
 7. Interrupted multipart upload resumes without accepting conflicting parts.
@@ -1396,8 +1397,8 @@ The work is complete only when all statements are true:
 28. Two independent black-box replicas converge through actual HTTP, Disk, PostgreSQL, and Action
     Cable boundaries.
 29. The proof also converges after missing all Cable hints.
-30. No product UI, quota behavior, Device trust, recovery cryptography, extension sync, or shared
-    storage is accidentally implied or implemented.
+30. Plan 08 itself does not claim quota behavior, Device trust, recovery cryptography, or shared
+    storage; Plan 09 owns the subsequently implemented extension Synchronization Service and UI.
 31. Repository-root CI actually discovers and runs Rails checks and the Compose proof.
 32. Every affected canonical document reflects the resulting design.
 33. The Roadmap contains only unresolved forward-looking work.
@@ -1408,9 +1409,9 @@ The work is complete only when all statements are true:
 
 # 18. Fixed Decisions Checklist
 
-- [x] Guarded non-production proof before the full Account/Device security program.
+- [x] Guarded non-production proof, now exercised through the canonical Account contract.
 - [x] Account principal only; no Device authorization claim.
-- [x] Account directly owns Vaults; no Membership or Tenant model.
+- [x] Account directly owns at most one synchronized Vault; no Membership or Tenant model.
 - [x] Hosted and self-hosted use one protocol contract.
 - [x] OpenAPI is primary for HTTPS shapes; Markdown owns transport-independent semantics.
 - [x] Resource endpoints, not a single generic message endpoint or verb-style RPC surface.

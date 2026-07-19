@@ -1,0 +1,71 @@
+import { wipe } from "../../crypto/sodium";
+import type { IndexedDbAccountRepository } from "../../drivers/indexeddb/account-repository";
+import type { AccountHttp } from "./http";
+
+export class AccountSessionManager {
+  private access: string | undefined;
+  private refreshPromise: Promise<string> | undefined;
+
+  constructor(
+    private readonly http: Pick<AccountHttp, "refresh" | "logout">,
+    private readonly repository: IndexedDbAccountRepository,
+  ) {}
+
+  setAccessToken(value: string): void {
+    this.access = value;
+  }
+
+  async accessToken(): Promise<string> {
+    if (this.access !== undefined) return this.access;
+    this.refreshPromise ??= this.refreshAccess().finally(() => {
+      this.refreshPromise = undefined;
+    });
+    return this.refreshPromise;
+  }
+
+  async logout(): Promise<void> {
+    try {
+      const access = await this.accessToken();
+      await this.http.logout(access);
+    } catch {
+      // Local credential erasure is mandatory even if the server is unavailable.
+    } finally {
+      this.access = undefined;
+      await this.repository.logout();
+    }
+  }
+
+  private async refreshAccess(): Promise<string> {
+    const stored = await this.repository.loadAuthenticated();
+    if (stored === undefined)
+      throw Object.assign(new Error("Account authentication is required"), {
+        id: "SYNCHRONIZATION_AUTHENTICATION_REQUIRED",
+      });
+    try {
+      const session = await this.http.refresh(stored.refreshToken);
+      if (
+        session.account.accountId !== stored.metadata.accountId ||
+        session.account.accountKeyEnvelope.accountKeyId !== stored.metadata.accountKeyId
+      )
+        throw Object.assign(new Error("Account identity changed"), {
+          id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+        });
+      await this.repository.saveAuthenticated({
+        metadata: {
+          version: 1,
+          accountId: session.account.accountId,
+          sessionId: session.sessionId,
+          email: session.account.email,
+          accountKeyId: session.account.accountKeyEnvelope.accountKeyId,
+          accountKeyEnvelope: session.account.accountKeyEnvelope,
+        },
+        accountEncryptionKey: stored.accountEncryptionKey,
+        refreshToken: session.refreshToken,
+      });
+      this.access = session.accessToken;
+      return session.accessToken;
+    } finally {
+      await wipe(stored.accountEncryptionKey);
+    }
+  }
+}

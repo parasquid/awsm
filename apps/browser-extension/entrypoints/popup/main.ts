@@ -1,6 +1,7 @@
 import { browser } from "wxt/browser";
 import { AppClientError, sendRequest } from "../../src/app/client";
 import type { AppState } from "../../src/app/protocol";
+import { serverPermissionPattern } from "../../src/runtime/account/server";
 import { popupView } from "../../src/ui/popup-view";
 import { vaultManagementView } from "../../src/ui/vault-management-view";
 
@@ -53,6 +54,17 @@ function request(type: "GetState" | "UnlockDevice" | "LockVault"): Promise<AppSt
 
 function errorText(error: unknown): string {
   return error instanceof AppClientError ? error.message : "The operation could not be completed.";
+}
+
+async function configureServerFromGesture(serverOrigin: string): Promise<AppState> {
+  const pattern = serverPermissionPattern(serverOrigin);
+  if (!(await browser.permissions.request({ origins: [pattern] }))) {
+    throw new AppClientError(
+      "SERVER_PERMISSION_DENIED",
+      "Chrome did not grant access to that synchronization server.",
+    );
+  }
+  return sendRequest<AppState>({ type: "ConfigureSyncServer", serverOrigin });
 }
 
 function heading(subtitle: string): DocumentFragment {
@@ -275,13 +287,131 @@ function render(state: AppState, transientError?: string): void {
   });
   const content = document.createDocumentFragment();
   content.append(
-    heading(view.screen === "onboarding" ? "Create your local Vault" : "Archive this page"),
+    heading(
+      view.screen === "server-choice"
+        ? "Choose synchronization"
+        : view.screen === "login"
+          ? "Sign in"
+          : view.screen === "account-setup"
+            ? "Finish setup"
+            : view.screen === "stale-replica"
+              ? "Resolve stale Vault"
+              : view.screen === "onboarding"
+                ? "Create your local Vault"
+                : "Archive this page",
+    ),
   );
   const controls = vaultControls(state);
   if (controls !== undefined) content.append(controls);
   if (transientError !== undefined) content.append(status(transientError, "error"));
 
-  if (view.screen === "onboarding") {
+  if (view.screen === "server-choice") {
+    content.append(
+      element(
+        "p",
+        "Choose where encrypted Vault data may synchronize. You can keep everything only on this device.",
+      ),
+    );
+    const hosted = element("button", `Use hosted AWSM · ${view.hostedOrigin}`, "primary");
+    hosted.type = "button";
+    hosted.addEventListener("click", () => {
+      hosted.disabled = true;
+      void configureServerFromGesture(view.hostedOrigin).then(render, (cause) =>
+        refresh(errorText(cause)),
+      );
+    });
+    const customForm = element("form");
+    const customLabel = element("label", "Self-hosted server origin");
+    const custom = element("input");
+    custom.name = "server-origin";
+    custom.type = "url";
+    custom.placeholder = "https://sync.example.com";
+    custom.required = true;
+    customLabel.append(custom);
+    const connect = element("button", "Use self-hosted server");
+    connect.type = "submit";
+    customForm.append(customLabel, connect);
+    customForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      connect.disabled = true;
+      void configureServerFromGesture(custom.value).then(render, (cause) =>
+        refresh(errorText(cause)),
+      );
+    });
+    const localOnly = element("button", "Continue without sync");
+    localOnly.type = "button";
+    localOnly.addEventListener("click", () => {
+      localOnly.disabled = true;
+      void sendRequest<AppState>({ type: "ChooseLocalOnly" }).then(render, (cause) =>
+        refresh(errorText(cause)),
+      );
+    });
+    content.append(hosted, customForm, localOnly);
+  } else if (view.screen === "login") {
+    content.append(element("p", `Sign in to synchronize through ${view.serverOrigin}.`));
+    const login = element("form");
+    const emailLabel = element("label", "Email");
+    const email = element("input");
+    email.type = "email";
+    email.name = "email";
+    email.autocomplete = "email";
+    email.required = true;
+    emailLabel.append(email);
+    const passwordLabel = element("label", "Password");
+    const password = element("input");
+    password.type = "password";
+    password.name = "password";
+    password.autocomplete = "current-password";
+    password.required = true;
+    passwordLabel.append(password);
+    const signIn = element("button", "Sign in", "primary");
+    signIn.type = "submit";
+    login.append(emailLabel, passwordLabel, signIn);
+    login.addEventListener("submit", (event) => {
+      event.preventDefault();
+      signIn.disabled = true;
+      const pending = sendRequest<AppState>({
+        type: "LoginAccount",
+        email: email.value,
+        password: password.value,
+      });
+      password.value = "";
+      void pending.then(render, (cause) => refresh(errorText(cause)));
+    });
+    const signup = element("a", "Create an Account");
+    signup.href = browser.runtime.getURL("/signup.html");
+    signup.target = "_blank";
+    signup.addEventListener("click", (event) => {
+      event.preventDefault();
+      void browser.tabs.create({ url: signup.href });
+    });
+    content.append(login, signup);
+  } else if (view.screen === "account-setup") {
+    content.append(element("p", "Choose which local Vault this Account should synchronize."));
+    const finish = element("a", "Finish Account setup");
+    finish.href = browser.runtime.getURL("/signup.html");
+    finish.target = "_blank";
+    finish.addEventListener("click", (event) => {
+      event.preventDefault();
+      void browser.tabs.create({ url: finish.href });
+    });
+    content.append(finish);
+  } else if (view.screen === "stale-replica") {
+    content.append(
+      status(
+        "This device has unpublished work from an older Vault Generation. It remains readable, but changes are paused to avoid restoring content removed by Vacuum.",
+        "warning",
+      ),
+    );
+    const resolve = element("a", "Preserve local copy and use server version");
+    resolve.href = `${browser.runtime.getURL("/library.html")}?resolveStale=1`;
+    resolve.target = "_blank";
+    resolve.addEventListener("click", (event) => {
+      event.preventDefault();
+      void browser.tabs.create({ url: resolve.href });
+    });
+    content.append(resolve);
+  } else if (view.screen === "onboarding") {
     content.append(
       element("p", "Your captures are encrypted locally. No account or server is required."),
     );

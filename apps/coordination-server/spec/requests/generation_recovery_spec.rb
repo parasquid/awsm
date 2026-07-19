@@ -3,7 +3,7 @@ require "base64"
 require "digest"
 
 RSpec.describe "Successor Generation and recovery", type: :request do
-  let(:account) { Account.create! }
+  let(:account) { create_account }
   let(:vault_id) { "01900000-0000-7000-8000-000000000050" }
   let(:predecessor_id) { "01900000-0000-7000-8000-000000000051" }
   let(:successor_id) { "01900000-0000-7000-8000-000000000052" }
@@ -87,7 +87,8 @@ RSpec.describe "Successor Generation and recovery", type: :request do
   private
 
   def active_vault
-    replica = account.vault_replicas.create!(vault_id:, state: "Active", head_cursor: 2,
+    replica = account.vault_replicas.create!(vault_id:, **vault_slot_attributes(account:, vault_id:),
+      state: "Active", head_cursor: 2,
       active_generation_number: 0)
     generation = replica.vault_generations.create!(generation_id: predecessor_id,
       generation_number: 0, state: "Active", activated_at: Time.current)
