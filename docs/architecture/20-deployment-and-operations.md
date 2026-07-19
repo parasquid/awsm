@@ -358,6 +358,14 @@ Vault recovery uses Snapshot-based Backup Sets as defined by `docs/specification
 
 ---
 
+# Client Import Cleanup
+
+Import staging and prepared wrappers are client-local operational data. Startup reconciliation
+marks non-terminal Import Jobs interrupted, removes only the Job-derived source path, and removes
+only wrappers in an authenticated destination scope after proving that no Vault directory entry
+committed. Diagnostics allow only Job IDs, stages, counters, safe error IDs, and timing; they exclude
+filenames, passphrases, keys, Vault names, titles, URLs, and decrypted content.
+
 # Design Decisions
 
 ## Why Stateless Services?

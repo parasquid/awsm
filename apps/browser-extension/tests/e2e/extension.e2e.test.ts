@@ -1,11 +1,138 @@
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { type BrowserContext, chromium, expect, type Page, test } from "@playwright/test";
+import { BlobWriter } from "@zip.js/zip.js";
+import { writeArtifactEnvelope } from "../../src/crypto/artifact-envelope";
+import { deriveContextKeyFromCryptoKey } from "../../src/crypto/hkdf";
+import type { ArtifactReferenceV1, CaptureMetadataV1 } from "../../src/domain/artifact-graph";
+import {
+  encodeStructuredContentSequence,
+  normalizedTextFromBlocks,
+} from "../../src/domain/structured-content";
+import type {
+  StoredArtifactObjectV1,
+  StoredEvent,
+  StoredObjectV1,
+} from "../../src/drivers/indexeddb";
+import type { ArtifactStore } from "../../src/runtime/artifact";
+import {
+  type PreparedCaptureArtifact,
+  prepareCaptureRegistration,
+} from "../../src/runtime/capture/registration";
+import {
+  VaultExportService,
+  type VaultExportSource,
+  writeVaultPackage,
+} from "../../src/runtime/export";
+import {
+  prepareVaultNameChange,
+  type VaultRecordsV1,
+  type VaultRepository,
+  VaultService,
+} from "../../src/runtime/vault";
+
+async function preparePortableArtifact(
+  encrypted: Map<string, Uint8Array>,
+  rootKey: CryptoKey,
+  vaultId: string,
+  plaintext: Uint8Array,
+  role: ArtifactReferenceV1["role"],
+  kind: ArtifactReferenceV1["kind"],
+  mimeType: string,
+  acquiredAt: string,
+): Promise<PreparedCaptureArtifact> {
+  const objectId = crypto.randomUUID();
+  const key = await deriveContextKeyFromCryptoKey(rootKey, {
+    vaultId,
+    domain: "vault:artifact:v1",
+    contextId: objectId,
+    keyVersion: 1,
+  });
+  const chunks: Uint8Array[] = [];
+  const summary = await writeArtifactEnvelope({
+    objectId,
+    key,
+    noncePrefix: crypto.getRandomValues(new Uint8Array(16)),
+    plaintext: (async function* () {
+      yield plaintext;
+    })(),
+    write: (chunk) => {
+      chunks.push(Uint8Array.from(chunk));
+    },
+  });
+  const wrapper = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    wrapper.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  encrypted.set(objectId, wrapper);
+  const object: StoredArtifactObjectV1 = {
+    version: 1,
+    objectId,
+    objectType: "Artifact",
+    envelopeFormat: "artifact:xchacha20poly1305-chunked:v1",
+    envelopeByteLength: summary.envelopeByteLength,
+    envelopeChecksumAlgorithm: "hash:sha256:v1",
+    envelopeChecksum: summary.envelopeChecksum,
+  };
+  return {
+    object,
+    reference: {
+      artifactVersion: 1,
+      artifactObjectId: objectId,
+      kind,
+      role,
+      mimeType,
+      acquiredAt,
+      plaintextByteLength: summary.plaintextByteLength,
+      checksumAlgorithm: "hash:sha256:v1",
+      plaintextChecksum: summary.plaintextChecksum,
+    },
+  };
+}
 
 async function extensionPopup(context: BrowserContext, extensionId: string): Promise<Page> {
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extensionId}/popup.html`);
   return popup;
+}
+
+async function setLatestImportJobForVisual(
+  page: Page,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  await page.evaluate(async (next) => {
+    const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
+      const request = indexedDB.open("awsm-vault");
+      request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const transaction = database.transaction("import_jobs", "readwrite");
+    const store = transaction.objectStore("import_jobs");
+    const jobs = await new Promise<Record<string, unknown>[]>((resolveJobs, reject) => {
+      const request = store.getAll();
+      request.addEventListener("success", () => resolveJobs(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const current = jobs[0];
+    if (current === undefined || typeof current.jobId !== "string") {
+      throw new Error("Import Job is unavailable for rendered-state inspection.");
+    }
+    const updated: Record<string, unknown> = {
+      ...current,
+      ...next,
+      updatedAt: new Date().toISOString(),
+    };
+    if (next.errorId === null) delete updated.errorId;
+    store.put(updated, current.jobId);
+    await new Promise<void>((resolveTransaction, reject) => {
+      transaction.addEventListener("complete", () => resolveTransaction(), { once: true });
+      transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+      transaction.addEventListener("abort", () => reject(transaction.error), { once: true });
+    });
+    database.close();
+  }, patch);
 }
 
 test("captures MHTML and a full-page screenshot, then opens and downloads them offline", async ({
@@ -62,6 +189,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await expect(popup.getByRole("button", { name: "Generate another name" })).toBeFocused();
     await popup.keyboard.press("Tab");
     await expect(popup.getByRole("button", { name: "Create Vault" })).toBeFocused();
+    await expect(popup.getByRole("link", { name: "Import existing Vault" })).toBeVisible();
     await popup.keyboard.press("Enter");
     await expect(popup.getByRole("button", { name: "Archive this page" })).toBeVisible();
     await popup.evaluate(async () => {
@@ -231,6 +359,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     });
     const library = await context.newPage();
     await library.goto(`chrome-extension://${extensionId}/library.html`);
+    await expect(library.getByRole("button", { name: "Import Vault" })).toBeVisible();
     await library.locator(".card").click();
     const firstSelection = library.getByRole("checkbox", { name: /Select capture from/u }).first();
     await firstSelection.check();
@@ -355,7 +484,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     const inspection = library.locator(".artifact-inspection");
     await expect(inspection).toBeVisible();
     await expect(inspection.getByRole("heading", { name: "CONTENT STRUCTURED" })).toBeVisible();
-    await expect(library.locator(".snackbar")).toHaveCount(0, { timeout: 15_000 });
+    await expect(library.locator(".snackbar")).toHaveCount(0, {
+      timeout: 15_000,
+    });
     await library.setViewportSize({ width: 1280, height: 900 });
     await library.screenshot({
       path: testInfo.outputPath("artifact-detail-wide.png"),
@@ -659,6 +790,434 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     expect(consoleErrors).toEqual([]);
   } finally {
     await context.close();
+  }
+});
+
+test("exports a Vault and imports it into a fresh Workspace", async ({ browserName }, testInfo) => {
+  test.setTimeout(120_000);
+  expect(browserName).toBe("chromium");
+  const extensionPath = testInfo.outputPath("portable-extension");
+  await cp(resolve(".output/chrome-mv3"), extensionPath, { recursive: true });
+  const packagePath = testInfo.outputPath("portable-vault.awsm");
+  const selectivePackagePath = testInfo.outputPath("selective-vault.awsm");
+  const invalidPackagePath = testInfo.outputPath("invalid-vault.awsm");
+  class MemoryVaultRepository implements VaultRepository {
+    records: VaultRecordsV1 | undefined;
+    async load(): Promise<VaultRecordsV1 | undefined> {
+      return this.records;
+    }
+    async setManualLock(): Promise<void> {}
+  }
+  const repository = new MemoryVaultRepository();
+  const preparer = new VaultService(repository);
+  const prepared = await preparer.prepareCreate({
+    name: "Portable Archive",
+    createdAt: "2026-07-19T03:00:00.000Z",
+  });
+  repository.records = prepared.records;
+  const vault = new VaultService(repository, prepared.records.metadata.vaultId);
+  vault.activatePrepared(prepared);
+  const created = await prepareVaultNameChange({
+    rootKey: prepared.rootKey,
+    eventType: "VaultCreated",
+    vaultId: prepared.records.metadata.vaultId,
+    deviceId: prepared.records.metadata.deviceId,
+    eventId: crypto.randomUUID(),
+    timestamp: prepared.records.metadata.createdAt,
+    name: prepared.name,
+  });
+  const capturedAt = "2026-07-19T03:00:30.000Z";
+  const metadata: CaptureMetadataV1 = {
+    version: 1,
+    originalUrl: "https://fixture.test/portable",
+    finalUrl: "https://fixture.test/portable",
+    title: "Portable Fixture",
+    capturedAt,
+    contentType: "text/html",
+    viewport: { width: 800, height: 600 },
+    document: { width: 800, height: 1200 },
+    chromeVersion: "149",
+    extensionVersion: "0.1.0",
+    captureProfileId: "ChromeWebPage-v1",
+    captureProfileVersion: 1,
+  };
+  const blocks = [
+    {
+      blockVersion: 1 as const,
+      blockId: "B000001",
+      kind: "Paragraph" as const,
+      text: "Portable fixture text",
+      links: [],
+    },
+  ];
+  const encryptedArtifacts = new Map<string, Uint8Array>();
+  const primary = new Uint8Array(32 * 1024 * 1024).fill(0x20);
+  primary.set(new TextEncoder().encode("MIME-Version: 1.0\r\nPortable Fixture\r\n"));
+  const artifacts = await Promise.all([
+    preparePortableArtifact(
+      encryptedArtifacts,
+      prepared.rootKey,
+      prepared.records.metadata.vaultId,
+      primary,
+      "PRIMARY",
+      "CAPTURE",
+      "multipart/related",
+      capturedAt,
+    ),
+    preparePortableArtifact(
+      encryptedArtifacts,
+      prepared.rootKey,
+      prepared.records.metadata.vaultId,
+      normalizedTextFromBlocks(blocks),
+      "TEXT_EXTRACTED",
+      "TEXT",
+      "text/plain;charset=utf-8",
+      capturedAt,
+    ),
+    preparePortableArtifact(
+      encryptedArtifacts,
+      prepared.rootKey,
+      prepared.records.metadata.vaultId,
+      encodeStructuredContentSequence(blocks),
+      "CONTENT_STRUCTURED",
+      "STRUCTURED_CONTENT",
+      "application/cbor-seq",
+      capturedAt,
+    ),
+  ]);
+  const registration = await prepareCaptureRegistration({
+    rootKey: prepared.rootKey,
+    vaultId: prepared.records.metadata.vaultId,
+    deviceId: prepared.records.metadata.deviceId,
+    commandId: crypto.randomUUID(),
+    bundleId: crypto.randomUUID(),
+    descriptorObjectId: crypto.randomUUID(),
+    eventId: crypto.randomUUID(),
+    collectionId: crypto.randomUUID(),
+    capturedAt,
+    metadata,
+    artifacts,
+    warnings: ["OPTIONAL_METADATA_UNAVAILABLE"],
+    clientVersion: "0.1.0",
+  });
+  const head = {
+    ...prepared.records.head,
+    appendedEventIds: [created.event.eventId, registration.event.eventId].toSorted(),
+    appendedObjectIds: registration.objects.map((object) => object.objectId).toSorted(),
+  };
+  const events = new Map<string, StoredEvent>([
+    [created.event.eventId, created.event],
+    [registration.event.eventId, registration.event],
+  ]);
+  const objects = new Map<string, StoredObjectV1>(
+    registration.objects.map((object) => [object.objectId, object]),
+  );
+  const source: VaultExportSource = {
+    getVaultHead: () => Promise.resolve(head),
+    getVaultGeneration: () => Promise.resolve(prepared.records.generation),
+    getStoredEvent: (eventId) => Promise.resolve(events.get(eventId)),
+    getStoredObject: (objectId) => Promise.resolve(objects.get(objectId)),
+    listAuthoritativeIds: () =>
+      Promise.resolve({
+        eventIds: [...events.keys()].toSorted(),
+        objectIds: [...objects.keys()].toSorted(),
+      }),
+  };
+  const exportService = new VaultExportService(source, vault, prepared.records.metadata.vaultId, {
+    openEncrypted: (_vaultId: string, objectId: string) => {
+      const bytes = encryptedArtifacts.get(objectId);
+      if (bytes === undefined) return Promise.reject(new Error("Artifact is missing."));
+      return Promise.resolve(new Blob([Uint8Array.from(bytes).buffer]).stream());
+    },
+  } as unknown as ArtifactStore);
+  const exportOptions = {
+    packageId: crypto.randomUUID(),
+    createdAt: "2026-07-19T03:01:00.000Z",
+    passphrase: "portable package passphrase",
+    salt: crypto.getRandomValues(new Uint8Array(16)),
+    nonce: crypto.getRandomValues(new Uint8Array(24)),
+  };
+  const exported = await exportService.prepare(exportOptions);
+  const output = new BlobWriter("application/vnd.awsm.vault+zip");
+  await writeVaultPackage(output, exported.entries);
+  await writeFile(packagePath, new Uint8Array(await (await output.getData()).arrayBuffer()));
+  const selective = await exportService.prepare({
+    ...exportOptions,
+    packageId: crypto.randomUUID(),
+    nonce: crypto.getRandomValues(new Uint8Array(24)),
+    omitArtifactObjectIds: new Set([artifacts[0].object.objectId]),
+  });
+  const selectiveOutput = new BlobWriter("application/vnd.awsm.vault+zip");
+  await writeVaultPackage(selectiveOutput, selective.entries);
+  await writeFile(
+    selectivePackagePath,
+    new Uint8Array(await (await selectiveOutput.getData()).arrayBuffer()),
+  );
+  await writeFile(invalidPackagePath, new TextEncoder().encode("not a Vault Package"));
+  const launch = (profile: string) =>
+    chromium.launchPersistentContext(testInfo.outputPath(profile), {
+      channel: "chromium",
+      headless: true,
+      acceptDownloads: true,
+      args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
+    });
+
+  const destination = await launch("portable-destination-profile");
+  try {
+    const worker =
+      destination.serviceWorkers()[0] ?? (await destination.waitForEvent("serviceworker"));
+    const extensionId = new URL(worker.url()).host;
+    const observer = await destination.newPage();
+    await observer.goto(`chrome-extension://${extensionId}/library.html`);
+    await expect(
+      observer.getByRole("heading", { name: "Create or import your first Vault" }),
+    ).toBeVisible();
+    const library = await destination.newPage();
+    await library.goto(`chrome-extension://${extensionId}/library.html?import=1`);
+    const dialog = library.getByRole("dialog", {
+      name: "Import encrypted Vault",
+    });
+    await expect(dialog).toBeVisible();
+    await library.setViewportSize({ width: 1280, height: 900 });
+    await library.screenshot({
+      path: testInfo.outputPath("import-select-wide.png"),
+      fullPage: true,
+    });
+    await dialog.getByLabel("Vault Package").setInputFiles(packagePath);
+    await library.screenshot({
+      path: testInfo.outputPath("import-select-file-wide.png"),
+      fullPage: true,
+    });
+    await dialog
+      .getByRole("button", { name: "Continue" })
+      .evaluate((button) => (button as HTMLElement).click());
+    if (
+      await dialog
+        .getByRole("progressbar")
+        .isVisible()
+        .catch(() => false)
+    ) {
+      await library.screenshot({
+        path: testInfo.outputPath("import-acquire-wide.png"),
+        fullPage: true,
+      });
+    }
+    await observer.getByRole("button", { name: "Cancel Import" }).click();
+    await expect(dialog).not.toBeVisible({ timeout: 30_000 });
+    await library.screenshot({
+      path: testInfo.outputPath("import-cancellation-restored-wide.png"),
+      fullPage: true,
+    });
+    await library.getByRole("button", { name: "Import existing Vault" }).click();
+    await dialog.getByLabel("Vault Package").setInputFiles(packagePath);
+    await dialog.getByRole("button", { name: "Continue" }).click();
+    const passphrase = dialog.getByLabel("Export passphrase");
+    await expect(passphrase).toBeVisible({ timeout: 30_000 });
+    await expect(observer.getByText(/Import · Authenticate/u)).toBeVisible();
+    await expect(observer.getByRole("button", { name: "Cancel Import" })).toBeVisible();
+    await library.setViewportSize({ width: 390, height: 844 });
+    await library.screenshot({
+      path: testInfo.outputPath("import-authenticate-narrow.png"),
+      fullPage: true,
+    });
+    await passphrase.fill("incorrect package passphrase");
+    await dialog.getByRole("button", { name: "Import Vault" }).click();
+    await expect(dialog.getByRole("alert")).toContainText("could not be authenticated");
+    await expect(dialog.getByLabel("Export passphrase")).toBeFocused();
+    await library.screenshot({
+      path: testInfo.outputPath("import-authentication-error-narrow.png"),
+      fullPage: true,
+    });
+    await dialog.getByLabel("Export passphrase").fill("portable package passphrase");
+    await dialog.getByRole("button", { name: "Import Vault" }).click();
+    await expect(dialog).not.toBeVisible({ timeout: 30_000 });
+    await expect(library.getByRole("heading", { name: "Portable Archive" })).toBeVisible();
+    await expect(observer.getByRole("heading", { name: "Portable Archive" })).toBeVisible();
+    await expect(library.getByRole("button", { name: "Unlock on this device" })).toBeVisible();
+    await library.getByRole("button", { name: "Unlock on this device" }).click();
+    await expect(library.getByText("Portable Fixture")).toBeVisible();
+    await library.getByText("Portable Fixture").click();
+    await library
+      .locator("article.artifact-row")
+      .filter({ hasText: "TEXT EXTRACTED" })
+      .getByRole("button", { name: "Inspect" })
+      .click();
+    await expect(library.getByText("Portable fixture text")).toBeVisible();
+    await expect(library.getByText(/OPTIONAL_METADATA_UNAVAILABLE/u)).toBeVisible();
+    await library.getByRole("button", { name: "Export Vault" }).click();
+    const reexportDialog = library.getByRole("dialog", { name: "Export encrypted Vault" });
+    await reexportDialog
+      .getByLabel("Export passphrase", { exact: true })
+      .fill("re-exported package passphrase");
+    await reexportDialog
+      .getByLabel("Confirm export passphrase")
+      .fill("re-exported package passphrase");
+    await reexportDialog.getByRole("button", { name: "Export Vault" }).click();
+    await expect(reexportDialog).not.toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(() =>
+        library.evaluate(
+          () =>
+            new Promise((resolve) => {
+              const extensionApi = (
+                globalThis as unknown as {
+                  chrome: {
+                    runtime: {
+                      sendMessage(value: unknown, callback: (response: unknown) => void): void;
+                    };
+                  };
+                }
+              ).chrome;
+              extensionApi.runtime.sendMessage({ type: "GetState" }, (response) => {
+                resolve(
+                  (response as { value: { latestExportJob?: unknown } }).value.latestExportJob,
+                );
+              });
+            }),
+        ),
+      )
+      .toMatchObject({ state: "Failed", stage: "Download", errorId: "EXPORT_DOWNLOAD_FAILED" });
+    await expect(library.getByText("The last Vault Export failed safely.")).toBeVisible({
+      timeout: 30_000,
+    });
+    await library.setViewportSize({ width: 1280, height: 900 });
+    await library.screenshot({
+      path: testInfo.outputPath("import-success-wide.png"),
+      fullPage: true,
+    });
+    const expectTerminalImportFailure = async (
+      sourcePath: string,
+      expectedMessage: RegExp,
+      screenshotName: string,
+      authenticated: boolean,
+    ): Promise<void> => {
+      await library.getByRole("button", { name: "Import Vault" }).click();
+      const failureDialog = library.getByRole("dialog", { name: "Import encrypted Vault" });
+      await failureDialog.getByLabel("Vault Package").setInputFiles(sourcePath);
+      await failureDialog.getByRole("button", { name: "Continue" }).click();
+      await failureDialog.getByLabel("Export passphrase").fill("portable package passphrase");
+      await failureDialog.getByRole("button", { name: "Import Vault" }).click();
+      if (authenticated) {
+        await expect(failureDialog).not.toBeVisible({ timeout: 30_000 });
+        await expect(
+          library.locator("#vault-management .notice.error").filter({ hasText: expectedMessage }),
+        ).toBeVisible({ timeout: 30_000 });
+      } else {
+        await expect(failureDialog.getByRole("alert")).toContainText(expectedMessage, {
+          timeout: 30_000,
+        });
+      }
+      await library.screenshot({ path: testInfo.outputPath(screenshotName), fullPage: true });
+      if (!authenticated) await failureDialog.getByRole("button", { name: "Close" }).click();
+    };
+    await library.setViewportSize({ width: 390, height: 844 });
+    await expectTerminalImportFailure(
+      packagePath,
+      /already exists/u,
+      "import-collision-actual-narrow.png",
+      true,
+    );
+    await expectTerminalImportFailure(
+      selectivePackagePath,
+      /only Complete Vault Packages/u,
+      "import-selective-actual-narrow.png",
+      true,
+    );
+    await expectTerminalImportFailure(
+      invalidPackagePath,
+      /incomplete, corrupt, or unsupported/u,
+      "import-invalid-actual-narrow.png",
+      false,
+    );
+  } finally {
+    await destination.close();
+  }
+
+  const populatedDestination = await launch("portable-populated-destination-profile");
+  try {
+    const worker =
+      populatedDestination.serviceWorkers()[0] ??
+      (await populatedDestination.waitForEvent("serviceworker"));
+    const extensionId = new URL(worker.url()).host;
+    const popup = await extensionPopup(populatedDestination, extensionId);
+    await popup.getByRole("textbox", { name: "Vault name" }).fill("Existing Vault");
+    await popup.getByRole("button", { name: "Create Vault" }).click();
+    await expect(popup.getByText(/Vault · Existing Vault · Unlocked/u)).toBeVisible();
+    const library = await populatedDestination.newPage();
+    await library.goto(`chrome-extension://${extensionId}/library.html?import=1`);
+    const dialog = library.getByRole("dialog", { name: "Import encrypted Vault" });
+    await dialog.getByLabel("Vault Package").setInputFiles(packagePath);
+    await dialog.getByRole("button", { name: "Continue" }).click();
+    await dialog.getByLabel("Export passphrase").fill("portable package passphrase");
+    await dialog.getByRole("button", { name: "Import Vault" }).click();
+    await expect(dialog).not.toBeVisible({ timeout: 30_000 });
+    await expect(library.getByRole("heading", { name: "Existing Vault" })).toBeVisible();
+    const switchToImported = library.getByRole("button", { name: "Switch to imported Vault" });
+    await expect(switchToImported).toBeVisible();
+    await library.screenshot({
+      path: testInfo.outputPath("import-success-existing-active-wide.png"),
+      fullPage: true,
+    });
+    await switchToImported.click();
+    await expect(library.getByRole("heading", { name: "Portable Archive" })).toBeVisible();
+    await expect(library.getByRole("button", { name: "Unlock on this device" })).toBeVisible();
+    await library.goto(`chrome-extension://${extensionId}/library.html`);
+    await expect(library.getByRole("heading", { name: "Portable Archive" })).toBeVisible();
+    for (const stage of ["Validate", "Prepare", "Rebuild", "Commit"] as const) {
+      await setLatestImportJobForVisual(library, {
+        state: "Running",
+        stage,
+        completedEntries: stage === "Validate" ? 0 : 2,
+        totalEntries: 5,
+        processedBytes: stage === "Prepare" ? 16 * 1024 * 1024 : 0,
+        totalBytes: stage === "Prepare" ? 32 * 1024 * 1024 : 0,
+        cancellationRequested: stage === "Commit",
+        errorId: null,
+      });
+      await library.reload();
+      await expect(library.getByText(new RegExp(`Import · ${stage}`, "u"))).toBeVisible();
+      const cancelImport = library.getByRole("button", { name: "Cancel Import" });
+      await expect(cancelImport).toBeVisible();
+      await expect(library.getByRole("button", { name: "Unlock on this device" })).toBeDisabled();
+      if (stage === "Commit") await expect(cancelImport).toBeDisabled();
+      await library.screenshot({
+        path: testInfo.outputPath(`import-${stage.toLowerCase()}-progress-wide.png`),
+        fullPage: true,
+      });
+    }
+    const failureStates = [
+      ["IMPORT_PACKAGE_INVALID", "invalid"],
+      ["SELECTIVE_IMPORT_UNSUPPORTED", "selective"],
+      ["VAULT_ALREADY_EXISTS", "collision"],
+      ["STORAGE_QUOTA_EXCEEDED", "quota"],
+    ] as const;
+    await library.setViewportSize({ width: 390, height: 844 });
+    for (const [errorId, screenshotName] of failureStates) {
+      await setLatestImportJobForVisual(library, {
+        state: "Failed",
+        stage: "Commit",
+        cancellationRequested: false,
+        errorId,
+      });
+      await library.reload();
+      await expect(library.locator("#vault-management .notice.error")).toBeVisible();
+      await library.screenshot({
+        path: testInfo.outputPath(`import-${screenshotName}-failure-narrow.png`),
+        fullPage: true,
+      });
+    }
+    await setLatestImportJobForVisual(library, {
+      state: "Succeeded",
+      stage: "Commit",
+      cancellationRequested: false,
+      errorId: null,
+    });
+    await library.reload();
+    await library.setViewportSize({ width: 1280, height: 900 });
+    await expect(library.getByRole("heading", { name: "Portable Archive" })).toBeVisible();
+    await expect(library.getByRole("button", { name: "Unlock on this device" })).toBeVisible();
+  } finally {
+    await populatedDestination.close();
   }
 });
 

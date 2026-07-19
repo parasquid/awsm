@@ -14,7 +14,9 @@ async function scenario(page: import("@playwright/test").Page, name: string): Pr
   try {
     await expect(output).toHaveAttribute("data-complete", "true");
   } catch (error) {
-    throw new Error(`Harness did not complete: ${errors.join(" | ")}`, { cause: error });
+    throw new Error(`Harness did not complete: ${errors.join(" | ")}`, {
+      cause: error,
+    });
   }
   return JSON.parse(await output.innerText());
 }
@@ -263,6 +265,56 @@ test("holds an exclusive Export lease, releases it on cancellation, and reconcil
   });
 });
 
+test("holds one Workspace Import lease and fences Vault mutations", async ({ page }) => {
+  await expect(scenario(page, "import-lease")).resolves.toEqual({
+    stage: "Acquire",
+    busy: true,
+    secondErrorId: "VAULT_BUSY",
+    captureBlocked: true,
+    registrationBlocked: true,
+    vacuumBlocked: true,
+    exportBlocked: true,
+    lockBlocked: true,
+    busyAfterCancellation: false,
+  });
+});
+
+test("persists the complete Import Job lifecycle and reconciles interruption", async ({ page }) => {
+  await expect(scenario(page, "import-job-lifecycle")).resolves.toEqual({
+    regressiveProgressErrorId: "STORAGE_TRANSACTION_FAILED",
+    oversizedProgressErrorId: "STORAGE_TRANSACTION_FAILED",
+    prematureStagingErrorId: "STORAGE_TRANSACTION_FAILED",
+    authenticateStage: "Authenticate",
+    retryState: "Created",
+    runningStage: "Validate",
+    preparedEntries: 2,
+    regressiveExecutionErrorId: "STORAGE_TRANSACTION_FAILED",
+    cancelledState: "Cancelled",
+    repeatedCancellationState: "Cancelled",
+    reconciled: true,
+    interruptedState: "Failed",
+    interruptedErrorId: "IMPORT_INTERRUPTED",
+    busyAfterInterruption: false,
+  });
+});
+
+test("atomically activates an imported Vault and rejects destination collisions", async ({
+  page,
+}) => {
+  await expect(scenario(page, "atomic-vault-import")).resolves.toEqual({
+    selectedInEmptyWorkspace: true,
+    importedLocked: true,
+    eventCount: 1,
+    objectCount: 1,
+    projectionCount: 1,
+    jobState: "Succeeded",
+    collisionErrorId: "VAULT_ALREADY_EXISTS",
+    directoryCountAfterCollision: 1,
+    rollbackFailurePoints: 14,
+    rollbackAlwaysAtomic: true,
+  });
+});
+
 test("streams encrypted Artifact wrappers through scoped OPFS storage", async ({ page }) => {
   await expect(scenario(page, "artifact-store")).resolves.toEqual({
     objectType: "Artifact",
@@ -271,5 +323,21 @@ test("streams encrypted Artifact wrappers through scoped OPFS storage", async ({
     recovered: "known plaintext artifact",
     collisionRejected: true,
     orphanRemoved: true,
+    encryptedImportCopiedExactly: true,
+    corruptEncryptedImportRejected: true,
+    quotaErrorId: "STORAGE_QUOTA_EXCEEDED",
+    quotaArtifactRemoved: true,
+  });
+});
+
+test("stages an encrypted Vault Package through bounded OPFS streaming", async ({ page }) => {
+  await expect(scenario(page, "import-source-staging")).resolves.toEqual({
+    storedBytes: 700000,
+    finalProgress: 700000,
+    progressMonotonic: true,
+    bytesMatch: true,
+    cleanupRemoved: true,
+    quotaErrorId: "STORAGE_QUOTA_EXCEEDED",
+    quotaSourceRemoved: true,
   });
 });

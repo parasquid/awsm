@@ -424,6 +424,14 @@ Descriptor-to-Artifact reachability allows exact storage reclamation without int
 
 ---
 
+# Import Preparation
+
+An Import staging file is temporary encrypted Host data, not Vault authority. After full package
+validation, the Artifact Store streams each encrypted wrapper unchanged into its validated
+Vault/Object-derived location and proves its bound length and checksum. Compact authority is then
+activated atomically. Failure removes prepared wrappers; successful activation makes them
+authoritative and excludes them from cleanup.
+
 # Future Extensions
 
 Future storage capabilities may include:

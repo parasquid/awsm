@@ -13,6 +13,10 @@ by this plan
 passphrase and ZIP64 decisions while replacing package inventory, coverage, Artifact payload, and
 validation contracts. Use the current Import and Export Specification for implementation.
 
+**Current Import authority:** `docs/plans/07-complete-vault-package-import.md`. Plan 07 implements
+Complete package ingestion while Selective Import, merging, replacement, and remote availability
+remain deferred.
+
 ---
 
 # 1. Purpose and Roadmap Context
@@ -28,7 +32,7 @@ The Roadmap distinguishes three different capabilities:
 3. **Synchronization** maintains converging replicas through an untrusted Coordination Server.
 
 This plan implements only the Export half of the first capability. It creates a self-contained,
-passphrase-protected package that a future Import feature can validate and use to create the
+passphrase-protected package that Complete Import validates and uses to create the
 contained Vault locally. It does not provide continuous synchronization, automated recovery,
 retention, or a second authoritative replica.
 
@@ -53,7 +57,7 @@ The completed feature lets a user:
 6. receive one neutral, dated `.awsm` file containing the complete active Vault Generation.
 
 The implementation also adds a strict, read-only package validator. The validator proves that the
-writer produces a package a future Import implementation can consume, but it does not create,
+writer produces a package the Complete Import implementation consumes, but this Export plan does not create,
 replace, merge, or mutate any Vault.
 
 ---
@@ -89,7 +93,7 @@ Rules:
 - Export produces a portable AWSM Vault Package for later AWSM Import.
 - Export is not Backup and must never be labeled or described as Backup.
 - A package contains one complete active Vault Generation, not an independently mutating replica.
-- Importing the same package onto two disconnected devices in the future would create divergent
+- Importing the same package onto two disconnected devices creates divergent
   local replicas if both later accepted mutations; Export does not solve convergence.
 - The first implementation is full-Vault only. Partial Export is not supported.
 - Plaintext Export is not supported.
@@ -410,11 +414,11 @@ interface ExportedVaultHeadV1 {
 ```
 
 These are package-format representations of current canonical records, not compatibility DTOs.
-Use shared strict decoders so storage, Export, and the future Import preflight cannot disagree.
+Use shared strict decoders so storage, Export, and Import preflight cannot disagree.
 
 Do not export local `VaultMetadataV1`: its Device ID, manual-lock flag, and verifier belong to the
 originating device. Vault creation time and name remain recoverable from authenticated authoritative
-Events. A future Import will create new local device metadata, device key, device slot, and verifier.
+Events. Complete Import creates new local device metadata, device key, device slot, and verifier.
 
 ## 5.7 Reachability and source verification
 
@@ -442,7 +446,7 @@ decoder.
 ## 5.8 Completed-package validation
 
 After streaming the package to temporary OPFS storage and before opening Save As, run the same
-read-only validator intended for future Import against the completed file and supplied passphrase.
+read-only validator shared with Import against the completed file and supplied passphrase.
 
 The validator executes these phases:
 
@@ -1152,7 +1156,7 @@ The feature is complete only when all statements are true:
 
 Do not add any of the following while implementing this plan:
 
-- user-facing Import or any destination-Vault writes;
+- Complete Import or any destination-Vault writes, which are owned by Plan 07;
 - Merge Into Existing Vault or Read-Only Inspection Import modes;
 - partial Export by Capture, Collection, date, tag, or folder;
 - plaintext, MHTML-directory, JSON, Markdown, or other human-readable Export;

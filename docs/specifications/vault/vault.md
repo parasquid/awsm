@@ -255,6 +255,12 @@ Replicas store copies of a Vault.
 
 A Vault SHOULD be exportable.
 
+A Complete Vault Package MAY be imported only as a new Vault with the package's stable Vault ID.
+Import preserves the exact active Generation, head, Events, Objects, and encrypted Artifact bytes;
+it never merges with or replaces an existing Vault. The importing Device creates a fresh Device ID,
+non-exportable device key, slot, and verifier. Rebuildable Projections and encrypted Workspace name
+cache are derived locally. The imported Vault commits manually locked.
+
 Export SHALL preserve:
 
 - authoritative Objects

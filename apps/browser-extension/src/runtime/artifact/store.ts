@@ -17,6 +17,13 @@ export interface ArtifactStore {
     readonly signal?: AbortSignal;
   }): Promise<PreparedArtifact>;
 
+  prepareEncrypted(input: {
+    readonly vaultId: string;
+    readonly object: StoredArtifactObjectV1;
+    readonly encrypted: ReadableStream<Uint8Array>;
+    readonly signal?: AbortSignal;
+  }): Promise<void>;
+
   openEncrypted(vaultId: string, objectId: string): Promise<ReadableStream<Uint8Array>>;
 
   openPlaintext(input: {

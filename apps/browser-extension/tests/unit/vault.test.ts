@@ -10,6 +10,7 @@ import {
 
 class MemoryVaultRepository implements VaultRepository {
   private records: VaultRecordsV1 | undefined;
+  rejectLockMutation = false;
 
   store(records: VaultRecordsV1): void {
     this.records = records;
@@ -20,6 +21,8 @@ class MemoryVaultRepository implements VaultRepository {
   }
 
   async setManualLock(vaultId: string, manuallyLocked: boolean): Promise<void> {
+    if (this.rejectLockMutation)
+      throw Object.assign(new Error("Import owns the Workspace."), { id: "VAULT_BUSY" });
     const current = this.requireRecords();
     if (current.metadata.vaultId !== vaultId) throw new Error("Wrong Vault context.");
     this.records = { ...current, metadata: { ...current.metadata, manuallyLocked } };
@@ -143,5 +146,20 @@ describe("Vault lifecycle", () => {
     await expect(second.unlockWithDevice()).rejects.toMatchObject({
       id: "CRYPTO_AUTHENTICATION_FAILED",
     });
+  });
+
+  it("does not change the in-memory Root Key when Import wins a Lock or Unlock race", async () => {
+    const lockingRepository = new MemoryVaultRepository();
+    const { service: unlocked } = await preparedVault(lockingRepository);
+    lockingRepository.rejectLockMutation = true;
+    await expect(unlocked.lock()).rejects.toMatchObject({ id: "VAULT_BUSY" });
+    expect(unlocked.isUnlocked()).toBe(true);
+
+    const unlockingRepository = new MemoryVaultRepository();
+    const { service: locked } = await preparedVault(unlockingRepository);
+    await locked.lock();
+    unlockingRepository.rejectLockMutation = true;
+    await expect(locked.unlockWithDevice()).rejects.toMatchObject({ id: "VAULT_BUSY" });
+    expect(locked.isUnlocked()).toBe(false);
   });
 });

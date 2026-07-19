@@ -634,6 +634,14 @@ Rejected because it violates the zero-knowledge design goals.
 
 ---
 
+# Portable Vault Import Boundary
+
+Complete Vault Import is a trusted-client operation. The Host stages opaque package bytes and
+streams encrypted Artifact wrappers; the Runtime authenticates and replays the complete package,
+creates fresh local credentials and Projections, and directs one Driver activation transaction.
+No Coordination Server participates. Import creates a new locked Vault, never merges with an
+existing Vault, and is distinct from Backup Restore.
+
 # Open Questions
 
 How should Vault sharing operate?

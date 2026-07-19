@@ -9,6 +9,9 @@
 `docs/plans/05-passphrase-protected-vault-export.md`, and the architecture and specifications
 reconciled by this plan
 
+**Current Import authority:** `docs/plans/07-complete-vault-package-import.md`. This plan's Import
+deferrals now apply only to Selective coverage, remote availability, retention, and synchronization.
+
 ---
 
 # 1. Purpose
@@ -66,7 +69,7 @@ warning but SHALL NOT invalidate a valid MHTML Capture.
 - local retention profiles, pinning, eviction, and user-created unavailable Artifact state;
 - a user control that intentionally excludes locally present Artifacts from Export;
 - `Download all content` from a server;
-- user-facing Import or destination-Vault writes;
+- Complete Import or destination-Vault writes, which are owned by Plan 07;
 - Search Projection implementation, despite producing its source Artifacts;
 - AI processing and post-Capture Artifact regeneration;
 - additive Artifact replacement or supersession Events;
@@ -889,7 +892,7 @@ EXPORT_PACKAGE_INVALID
 EXPORT_INTERRUPTED
 ```
 
-`ARTIFACT_UNAVAILABLE` is an access-boundary error for absent package payloads and future Import; a
+`ARTIFACT_UNAVAILABLE` is an access-boundary error for absent package payloads and Selective Import; a
 missing payload in a current complete local Vault maps to `ARTIFACT_INVALID`, not unavailable.
 
 Diagnostics SHALL contain only operation, stage, safe error ID, bounded counts, byte counts, and

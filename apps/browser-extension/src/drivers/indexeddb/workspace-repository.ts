@@ -8,19 +8,24 @@ import {
   uuid,
 } from "../../domain/validation";
 import type { VaultRecordsV1 } from "../../runtime/vault/contracts";
-import { decodeVaultMetadata } from "../../runtime/vault/decode";
+import { decodeVaultMetadata, decodeVaultRecords } from "../../runtime/vault/decode";
 import {
   decryptWorkspaceVaultName,
   type WorkspaceVaultNameCacheV1,
 } from "../../runtime/vault/workspace-name-cache";
 import { createWorkspaceNameCacheKey } from "../../runtime/vault/workspace-name-key";
 import { deleteDatabase, openDatabase, requestValue, transactionDone } from "./database";
-import { decodeExportJob, decodeStoredVaultNameProjection } from "./decode";
+import { decodeExportJob, decodeImportJob, decodeStoredVaultNameProjection } from "./decode";
 import { storageError } from "./errors";
+import { assertNoActiveImport } from "./import-repository";
 import { vaultKey, vaultKeyRange, vaultSingletonKey } from "./keys";
 import {
+  type ImportJobV1,
   STORES,
+  type StoredCollectionProjectionV1,
   type StoredEvent,
+  type StoredObjectV1,
+  type StoredProjectionV1,
   type StoredVaultHeadV1,
   type StoredVaultNameProjectionV1,
   type VaultDirectoryEntryV1,
@@ -55,6 +60,22 @@ export interface ReplaceVaultNameCache {
   readonly cache: WorkspaceVaultNameCacheV1;
 }
 
+export interface AtomicVaultImport {
+  readonly job: ImportJobV1;
+  readonly records: VaultRecordsV1;
+  readonly events: readonly StoredEvent[];
+  readonly objects: readonly StoredObjectV1[];
+  readonly libraryProjections: readonly StoredProjectionV1[];
+  readonly collectionProjection: StoredCollectionProjectionV1;
+  readonly vaultNameProjection: StoredVaultNameProjectionV1;
+  readonly nameCache: WorkspaceVaultNameCacheV1;
+  readonly preparedArtifactObjectIds: readonly string[];
+}
+
+function sameIds(actual: readonly string[], expected: readonly string[]): boolean {
+  return actual.toSorted().join("\n") === expected.toSorted().join("\n");
+}
+
 function decodeWorkspaceMetadata(value: unknown): WorkspaceMetadataV1 {
   const input = canonicalRecord(value, "workspaceMetadata", [
     "version",
@@ -68,7 +89,9 @@ function decodeWorkspaceMetadata(value: unknown): WorkspaceMetadataV1 {
     createdAt: timestamp(input.createdAt, "workspaceMetadata.createdAt"),
     ...(input.activeVaultId === undefined
       ? {}
-      : { activeVaultId: uuid(input.activeVaultId, "workspaceMetadata.activeVaultId") }),
+      : {
+          activeVaultId: uuid(input.activeVaultId, "workspaceMetadata.activeVaultId"),
+        }),
   };
 }
 
@@ -300,10 +323,12 @@ export class IndexedDbWorkspaceRepository {
         STORES.vaultHead,
         STORES.vacuumJobs,
         STORES.exportJobs,
+        STORES.importJobs,
       ],
       "readwrite",
     );
     try {
+      await assertNoActiveImport(transaction);
       const workspaceValue = await requestValue(
         transaction.objectStore(STORES.workspaceMetadata).get("local"),
       );
@@ -343,7 +368,9 @@ export class IndexedDbWorkspaceRepository {
           .map(decodeExportJob)
           .some((job) => job.state === "Created" || job.state === "Running");
         if (captureBusy || vacuumJobs.length > 0 || exportBusy) {
-          throw Object.assign(new Error("The active Vault is busy."), { id: "VAULT_BUSY" });
+          throw Object.assign(new Error("The active Vault is busy."), {
+            id: "VAULT_BUSY",
+          });
         }
         if (previousMetadataValue === undefined)
           throw new Error("Active Vault metadata is missing.");
@@ -413,10 +440,12 @@ export class IndexedDbWorkspaceRepository {
         STORES.captureJobs,
         STORES.vacuumJobs,
         STORES.exportJobs,
+        STORES.importJobs,
       ],
       "readwrite",
     );
     try {
+      await assertNoActiveImport(transaction);
       const workspaceValue = await requestValue(
         transaction.objectStore(STORES.workspaceMetadata).get("local"),
       );
@@ -433,7 +462,9 @@ export class IndexedDbWorkspaceRepository {
       }
       const previousVaultId = workspace.activeVaultId;
       if (previousVaultId === undefined) {
-        throw Object.assign(new Error("No active Vault exists."), { id: "VAULT_NOT_FOUND" });
+        throw Object.assign(new Error("No active Vault exists."), {
+          id: "VAULT_NOT_FOUND",
+        });
       }
       const [
         targetDirectory,
@@ -481,7 +512,9 @@ export class IndexedDbWorkspaceRepository {
         .map(decodeExportJob)
         .some((job) => job.state === "Created" || job.state === "Running");
       if (captureBusy || vacuumJobs.length > 0 || exportBusy) {
-        throw Object.assign(new Error("The active Vault is busy."), { id: "VAULT_BUSY" });
+        throw Object.assign(new Error("The active Vault is busy."), {
+          id: "VAULT_BUSY",
+        });
       }
       const targetMetadata = decodeVaultMetadata(targetMetadataValue);
       const previousMetadata = decodeVaultMetadata(previousMetadataValue);
@@ -536,10 +569,12 @@ export class IndexedDbWorkspaceRepository {
         STORES.vaultNameProjection,
         STORES.vaultNameCache,
         STORES.vaultHead,
+        STORES.importJobs,
       ],
       "readwrite",
     );
     try {
+      await assertNoActiveImport(transaction);
       const [workspaceValue, metadataValue, captureJobs, vacuumCount, exportJobs, headValue] =
         await Promise.all([
           requestValue(transaction.objectStore(STORES.workspaceMetadata).get("local")),
@@ -592,7 +627,9 @@ export class IndexedDbWorkspaceRepository {
         .map(decodeExportJob)
         .some((job) => job.state === "Created" || job.state === "Running");
       if (captureBusy || vacuumCount !== 0 || exportBusy) {
-        throw Object.assign(new Error("The active Vault is busy."), { id: "VAULT_BUSY" });
+        throw Object.assign(new Error("The active Vault is busy."), {
+          id: "VAULT_BUSY",
+        });
       }
       const head = decodeVaultHead(headValue);
       if (head.vaultId !== input.vaultId) throw new Error("Vault head identity mismatch.");
@@ -634,10 +671,12 @@ export class IndexedDbWorkspaceRepository {
         STORES.vaultDirectory,
         STORES.vaultNameProjection,
         STORES.vaultNameCache,
+        STORES.importJobs,
       ],
       "readwrite",
     );
     try {
+      await assertNoActiveImport(transaction);
       const [workspaceValue, directoryValue, projectionValue] = await Promise.all([
         requestValue(transaction.objectStore(STORES.workspaceMetadata).get("local")),
         requestValue(transaction.objectStore(STORES.vaultDirectory).get(input.vaultId)),
@@ -674,6 +713,234 @@ export class IndexedDbWorkspaceRepository {
       } catch {}
       throw storageError(error);
     }
+  }
+
+  async commitVaultImport(input: AtomicVaultImport): Promise<void> {
+    const records = decodeVaultRecords({
+      metadata: input.records.metadata,
+      deviceSlot: input.records.deviceSlot,
+      deviceKey: input.records.deviceKey,
+      generations: [input.records.generation],
+      head: input.records.head,
+    });
+    const vaultId = records.metadata.vaultId;
+    const eventIds = input.events.map((event) => event.eventId);
+    const objectIds = input.objects.map((object) => object.objectId);
+    const artifactIds = input.objects
+      .filter((object) => object.objectType === "Artifact")
+      .map((object) => object.objectId);
+    if (
+      input.job.state !== "Running" ||
+      input.job.stage !== "Commit" ||
+      input.job.cancellationRequested ||
+      input.job.destinationVaultId !== vaultId ||
+      !records.metadata.manuallyLocked ||
+      records.head.vaultId !== vaultId ||
+      records.head.generationId !== records.generation.generationId ||
+      records.head.generationNumber !== records.generation.generationNumber ||
+      input.events.some((event) => event.vaultId !== vaultId) ||
+      new Set(eventIds).size !== eventIds.length ||
+      new Set(objectIds).size !== objectIds.length ||
+      !sameIds(eventIds, records.head.appendedEventIds) ||
+      !sameIds(objectIds, records.head.appendedObjectIds) ||
+      !sameIds(artifactIds, input.preparedArtifactObjectIds) ||
+      input.collectionProjection.projectionId !== vaultId ||
+      input.vaultNameProjection.vaultId !== vaultId ||
+      input.nameCache.vaultId !== vaultId ||
+      input.nameCache.sourceEventId !== input.vaultNameProjection.sourceEventId ||
+      !eventIds.includes(input.vaultNameProjection.sourceEventId) ||
+      new Set(input.libraryProjections.map((projection) => projection.bundleId)).size !==
+        input.libraryProjections.length
+    ) {
+      throw storageError(new Error("Atomic Vault Import records are inconsistent."));
+    }
+    const database = await this.databasePromise;
+    const stores = [
+      STORES.workspaceMetadata,
+      STORES.vaultDirectory,
+      STORES.vaultNameCache,
+      STORES.vaultNameProjection,
+      STORES.vaultMetadata,
+      STORES.keySlots,
+      STORES.deviceKeys,
+      STORES.objects,
+      STORES.events,
+      STORES.libraryProjection,
+      STORES.collectionProjection,
+      STORES.vaultGenerations,
+      STORES.vaultHead,
+      STORES.importJobs,
+    ];
+    const transaction = database.transaction(stores, "readwrite");
+    try {
+      const [jobValue, workspaceValue, collisionCounts] = await Promise.all([
+        requestValue(transaction.objectStore(STORES.importJobs).get(input.job.jobId)),
+        requestValue(transaction.objectStore(STORES.workspaceMetadata).get("local")),
+        Promise.all([
+          requestValue(transaction.objectStore(STORES.vaultDirectory).count(vaultId)),
+          requestValue(transaction.objectStore(STORES.vaultNameCache).count(vaultId)),
+          requestValue(
+            transaction
+              .objectStore(STORES.vaultNameProjection)
+              .count(vaultSingletonKey(vaultId, "active")),
+          ),
+          requestValue(
+            transaction
+              .objectStore(STORES.vaultMetadata)
+              .count(vaultSingletonKey(vaultId, "metadata")),
+          ),
+          requestValue(
+            transaction.objectStore(STORES.keySlots).count(vaultSingletonKey(vaultId, "device")),
+          ),
+          requestValue(
+            transaction.objectStore(STORES.deviceKeys).count(vaultSingletonKey(vaultId, "device")),
+          ),
+          requestValue(transaction.objectStore(STORES.objects).count(vaultKeyRange(vaultId))),
+          requestValue(transaction.objectStore(STORES.events).count(vaultKeyRange(vaultId))),
+          requestValue(
+            transaction.objectStore(STORES.libraryProjection).count(vaultKeyRange(vaultId)),
+          ),
+          requestValue(
+            transaction
+              .objectStore(STORES.collectionProjection)
+              .count(vaultSingletonKey(vaultId, "active")),
+          ),
+          requestValue(
+            transaction.objectStore(STORES.vaultGenerations).count(vaultKeyRange(vaultId)),
+          ),
+          requestValue(
+            transaction.objectStore(STORES.vaultHead).count(vaultSingletonKey(vaultId, "active")),
+          ),
+        ]),
+      ]);
+      if (jobValue === undefined || workspaceValue === undefined) {
+        throw new Error("Import Job or Workspace is missing.");
+      }
+      const storedJob = decodeImportJob(jobValue);
+      if (
+        storedJob.jobId !== input.job.jobId ||
+        storedJob.state !== "Running" ||
+        storedJob.stage !== "Commit" ||
+        storedJob.cancellationRequested ||
+        storedJob.destinationVaultId !== vaultId
+      ) {
+        throw Object.assign(new Error("Import Job ownership changed."), {
+          id: "VAULT_BUSY",
+        });
+      }
+      if (collisionCounts.some((count) => count !== 0)) {
+        throw Object.assign(new Error("The imported Vault already exists."), {
+          id: "VAULT_ALREADY_EXISTS",
+        });
+      }
+      const workspace = decodeWorkspaceMetadata(workspaceValue);
+      transaction
+        .objectStore(STORES.vaultMetadata)
+        .add(records.metadata, vaultSingletonKey(vaultId, "metadata"));
+      transaction
+        .objectStore(STORES.keySlots)
+        .add(records.deviceSlot, vaultSingletonKey(vaultId, "device"));
+      transaction
+        .objectStore(STORES.deviceKeys)
+        .add(records.deviceKey, vaultSingletonKey(vaultId, "device"));
+      transaction
+        .objectStore(STORES.vaultGenerations)
+        .add(records.generation, vaultKey(vaultId, records.generation.generationId));
+      transaction
+        .objectStore(STORES.vaultHead)
+        .add(records.head, vaultSingletonKey(vaultId, "active"));
+      for (const event of input.events) {
+        transaction.objectStore(STORES.events).add(event, vaultKey(vaultId, event.eventId));
+      }
+      for (const object of input.objects) {
+        transaction.objectStore(STORES.objects).add(object, vaultKey(vaultId, object.objectId));
+      }
+      for (const projection of input.libraryProjections) {
+        transaction
+          .objectStore(STORES.libraryProjection)
+          .add(projection, vaultKey(vaultId, projection.bundleId));
+      }
+      transaction
+        .objectStore(STORES.collectionProjection)
+        .add(input.collectionProjection, vaultSingletonKey(vaultId, "active"));
+      transaction
+        .objectStore(STORES.vaultNameProjection)
+        .add(input.vaultNameProjection, vaultSingletonKey(vaultId, "active"));
+      transaction.objectStore(STORES.vaultNameCache).add(input.nameCache, vaultId);
+      transaction.objectStore(STORES.vaultDirectory).add(
+        {
+          version: 1,
+          vaultId,
+          createdAt: records.metadata.createdAt,
+        } satisfies VaultDirectoryEntryV1,
+        vaultId,
+      );
+      if (workspace.activeVaultId === undefined) {
+        transaction
+          .objectStore(STORES.workspaceMetadata)
+          .put({ ...workspace, activeVaultId: vaultId }, "local");
+      }
+      transaction
+        .objectStore(STORES.importJobs)
+        .put({ ...storedJob, state: "Succeeded" }, storedJob.jobId);
+      await transactionDone(transaction);
+    } catch (error) {
+      try {
+        transaction.abort();
+      } catch {}
+      throw storageError(error);
+    }
+  }
+
+  async hasVaultCollision(vaultId: string): Promise<boolean> {
+    uuid(vaultId, "importVault.vaultId");
+    const database = await this.databasePromise;
+    const transaction = database.transaction(
+      [
+        STORES.vaultDirectory,
+        STORES.vaultNameCache,
+        STORES.vaultNameProjection,
+        STORES.vaultMetadata,
+        STORES.keySlots,
+        STORES.deviceKeys,
+        STORES.objects,
+        STORES.events,
+        STORES.libraryProjection,
+        STORES.collectionProjection,
+        STORES.vaultGenerations,
+        STORES.vaultHead,
+      ],
+      "readonly",
+    );
+    const counts = await Promise.all([
+      requestValue(transaction.objectStore(STORES.vaultDirectory).count(vaultId)),
+      requestValue(transaction.objectStore(STORES.vaultNameCache).count(vaultId)),
+      requestValue(
+        transaction.objectStore(STORES.vaultNameProjection).count(vaultKeyRange(vaultId)),
+      ),
+      requestValue(transaction.objectStore(STORES.vaultMetadata).count(vaultKeyRange(vaultId))),
+      requestValue(transaction.objectStore(STORES.keySlots).count(vaultKeyRange(vaultId))),
+      requestValue(transaction.objectStore(STORES.deviceKeys).count(vaultKeyRange(vaultId))),
+      requestValue(transaction.objectStore(STORES.objects).count(vaultKeyRange(vaultId))),
+      requestValue(transaction.objectStore(STORES.events).count(vaultKeyRange(vaultId))),
+      requestValue(transaction.objectStore(STORES.libraryProjection).count(vaultKeyRange(vaultId))),
+      requestValue(
+        transaction.objectStore(STORES.collectionProjection).count(vaultKeyRange(vaultId)),
+      ),
+      requestValue(transaction.objectStore(STORES.vaultGenerations).count(vaultKeyRange(vaultId))),
+      requestValue(transaction.objectStore(STORES.vaultHead).count(vaultKeyRange(vaultId))),
+    ]);
+    await transactionDone(transaction);
+    return counts.some((count) => count !== 0);
+  }
+
+  async hasVaultDirectoryEntry(vaultId: string): Promise<boolean> {
+    uuid(vaultId, "importVault.vaultId");
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.vaultDirectory, "readonly");
+    const count = await requestValue(transaction.objectStore(STORES.vaultDirectory).count(vaultId));
+    await transactionDone(transaction);
+    return count !== 0;
   }
 
   async deleteDatabase(): Promise<void> {

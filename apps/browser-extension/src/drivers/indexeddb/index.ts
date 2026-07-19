@@ -4,10 +4,14 @@ export {
   type StorageDriverErrorId,
   storageError,
 } from "./errors";
+export { IndexedDbImportRepository } from "./import-repository";
 export { vaultKey, vaultKeyRange, vaultPrefixBounds, vaultSingletonKey } from "./keys";
 export type {
   AtomicRegistrationV1,
   CommandOutcomeV1,
+  ImportJobStage,
+  ImportJobState,
+  ImportJobV1,
   StoreCounts,
   StoredArtifactObjectV1,
   StoredBundleDescriptorObjectV1,

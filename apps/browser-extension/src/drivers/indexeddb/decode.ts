@@ -20,6 +20,9 @@ import type {
   ExportJobStage,
   ExportJobState,
   ExportJobV1,
+  ImportJobStage,
+  ImportJobState,
+  ImportJobV1,
   StoredCollectionProjectionV1,
   StoredEvent,
   StoredObjectType,
@@ -327,6 +330,95 @@ export function decodeExportJob(value: unknown): ExportJobV1 {
     processedBytes: integer(input.processedBytes, "exportJob.processedBytes"),
     totalBytes: integer(input.totalBytes, "exportJob.totalBytes"),
     cancellationRequested: boolean(input.cancellationRequested, "exportJob.cancellationRequested"),
+    ...(errorId === undefined ? {} : { errorId }),
+  };
+}
+
+export function decodeImportJob(value: unknown): ImportJobV1 {
+  const input = canonicalRecord(value, "importJob", [
+    "version",
+    "jobId",
+    "state",
+    "stage",
+    "createdAt",
+    "updatedAt",
+    "sourceByteLength",
+    "acquiredBytes",
+    "completedEntries",
+    "totalEntries",
+    "processedBytes",
+    "totalBytes",
+    "cancellationRequested",
+    "destinationVaultId",
+    "errorId",
+  ]);
+  const states = ["Created", "Running", "Succeeded", "Failed", "Cancelled"] as const;
+  const stages = ["Acquire", "Authenticate", "Validate", "Prepare", "Rebuild", "Commit"] as const;
+  if (!states.includes(input.state as (typeof states)[number])) {
+    throw new DomainValidationError("importJob.state", "contains an unsupported state");
+  }
+  if (!stages.includes(input.stage as (typeof stages)[number])) {
+    throw new DomainValidationError("importJob.stage", "contains an unsupported stage");
+  }
+  const state = input.state as ImportJobState;
+  const stage = input.stage as ImportJobStage;
+  const sourceByteLength = integer(input.sourceByteLength, "importJob.sourceByteLength");
+  const acquiredBytes = integer(input.acquiredBytes, "importJob.acquiredBytes");
+  const completedEntries = integer(input.completedEntries, "importJob.completedEntries");
+  const totalEntries = integer(input.totalEntries, "importJob.totalEntries");
+  const processedBytes = integer(input.processedBytes, "importJob.processedBytes");
+  const totalBytes = integer(input.totalBytes, "importJob.totalBytes");
+  if (
+    acquiredBytes > sourceByteLength ||
+    completedEntries > totalEntries ||
+    processedBytes > totalBytes
+  ) {
+    throw new DomainValidationError("importJob", "contains progress beyond its declared total");
+  }
+  if (state === "Created" && stage !== "Acquire" && stage !== "Authenticate") {
+    throw new DomainValidationError("importJob", "has an impossible Created stage");
+  }
+  if (
+    state === "Running" &&
+    stage !== "Validate" &&
+    stage !== "Prepare" &&
+    stage !== "Rebuild" &&
+    stage !== "Commit"
+  ) {
+    throw new DomainValidationError("importJob", "has an impossible Running stage");
+  }
+  if (state === "Succeeded" && stage !== "Commit") {
+    throw new DomainValidationError("importJob", "has an impossible Succeeded stage");
+  }
+  const destinationVaultId =
+    input.destinationVaultId === undefined
+      ? undefined
+      : uuid(input.destinationVaultId, "importJob.destinationVaultId");
+  if (
+    ((state === "Running" || state === "Succeeded") && destinationVaultId === undefined) ||
+    (state === "Created" && destinationVaultId !== undefined)
+  ) {
+    throw new DomainValidationError("importJob.destinationVaultId", "does not match Job state");
+  }
+  const errorId = input.errorId === undefined ? undefined : runtimeErrorId(input.errorId);
+  if ((errorId === undefined) !== (state !== "Failed")) {
+    throw new DomainValidationError("importJob.errorId", "is permitted only for failed Jobs");
+  }
+  return {
+    version: literal(input.version, 1, "importJob.version"),
+    jobId: uuid(input.jobId, "importJob.jobId"),
+    state,
+    stage,
+    createdAt: timestamp(input.createdAt, "importJob.createdAt"),
+    updatedAt: timestamp(input.updatedAt, "importJob.updatedAt"),
+    sourceByteLength,
+    acquiredBytes,
+    completedEntries,
+    totalEntries,
+    processedBytes,
+    totalBytes,
+    cancellationRequested: boolean(input.cancellationRequested, "importJob.cancellationRequested"),
+    ...(destinationVaultId === undefined ? {} : { destinationVaultId }),
     ...(errorId === undefined ? {} : { errorId }),
   };
 }

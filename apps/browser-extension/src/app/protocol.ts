@@ -5,7 +5,7 @@ import type {
   LibraryItemV1,
   RuntimeErrorId,
 } from "../domain/contracts";
-import type { ExportJobV1 } from "../drivers/indexeddb/schema";
+import type { ExportJobV1, ImportJobV1 } from "../drivers/indexeddb/schema";
 import type { ArtifactDetailItem } from "../runtime/library/service";
 import type { WorkspaceState } from "../runtime/vault/workspace-service";
 
@@ -54,6 +54,15 @@ export type AppRequest =
   | ({ readonly type: "GetVacuumEstimate" } & ExpectedVault)
   | ({ readonly type: "ExportVault"; readonly passphrase: string } & ExpectedVault)
   | ({ readonly type: "CancelVaultExport"; readonly jobId: string } & ExpectedVault)
+  | { readonly type: "BeginVaultImport"; readonly sourceByteLength: number }
+  | {
+      readonly type: "ReportVaultImportProgress";
+      readonly jobId: string;
+      readonly acquiredBytes: number;
+    }
+  | { readonly type: "CompleteVaultImportStaging"; readonly jobId: string }
+  | { readonly type: "ImportVault"; readonly jobId: string; readonly passphrase: string }
+  | { readonly type: "CancelVaultImport"; readonly jobId: string }
   | ({ readonly type: "GetLibraryDetail"; readonly bundleId: string } & ExpectedVault)
   | ({
       readonly type: "OpenArtifact";
@@ -85,6 +94,11 @@ const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "GetVacuumEstimate",
   "ExportVault",
   "CancelVaultExport",
+  "BeginVaultImport",
+  "ReportVaultImportProgress",
+  "CompleteVaultImportStaging",
+  "ImportVault",
+  "CancelVaultImport",
   "GetLibraryDetail",
   "OpenArtifact",
   "ReadArtifactChunk",
@@ -99,6 +113,44 @@ export function isAppRequest(value: unknown): value is AppRequest {
     typeof value.type === "string" &&
     APP_REQUEST_TYPES.has(value.type as AppRequest["type"]);
   if (!recognized) return false;
+  if (
+    value.type === "BeginVaultImport" &&
+    (Object.keys(value).some((key) => key !== "type" && key !== "sourceByteLength") ||
+      !("sourceByteLength" in value) ||
+      typeof value.sourceByteLength !== "number" ||
+      !Number.isSafeInteger(value.sourceByteLength) ||
+      value.sourceByteLength < 0)
+  )
+    return false;
+  if (
+    value.type === "ReportVaultImportProgress" &&
+    (Object.keys(value).some(
+      (key) => key !== "type" && key !== "jobId" && key !== "acquiredBytes",
+    ) ||
+      !("jobId" in value) ||
+      typeof value.jobId !== "string" ||
+      !("acquiredBytes" in value) ||
+      typeof value.acquiredBytes !== "number" ||
+      !Number.isSafeInteger(value.acquiredBytes) ||
+      value.acquiredBytes < 0)
+  )
+    return false;
+  if (
+    (value.type === "CompleteVaultImportStaging" || value.type === "CancelVaultImport") &&
+    (Object.keys(value).some((key) => key !== "type" && key !== "jobId") ||
+      !("jobId" in value) ||
+      typeof value.jobId !== "string")
+  )
+    return false;
+  if (
+    value.type === "ImportVault" &&
+    (Object.keys(value).some((key) => key !== "type" && key !== "jobId" && key !== "passphrase") ||
+      !("jobId" in value) ||
+      typeof value.jobId !== "string" ||
+      !("passphrase" in value) ||
+      typeof value.passphrase !== "string")
+  )
+    return false;
   if ("expectedVaultId" in value && typeof value.expectedVaultId !== "string") return false;
   if (value.type === "CreateVault" && "passphrase" in value) return false;
   if (
@@ -135,6 +187,7 @@ export interface AppState {
   readonly latestWarnings?: readonly CaptureWarningId[];
   readonly recentCapture?: RecentCapture;
   readonly latestExportJob?: ExportJobV1;
+  readonly latestImportJob?: ImportJobV1;
 }
 
 export interface RecentCapture {
@@ -199,6 +252,8 @@ export type AppValue =
   | { readonly name: string }
   | { readonly bundleId: string }
   | { readonly jobId: string; readonly filename: string }
+  | { readonly jobId: string }
+  | { readonly jobId: string; readonly vaultId: string }
   | { readonly deletedCaptureCount: number; readonly reclaimedBytes: number }
   | { readonly deletedCaptureCount: number; readonly reclaimableBytes: number }
   | null;

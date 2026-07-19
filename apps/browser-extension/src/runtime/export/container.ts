@@ -12,6 +12,7 @@ import { decodeCanonicalCbor, encodeCanonicalCbor } from "../../domain/cbor";
 import { bytesEqual, sha256 } from "../../domain/hash";
 import { decodeExportKeyEnvelope, decodeExportManifest, type ExportManifestV1 } from "./contracts";
 import { ExportAuthenticationError, openExportKeyEnvelope } from "./key-envelope";
+import type { VerifiedAuthoritativeVaultPackage } from "./verify";
 import { verifyAuthoritativeVaultPackage } from "./verify";
 
 export const VAULT_PACKAGE_MIME = "application/vnd.awsm.vault+zip";
@@ -25,7 +26,7 @@ export interface VaultPackageEntry {
   readonly bytes: Uint8Array | ReadableStream<Uint8Array>;
 }
 
-export interface ValidatedVaultPackage {
+export interface ValidatedVaultPackage extends VerifiedAuthoritativeVaultPackage {
   readonly manifest: ExportManifestV1;
   readonly rootKey: CryptoKey;
 }
@@ -39,6 +40,10 @@ export class ExportPackageInvalidError extends Error {
   }
 }
 
+class VaultPackageConsumerError {
+  constructor(readonly cause: unknown) {}
+}
+
 function assertCanonicalPaths(paths: readonly string[]): void {
   if (paths.join("\n") !== [...paths].toSorted().join("\n")) throw new ExportPackageInvalidError();
   if (new Set(paths).size !== paths.length) throw new ExportPackageInvalidError();
@@ -49,8 +54,10 @@ function assertCanonicalPaths(paths: readonly string[]): void {
     if (!paths.includes(fixed)) throw new ExportPackageInvalidError();
 }
 
-async function assertZip64Tail(source: Blob): Promise<void> {
+async function assertZip64Tail(source: Blob, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   const tail = new Uint8Array(await source.slice(Math.max(0, source.size - 4096)).arrayBuffer());
+  signal?.throwIfAborted();
   const contains = (signature: readonly number[]): boolean =>
     tail.some((_, index) => signature.every((byte, offset) => tail[index + offset] === byte));
   if (!contains([0x50, 0x4b, 0x06, 0x06]) || !contains([0x50, 0x4b, 0x06, 0x07])) {
@@ -110,11 +117,20 @@ export async function writeVaultPackage(
   }
 }
 
-async function entryBytes(entry: FileEntry, maximum: number): Promise<Uint8Array> {
+async function entryBytes(
+  entry: FileEntry,
+  maximum: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   if (entry.uncompressedSize > maximum || entry.compressedSize !== entry.uncompressedSize) {
     throw new ExportPackageInvalidError();
   }
-  const result = await entry.getData(new Uint8ArrayWriter());
+  signal?.throwIfAborted();
+  const result = await entry.getData(
+    new Uint8ArrayWriter(),
+    signal === undefined ? undefined : { signal },
+  );
+  signal?.throwIfAborted();
   const localExtraTypes = [...(entry.localDirectory?.extraField?.keys() ?? [])];
   if (
     entry.localDirectory?.encrypted === true ||
@@ -126,10 +142,13 @@ async function entryBytes(entry: FileEntry, maximum: number): Promise<Uint8Array
   return result;
 }
 
-export async function validateVaultPackage(
+export async function withAuthenticatedVaultPackage<Result>(
   source: Blob,
   passphrase: string,
-): Promise<ValidatedVaultPackage> {
+  use: (validated: ValidatedVaultPackage, rawRootKey: Uint8Array) => Result | Promise<Result>,
+  onRootKeyAuthenticated?: (vaultId: string) => void | Promise<void>,
+  signal?: AbortSignal,
+): Promise<Result> {
   const reader = new ZipReader(new BlobReader(source), {
     useWebWorkers: false,
     checkSignature: true,
@@ -137,7 +156,8 @@ export async function validateVaultPackage(
   });
   let rawRootKey: Uint8Array | undefined;
   try {
-    await assertZip64Tail(source);
+    signal?.throwIfAborted();
+    await assertZip64Tail(source, signal);
     const entries = await reader.getEntries();
     if (reader.comment.byteLength !== 0) throw new ExportPackageInvalidError();
     if (
@@ -171,8 +191,8 @@ export async function validateVaultPackage(
     const keyEntry = files.get("key.cbor");
     if (manifestEntry === undefined || keyEntry === undefined)
       throw new ExportPackageInvalidError();
-    const manifestBytes = await entryBytes(manifestEntry, 16 * 1024 * 1024);
-    const keyBytes = await entryBytes(keyEntry, 64 * 1024);
+    const manifestBytes = await entryBytes(manifestEntry, 16 * 1024 * 1024, signal);
+    const keyBytes = await entryBytes(keyEntry, 64 * 1024, signal);
     const manifest = decodeExportManifest(manifestBytes);
     const keyEnvelope = decodeExportKeyEnvelope(keyBytes);
     if (
@@ -182,6 +202,8 @@ export async function validateVaultPackage(
       throw new ExportAuthenticationError();
     }
     rawRootKey = await openExportKeyEnvelope(keyEnvelope, manifestBytes, passphrase);
+    passphrase = "";
+    signal?.throwIfAborted();
     const descriptorChecksum = await sha256(
       encodeCanonicalCbor({
         entries: manifest.entries,
@@ -204,7 +226,7 @@ export async function validateVaultPackage(
         throw new ExportPackageInvalidError();
       }
       if (descriptor.recordType === "ArtifactPayload") continue;
-      const bytes = await entryBytes(entry, descriptor.byteLength);
+      const bytes = await entryBytes(entry, descriptor.byteLength, signal);
       if (!bytesEqual(await sha256(bytes), descriptor.checksum)) {
         throw new ExportPackageInvalidError();
       }
@@ -218,7 +240,12 @@ export async function validateVaultPackage(
       false,
       ["deriveBits"],
     );
-    await verifyAuthoritativeVaultPackage({
+    try {
+      await onRootKeyAuthenticated?.(manifest.originatingVaultId);
+    } catch (error) {
+      throw new VaultPackageConsumerError(error);
+    }
+    const verified = await verifyAuthoritativeVaultPackage({
       manifest,
       rootKey,
       read: async (path, maximum) => {
@@ -227,23 +254,45 @@ export async function validateVaultPackage(
         return entryBytes(entry, maximum);
       },
       openArtifact: async (objectId) => {
+        signal?.throwIfAborted();
         const entry = files.get(`artifacts/${objectId}.bin`);
         if (entry === undefined) throw new ExportPackageInvalidError();
         const stream = new TransformStream<Uint8Array, Uint8Array>();
         void entry
-          .getData(stream.writable)
+          .getData(stream.writable, signal === undefined ? undefined : { signal })
           .catch((error: unknown) => stream.writable.abort(error).catch(() => undefined));
         return stream.readable;
       },
+      ...(signal === undefined ? {} : { signal }),
     });
-    return { manifest, rootKey };
+    try {
+      return await use({ manifest, rootKey, ...verified }, rawRootKey);
+    } catch (error) {
+      throw new VaultPackageConsumerError(error);
+    }
   } catch (error) {
+    if (error instanceof VaultPackageConsumerError) throw error.cause;
     if (error instanceof ExportAuthenticationError || error instanceof ExportPackageInvalidError) {
       throw error;
     }
     throw new ExportPackageInvalidError();
   } finally {
+    passphrase = "";
     if (rawRootKey !== undefined) await wipe(rawRootKey);
     await reader.close().catch(() => undefined);
   }
+}
+
+export async function validateVaultPackage(
+  source: Blob,
+  passphrase: string,
+  signal?: AbortSignal,
+): Promise<ValidatedVaultPackage> {
+  return withAuthenticatedVaultPackage(
+    source,
+    passphrase,
+    (validated) => validated,
+    undefined,
+    signal,
+  );
 }

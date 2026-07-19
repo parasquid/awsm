@@ -102,8 +102,8 @@ export class VaultService {
 
   async lock(): Promise<void> {
     const vaultId = this.requireVaultId();
-    this.rootKey = undefined;
     await this.repository.setManualLock(vaultId, true);
+    this.rootKey = undefined;
   }
 
   async autoUnlock(): Promise<boolean> {
@@ -117,8 +117,9 @@ export class VaultService {
 
   async unlockWithDevice(): Promise<void> {
     const records = await this.requireRecords();
-    await this.unlockDeviceRecords(records);
+    const rootKey = await this.prepareDeviceRootKey(records);
     await this.repository.setManualLock(this.requireVaultId(), false);
+    this.rootKey = rootKey;
   }
 
   async createExportKeyEnvelope(input: {
@@ -174,12 +175,16 @@ export class VaultService {
   }
 
   private async unlockDeviceRecords(records: VaultRecordsV1): Promise<void> {
+    this.rootKey = await this.prepareDeviceRootKey(records);
+  }
+
+  private async prepareDeviceRootKey(records: VaultRecordsV1): Promise<CryptoKey> {
     let rawRootKey: Uint8Array | undefined;
     try {
       rawRootKey = await unwrapDeviceSlot(records.deviceSlot, records.deviceKey);
       const rootKey = await importRootKey(rawRootKey);
       await verifyRootKey(rootKey, records.deviceSlot, records.metadata.verifier);
-      this.rootKey = rootKey;
+      return rootKey;
     } catch {
       throw new VaultServiceError(
         "CRYPTO_AUTHENTICATION_FAILED",

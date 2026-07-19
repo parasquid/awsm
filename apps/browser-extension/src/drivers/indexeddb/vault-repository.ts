@@ -3,6 +3,7 @@ import { decodeVaultRecords } from "../../runtime/vault/decode";
 import { deleteDatabase, openDatabase, requestValue, transactionDone } from "./database";
 import { decodeExportJob } from "./decode";
 import { storageError } from "./errors";
+import { assertNoActiveImport } from "./import-repository";
 import { vaultKeyRange, vaultSingletonKey } from "./keys";
 import { STORES } from "./schema";
 
@@ -71,9 +72,10 @@ export class IndexedDbVaultRepository implements VaultRepository {
     if (records === undefined) throw storageError(new Error("The scoped Vault does not exist"));
     const database = await this.databasePromise;
     const transaction = database.transaction(
-      [STORES.vaultMetadata, STORES.exportJobs],
+      [STORES.vaultMetadata, STORES.exportJobs, STORES.importJobs],
       "readwrite",
     );
+    await assertNoActiveImport(transaction);
     const exportValues = await requestValue(
       transaction.objectStore(STORES.exportJobs).getAll(vaultKeyRange(vaultId)),
     );

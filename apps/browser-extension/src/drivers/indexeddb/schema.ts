@@ -19,6 +19,7 @@ export const STORES = {
   vaultHead: "vault_head",
   vacuumJobs: "vacuum_jobs",
   exportJobs: "export_jobs",
+  importJobs: "import_jobs",
 } as const;
 
 export interface WorkspaceMetadataV1 {
@@ -158,5 +159,32 @@ export interface ExportJobV1 {
   readonly processedBytes: number;
   readonly totalBytes: number;
   readonly cancellationRequested: boolean;
+  readonly errorId?: import("../../domain/contracts").RuntimeErrorId;
+}
+
+export type ImportJobState = "Created" | "Running" | "Succeeded" | "Failed" | "Cancelled";
+export type ImportJobStage =
+  | "Acquire"
+  | "Authenticate"
+  | "Validate"
+  | "Prepare"
+  | "Rebuild"
+  | "Commit";
+
+export interface ImportJobV1 {
+  readonly version: 1;
+  readonly jobId: string;
+  readonly state: ImportJobState;
+  readonly stage: ImportJobStage;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly sourceByteLength: number;
+  readonly acquiredBytes: number;
+  readonly completedEntries: number;
+  readonly totalEntries: number;
+  readonly processedBytes: number;
+  readonly totalBytes: number;
+  readonly cancellationRequested: boolean;
+  readonly destinationVaultId?: string;
   readonly errorId?: import("../../domain/contracts").RuntimeErrorId;
 }

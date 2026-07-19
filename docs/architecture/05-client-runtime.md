@@ -8,10 +8,10 @@
 
 **Depends On:**
 
-* architecture/01-system-overview.md
-* architecture/02-domain-model.md
-* architecture/03-zero-knowledge.md
-* architecture/04-security-model.md
+- architecture/01-system-overview.md
+- architecture/02-domain-model.md
+- architecture/03-zero-knowledge.md
+- architecture/04-security-model.md
 
 ---
 
@@ -31,14 +31,14 @@ Browser extensions, desktop applications, and future mobile clients all embed th
 
 The Client Runtime must provide:
 
-* Offline-first operation
-* Zero-knowledge processing
-* Immutable archive management
-* Local search
-* AI processing
-* Synchronization
-* Encryption
-* Rendering
+- Offline-first operation
+- Zero-knowledge processing
+- Immutable archive management
+- Local search
+- AI processing
+- Synchronization
+- Encryption
+- Rendering
 
 without depending on backend participation.
 
@@ -91,25 +91,25 @@ The host provides user interface and platform-specific capabilities.
 
 The runtime owns:
 
-* vault management
-* archive lifecycle
-* bundle creation
-* encryption
-* decryption
-* local persistence
-* synchronization
-* search
-* AI
-* rendering
-* import/export
+- vault management
+- archive lifecycle
+- bundle creation
+- encryption
+- decryption
+- local persistence
+- synchronization
+- search
+- AI
+- rendering
+- import/export
 
 The runtime does **not** own:
 
-* browser UI
-* menus
-* dialogs
-* extension permissions
-* browser APIs
+- browser UI
+- menus
+- dialogs
+- extension permissions
+- browser APIs
 
 These belong to the host.
 
@@ -121,11 +121,11 @@ These belong to the host.
 
 Responsibilities:
 
-* capture browser state
-* extract metadata
-* preserve page Artifacts
-* invoke browser-specific adapters
-* normalize capture output
+- capture browser state
+- extract metadata
+- preserve page Artifacts
+- invoke browser-specific adapters
+- normalize capture output
 
 Output:
 
@@ -141,11 +141,11 @@ Bundle creation converts a Capture Result into an immutable Bundle.
 
 Responsibilities:
 
-* package Artifacts
-* package artifacts
-* create manifest
-* validate completeness
-* assign bundle identifier
+- package Artifacts
+- package artifacts
+- create manifest
+- validate completeness
+- assign bundle identifier
 
 After bundle creation the Bundle becomes immutable.
 
@@ -155,11 +155,11 @@ After bundle creation the Bundle becomes immutable.
 
 Responsibilities:
 
-* derive Bundle, Event, and Projection keys
-* encrypt Bundles
-* wrap and unwrap Vault Root Keys for authorized local key slots
-* verify integrity
-* decrypt Bundles
+- derive Bundle, Event, and Projection keys
+- encrypt Bundles
+- wrap and unwrap Vault Root Keys for authorized local key slots
+- verify integrity
+- decrypt Bundles
 
 The Encryption Engine never communicates directly with the server.
 
@@ -169,11 +169,11 @@ The Encryption Engine never communicates directly with the server.
 
 Responsibilities:
 
-* maintain local Object Store
-* maintain bundle cache
-* garbage collection
-* integrity verification
-* compression management
+- maintain local Object Store
+- maintain bundle cache
+- garbage collection
+- integrity verification
+- compression management
 
 The Storage Service exposes opaque Object retrieval.
 
@@ -185,11 +185,11 @@ It does not interpret archive semantics.
 
 Responsibilities:
 
-* query Search Projection Materializations
-* execute local queries
-* rank results
-* semantic search
-* incremental indexing
+- query Search Projection Materializations
+- execute local queries
+- rank results
+- semantic search
+- incremental indexing
 
 The Search Service never communicates with the backend.
 
@@ -201,12 +201,12 @@ Search Projection Materializations remain local.
 
 Responsibilities:
 
-* summarization
-* tagging
-* embeddings
-* OCR
-* entity extraction
-* keyword extraction
+- summarization
+- tagging
+- embeddings
+- OCR
+- entity extraction
+- keyword extraction
 
 The AI Service operates on plaintext data inside the trusted runtime.
 
@@ -218,12 +218,12 @@ Generated Artifacts are persisted as immutable Objects and recorded through Even
 
 Responsibilities:
 
-* detect local Events and Objects
-* upload missing Objects or Blocks
-* download missing Objects or Blocks
-* reconcile synchronization cursors
-* coordinate device state
-* verify integrity
+- detect local Events and Objects
+- upload missing Objects or Blocks
+- download missing Objects or Blocks
+- reconcile synchronization cursors
+- coordinate device state
+- verify integrity
 
 The Synchronization Service does not understand browser APIs.
 
@@ -233,11 +233,11 @@ The Synchronization Service does not understand browser APIs.
 
 Responsibilities:
 
-* reconstruct bundles
-* decrypt Artifacts
-* display captures
-* render annotations
-* render AI artifacts
+- reconstruct bundles
+- decrypt Artifacts
+- display captures
+- render annotations
+- render AI artifacts
 
 Rendering occurs entirely locally.
 
@@ -247,11 +247,11 @@ Rendering occurs entirely locally.
 
 Responsibilities:
 
-* unlock vaults
-* manage active vault
-* rotate keys
-* manage device trust
-* maintain vault metadata
+- unlock vaults
+- manage active vault
+- rotate keys
+- manage device trust
+- maintain vault metadata
 
 Every runtime operation executes within a Vault context.
 
@@ -304,18 +304,18 @@ Examples:
 
 Chrome Extension
 
-* browser capture APIs
-* toolbar
-* popup UI
-* context menus
-* keyboard shortcuts
+- browser capture APIs
+- toolbar
+- popup UI
+- context menus
+- keyboard shortcuts
 
 Desktop Application
 
-* filesystem integration
-* drag-and-drop
-* native menus
-* local notifications
+- filesystem integration
+- drag-and-drop
+- native menus
+- local notifications
 
 The runtime should remain unaware of these details.
 
@@ -411,10 +411,10 @@ The runtime persists three categories of data.
 
 Examples:
 
-* archive metadata
-* folders
-* notes
-* synchronization state
+- archive metadata
+- folders
+- notes
+- synchronization state
 
 Stored in the local database.
 
@@ -424,8 +424,8 @@ Stored in the local database.
 
 Examples:
 
-* encrypted Objects
-* temporary bundle cache
+- encrypted Objects
+- temporary bundle cache
 
 Stored in the local Object Store.
 
@@ -435,9 +435,9 @@ Stored in the local Object Store.
 
 Examples:
 
-* full-text Materializations
-* semantic Materializations
-* AI Materializations
+- full-text Materializations
+- semantic Materializations
+- AI Materializations
 
 Maintained separately from binary storage.
 
@@ -449,11 +449,11 @@ Projection Materializations can be rebuilt.
 
 The runtime should recover safely after:
 
-* power loss
-* browser crash
-* interrupted Synchronization Jobs
-* interrupted AI Jobs
-* interrupted Capture Jobs
+- power loss
+- browser crash
+- interrupted Synchronization Jobs
+- interrupted AI Jobs
+- interrupted Capture Jobs
 
 Bundles are committed atomically.
 
@@ -509,6 +509,14 @@ Encryption is a transport and storage concern applied after archival packaging.
 
 ---
 
+# Complete Vault Import
+
+The Runtime owns Import policy and the Workspace-scoped Job state machine. It authenticates the
+package through the shared Export validator, rejects Selective coverage locally, preserves the
+authoritative graph, provisions fresh device-local credentials, rebuilds Projections, and submits
+one atomic activation. Hosts may stage and stream encrypted bytes but never receive the Root Key or
+interpret Vault content. Drivers enforce the Import lease in every mutating transaction.
+
 # Open Questions
 
 Should the runtime expose a public plugin API?
@@ -523,8 +531,8 @@ These questions are deferred to future design documents.
 
 # References
 
-* `docs/architecture/06-bundle-format.md`
-* `docs/architecture/07-content-storage.md`
-* `docs/architecture/08-synchronization.md`
-* `docs/architecture/11-search.md`
-* `docs/architecture/12-processing-pipeline.md`
+- `docs/architecture/06-bundle-format.md`
+- `docs/architecture/07-content-storage.md`
+- `docs/architecture/08-synchronization.md`
+- `docs/architecture/11-search.md`
+- `docs/architecture/12-processing-pipeline.md`

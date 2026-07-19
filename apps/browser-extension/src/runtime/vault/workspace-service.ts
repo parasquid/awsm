@@ -17,16 +17,18 @@ export interface VaultSummary {
   readonly manuallyLocked: boolean;
 }
 
-export interface VaultBusyState {
-  readonly vaultId: string;
-  readonly operation: "Capture" | "Vacuum" | "Export";
-}
+export type WorkspaceBusyState =
+  | { readonly operation: "Import" }
+  | {
+      readonly vaultId: string;
+      readonly operation: "Capture" | "Vacuum" | "Export";
+    };
 
 export interface WorkspaceState {
   readonly workspaceId: string;
   readonly activeVaultId?: string;
   readonly vaults: readonly VaultSummary[];
-  readonly busy?: VaultBusyState;
+  readonly busy?: WorkspaceBusyState;
 }
 
 export interface WorkspaceVaultStatus {
@@ -56,7 +58,7 @@ export class WorkspaceService {
 
   async state(input: {
     readonly unlockedVaultId?: string;
-    readonly busy?: VaultBusyState;
+    readonly busy?: WorkspaceBusyState;
   }): Promise<WorkspaceState> {
     const workspace = await this.repository.bootstrap(this.now());
     const directory = await this.repository.listVaultDirectory();

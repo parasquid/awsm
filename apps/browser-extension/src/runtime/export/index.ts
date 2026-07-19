@@ -4,6 +4,7 @@ export {
   type ValidatedVaultPackage,
   type VaultPackageEntry,
   validateVaultPackage,
+  withAuthenticatedVaultPackage,
   writeVaultPackage,
 } from "./container";
 export {

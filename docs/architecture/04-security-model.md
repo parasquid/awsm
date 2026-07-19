@@ -295,12 +295,12 @@ These are separate concerns.
 
 Examples:
 
-| Action | Authentication | Encryption |
-|--------|----------------|------------|
-| Login | ✓ | ✗ |
-| Upload Bundle | ✓ | ✓ |
-| Download Bundle | ✓ | ✓ |
-| Billing | ✓ | ✗ |
+| Action          | Authentication | Encryption |
+| --------------- | -------------- | ---------- |
+| Login           | ✓              | ✗          |
+| Upload Bundle   | ✓              | ✓          |
+| Download Bundle | ✓              | ✓          |
+| Billing         | ✓              | ✗          |
 
 ---
 
@@ -359,6 +359,14 @@ The platform assumes:
 Compromise of a trusted client falls outside the zero-knowledge guarantees.
 
 ---
+
+# Vault Package Import Security
+
+The Export passphrase, passphrase-derived key, and recovered raw Root Key are confined to the
+trusted Runtime and never persisted or logged. The raw Root Key exists only in a scoped callback
+long enough to create a fresh local slot and verifier and is wiped on exit. Authentication errors
+are deliberately indistinguishable. Complete validation precedes destination writes, and identity
+collisions fail closed without modifying or cleaning the existing Vault.
 
 # Open Questions
 

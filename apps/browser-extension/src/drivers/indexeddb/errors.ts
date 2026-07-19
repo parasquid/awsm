@@ -5,13 +5,15 @@ export type StorageDriverErrorId =
   | "VAULT_BUSY"
   | "VAULT_CONTEXT_CHANGED"
   | "VAULT_NOT_FOUND"
-  | "VAULT_LOCKED";
+  | "VAULT_LOCKED"
+  | "VAULT_ALREADY_EXISTS";
 
 const TRANSACTION_ERROR_IDS = new Set<StorageDriverErrorId>([
   "VAULT_BUSY",
   "VAULT_CONTEXT_CHANGED",
   "VAULT_NOT_FOUND",
   "VAULT_LOCKED",
+  "VAULT_ALREADY_EXISTS",
 ]);
 
 export class StorageDriverError extends Error {

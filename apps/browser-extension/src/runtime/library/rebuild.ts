@@ -35,6 +35,12 @@ export interface LibraryProjectionRebuildRepository {
   ): Promise<void>;
 }
 
+export interface PreparedLibraryProjections {
+  readonly itemProjections: readonly StoredProjectionV1[];
+  readonly collectionProjection: StoredCollectionProjectionV1;
+  readonly vaultNameProjection: StoredVaultNameProjectionV1;
+}
+
 async function decryptEvent(
   event: StoredEvent,
   rootKey: CryptoKey,
@@ -92,7 +98,8 @@ export class LibraryProjectionRebuilder {
     readonly artifactStore: ArtifactStore,
   ) {}
 
-  async execute(): Promise<void> {
+  async prepare(signal?: AbortSignal): Promise<PreparedLibraryProjections> {
+    signal?.throwIfAborted();
     const events = (await this.repository.listStoredEvents()).toSorted(
       (left, right) =>
         left.orderingTimestamp.localeCompare(right.orderingTimestamp) ||
@@ -102,6 +109,7 @@ export class LibraryProjectionRebuilder {
     const topologyEvents: CollectionTopologyEventV1[] = [];
     const vaultNameEvents: VaultNameEventV1[] = [];
     for (const event of events) {
+      signal?.throwIfAborted();
       const payload = await decryptEvent(event, this.rootKey, this.vaultId);
       const eventType = string(payload.eventType, "event.eventType");
       assertCanonicalEventFields(payload, eventType);
@@ -155,6 +163,7 @@ export class LibraryProjectionRebuilder {
             object,
             reference: thumbnail,
             rootKey: this.rootKey,
+            ...(signal === undefined ? {} : { signal }),
           });
           thumbnailWebp = new Uint8Array(await new Response(stream).arrayBuffer());
         }
@@ -239,6 +248,7 @@ export class LibraryProjectionRebuilder {
     }
 
     const items = reduceLibraryProjection(itemEvents);
+    signal?.throwIfAborted();
     const itemProjections = await Promise.all(
       items.map(
         async (item): Promise<StoredProjectionV1> => ({
@@ -254,6 +264,7 @@ export class LibraryProjectionRebuilder {
         }),
       ),
     );
+    signal?.throwIfAborted();
     const collectionProjection: StoredCollectionProjectionV1 = {
       version: 1,
       projectionId: this.vaultId,
@@ -269,10 +280,16 @@ export class LibraryProjectionRebuilder {
       this.rootKey,
       reduceVaultNameProjection(vaultNameEvents),
     );
+    signal?.throwIfAborted();
+    return { itemProjections, collectionProjection, vaultNameProjection };
+  }
+
+  async execute(): Promise<void> {
+    const prepared = await this.prepare();
     await this.repository.replaceLibraryProjections(
-      itemProjections,
-      collectionProjection,
-      vaultNameProjection,
+      prepared.itemProjections,
+      prepared.collectionProjection,
+      prepared.vaultNameProjection,
     );
   }
 }

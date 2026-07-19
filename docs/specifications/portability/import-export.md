@@ -112,14 +112,44 @@ Cancellation propagates through enumeration, hashing, writing, validation, and d
 the temporary file. Because the passphrase is not persisted, interrupted Jobs fail with
 `EXPORT_INTERRUPTED` and never retry automatically.
 
-# 8. Import Boundary
+# 8. Complete Vault Import
 
-A future Import may validate Complete or Selective packages and create the contained Vault with new
-local device metadata. It SHALL validate the entire package before any destination write and retain
-explicit unavailability only for authenticated permitted omissions. No user-facing Import workflow
-is currently defined.
+The local Runtime SHALL accept only a fully validated Complete package. It SHALL run the same
+container, key-envelope, authoritative replay, Bundle-closure, Artifact-stream, and coverage
+validator used before Export download. A valid Selective package returns
+`SELECTIVE_IMPORT_UNSUPPORTED` only after its omissions and coverage have been authenticated. An
+invalid package creates no destination authority or prepared Artifact wrapper.
 
-# 9. Invariants
+Import is Workspace-scoped and does not require an active Vault. The Host streams the selected file
+to temporary Job-derived storage without transferring whole package bytes through application
+messages. The Export passphrase and recovered Root Key remain memory-only. Authentication failure
+is retryable against the same staged file without disclosing which authenticated field differed.
+
+After complete validation, Import SHALL reject any existing or partial destination scope for the
+originating Vault ID with `VAULT_ALREADY_EXISTS`. It SHALL preserve the exact Vault ID, active
+Generation, head, Events, Object records, and encrypted Artifact wrapper bytes. It SHALL create a
+fresh Device ID, non-exportable device key, device slot, verifier, encrypted name cache, and
+rebuildable Projections. Source device credentials and operational records SHALL NOT be imported.
+
+Prepared wrappers become authoritative only with one atomic transaction that creates all compact
+Vault records and marks the Import Job Succeeded. The imported Vault is manually locked. An empty
+Workspace selects it without retaining the recovered Root Key; a populated Workspace leaves its
+active Vault unchanged. Import never appends an Event, creates a Generation, merges, replaces,
+repairs, or synchronizes an existing Vault.
+
+# 9. Import Job and Recovery
+
+One non-terminal Workspace Import Job owns an exclusive management lease. It fences Vault Create,
+Select, Rename, Lock, Unlock, Capture, Library and Collection mutations, Vacuum, Export, and another
+Import while allowing read-only access. Its stages are Acquire, Authenticate, Validate, Prepare,
+Rebuild, and Commit. Cancellation before activation is terminal and removes staging plus prepared
+wrappers; activation reports its actual atomic outcome once requests have been scheduled.
+
+Runtime restart marks every non-terminal Import Job `IMPORT_INTERRUPTED`. Cleanup removes only its
+Job-derived source and exact authenticated destination wrappers after proving no Vault directory
+entry committed. Successful Jobs retain their authoritative wrappers.
+
+# 10. Invariants
 
 - No plaintext authoritative content appears in a Vault Package.
 - Package bytes plus passphrase authenticate the exact captured Vault Generation.
@@ -127,3 +157,31 @@ is currently defined.
 - The source Vault and all authoritative identifiers remain unchanged.
 - Device keys and local slots never leave local storage.
 - Export remains distinct from Backup and synchronization.
+- Import remains distinct from Restore and synchronization.
+- Import validates before destination writes and preserves every authoritative identity and byte.
+- Imported local credentials and Projections are newly created and device-local.
+
+# 11. Import Failure Contract
+
+The Runtime SHALL expose these stable Import failure identifiers without including package
+filenames, Vault names, decrypted metadata, passphrases, keys, or authentication detail:
+
+- `IMPORT_AUTHENTICATION_FAILED` means that the passphrase/key-envelope authentication boundary
+  could not be established. It is retryable while the staged source remains owned by the same Job.
+- `IMPORT_PACKAGE_INVALID` means that package structure, authenticated reachability, replay,
+  cryptographic content, or Complete coverage could not be proven. It is terminal.
+- `SELECTIVE_IMPORT_UNSUPPORTED` means that a fully authenticated valid Selective package cannot be
+  represented by the current local availability model. It is terminal and SHALL NOT be reported
+  as corruption.
+- `VAULT_ALREADY_EXISTS` means that the authenticated originating Vault ID already has any local
+  directory or authority scope. It is terminal and SHALL NOT replace, merge, update, or reidentify
+  that Vault.
+- `IMPORT_INTERRUPTED` means that Runtime execution ownership ended before atomic activation. It is
+  terminal; restart reconciliation SHALL clean only uncommitted Job-owned staging and wrappers.
+- `STORAGE_QUOTA_EXCEEDED` means that source staging or prepared-wrapper storage cannot reserve the
+  required capacity. It is terminal and SHALL leave no destination authority.
+
+The shared `UNSUPPORTED_FORMAT_VERSION`, `VAULT_BUSY`, and `STORAGE_TRANSACTION_FAILED`
+identifiers retain their owning Runtime meanings. Import SHALL map internal validator failures to
+the identifiers above at its Service boundary. Unsupported or malformed content SHALL fail closed;
+the Runtime SHALL NOT negotiate, migrate, or fall back to another package reader.

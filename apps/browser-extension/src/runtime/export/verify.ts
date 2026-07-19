@@ -24,7 +24,12 @@ import {
   decodeStoredObject,
   decodeStoredVaultGeneration,
 } from "../../drivers/indexeddb/decode";
-import type { StoredEvent, StoredVaultHeadV1 } from "../../drivers/indexeddb/schema";
+import type {
+  StoredEvent,
+  StoredObjectV1,
+  StoredVaultGenerationV1,
+  StoredVaultHeadV1,
+} from "../../drivers/indexeddb/schema";
 import { decodeBundleRegisteredPayload, validateArtifactWarnings } from "../capture/contracts";
 import { assertCanonicalEventFields } from "../library/vacuum";
 import { verifyVaultGeneration } from "../vault/generation";
@@ -94,13 +99,24 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
+export interface VerifiedAuthoritativeVaultPackage {
+  readonly generation: StoredVaultGenerationV1;
+  readonly head: StoredVaultHeadV1;
+  readonly events: readonly StoredEvent[];
+  readonly objects: readonly StoredObjectV1[];
+  readonly currentVaultName: string;
+  readonly vaultCreatedAt: string;
+}
+
 export async function verifyAuthoritativeVaultPackage(input: {
   readonly manifest: ExportManifestV1;
   readonly rootKey: CryptoKey;
   readonly read: (path: string, maximum: number) => Promise<Uint8Array>;
   readonly openArtifact: (objectId: string) => Promise<ReadableStream<Uint8Array>>;
-}): Promise<void> {
+  readonly signal?: AbortSignal;
+}): Promise<VerifiedAuthoritativeVaultPackage> {
   const { manifest, rootKey, read } = input;
+  input.signal?.throwIfAborted();
   const generation = decodeStoredVaultGeneration(
     decodeCanonicalCbor(await read("generation.cbor", 16 * 1024 * 1024)),
   );
@@ -139,11 +155,14 @@ export async function verifyAuthoritativeVaultPackage(input: {
   const merges = new Set<string>();
   const revertedMerges = new Set<string>();
   let vaultCreated = false;
+  let currentVaultName: string | undefined;
+  let vaultCreatedAt: string | undefined;
   const orderedEvents: {
     readonly stored: StoredEvent;
     readonly payload: Record<string, unknown>;
   }[] = [];
   for (const descriptor of eventDescriptors) {
+    input.signal?.throwIfAborted();
     const stored = decodeStoredEvent(
       decodeCanonicalCbor(await read(descriptor.path, descriptor.byteLength)),
     );
@@ -169,16 +188,19 @@ export async function verifyAuthoritativeVaultPackage(input: {
       left.stored.eventId.localeCompare(right.stored.eventId),
   );
   for (const { stored, payload } of orderedEvents) {
+    input.signal?.throwIfAborted();
     const eventType = string(payload.eventType, "event.eventType");
     if (eventType === "VaultCreated" || eventType === "VaultRenamed") {
-      if (normalizeVaultName(string(payload.name, "event.name")) !== payload.name)
-        throw new Error("Vault name is not canonical");
+      const name = normalizeVaultName(string(payload.name, "event.name"));
+      if (name !== payload.name) throw new Error("Vault name is not canonical");
       if (stored.referencedObjectIds.length !== 0)
         throw new Error("Vault name Event references an Object");
       if (eventType === "VaultCreated") {
         if (vaultCreated) throw new Error("Vault is created more than once");
         vaultCreated = true;
+        vaultCreatedAt = timestamp(payload.timestamp, "event.timestamp");
       } else if (!vaultCreated) throw new Error("Vault Rename precedes creation");
+      currentVaultName = name;
     } else if (eventType === "BundleRegistered") {
       const registration = decodeBundleRegisteredPayload(payload, stored.referencedObjectIds);
       const { bundleId, descriptorObjectId, artifactObjectIds, collectionId } = registration;
@@ -233,10 +255,13 @@ export async function verifyAuthoritativeVaultPackage(input: {
     }
   }
   if (!vaultCreated) throw new Error("Vault creation Event is missing");
+  if (currentVaultName === undefined || vaultCreatedAt === undefined)
+    throw new Error("Vault name history is incomplete");
   if (!sameIds([...referencedObjects].toSorted(), expectedObjectIds))
     throw new Error("Object references do not match reachability");
   const objects = new Map<string, ReturnType<typeof decodeStoredObject>>();
   for (const descriptor of objectDescriptors) {
+    input.signal?.throwIfAborted();
     const stored = decodeStoredObject(
       decodeCanonicalCbor(await read(descriptor.path, descriptor.byteLength)),
     );
@@ -257,6 +282,7 @@ export async function verifyAuthoritativeVaultPackage(input: {
   );
   const omissionById = new Map(manifest.omissions.map((entry) => [entry.artifactObjectId, entry]));
   for (const registration of registrations.values()) {
+    input.signal?.throwIfAborted();
     const stored = objects.get(registration.descriptorObjectId);
     if (stored?.objectType !== "BundleDescriptor") throw new Error("Descriptor Object missing");
     const key = await deriveContextKeyFromCryptoKey(rootKey, {
@@ -288,6 +314,7 @@ export async function verifyAuthoritativeVaultPackage(input: {
     );
     const decodedPayloads = new Map<string, Uint8Array>();
     for (const reference of bundleDescriptor.artifacts) {
+      input.signal?.throwIfAborted();
       const artifact = objects.get(reference.artifactObjectId);
       if (artifact?.objectType !== "Artifact") throw new Error("Artifact Object missing");
       const payload = payloadDescriptors.get(reference.artifactObjectId);
@@ -335,6 +362,7 @@ export async function verifyAuthoritativeVaultPackage(input: {
               prefixLength += length;
             }
           },
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
         });
         if (
           summary.envelopeByteLength !== artifact.envelopeByteLength ||
@@ -374,4 +402,14 @@ export async function verifyAuthoritativeVaultPackage(input: {
         throw new Error("Normalized text does not match structured content");
     }
   }
+  return {
+    generation,
+    head,
+    events: orderedEvents.map((entry) => entry.stored),
+    objects: [...objects.values()].toSorted((left, right) =>
+      left.objectId.localeCompare(right.objectId),
+    ),
+    currentVaultName,
+    vaultCreatedAt,
+  };
 }

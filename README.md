@@ -14,7 +14,12 @@ Unlike traditional web clipping or note-taking applications, AWSM is designed ar
 captures rather than editable documents. A web Capture is one immutable Bundle graph whose MHTML,
 full screenshot, thumbnail, normalized text, and structured content are independently encrypted
 Artifacts. This preserves the exact source while allowing bounded-memory storage, verification, and
-portable Export.
+portable Complete Export and Import.
+
+The browser extension can create a passphrase-protected Complete Vault Package and import that
+package into a fresh or populated local Workspace. Import validates the entire encrypted package,
+preserves authoritative Vault identity and history, provisions fresh device-local credentials, and
+adds the result as a locked Vault. Import is not Backup, Restore, merging, or synchronization.
 
 The platform is intended to support not only web pages, but eventually any digital artifact, including PDFs, emails, images, documents, transcripts, and other content types.
 

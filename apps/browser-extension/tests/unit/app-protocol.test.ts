@@ -29,6 +29,25 @@ describe("application request routing", () => {
     ).toBe(true);
   });
 
+  it("routes only canonical Workspace-scoped Import requests", () => {
+    expect(isAppRequest({ type: "BeginVaultImport", sourceByteLength: 42 })).toBe(true);
+    expect(isAppRequest({ type: "BeginVaultImport", sourceByteLength: -1 })).toBe(false);
+    expect(
+      isAppRequest({ type: "ReportVaultImportProgress", jobId: "job", acquiredBytes: 21 }),
+    ).toBe(true);
+    expect(isAppRequest({ type: "CompleteVaultImportStaging", jobId: "job" })).toBe(true);
+    expect(isAppRequest({ type: "ImportVault", jobId: "job", passphrase: "secret" })).toBe(true);
+    expect(isAppRequest({ type: "ImportVault", jobId: "job" })).toBe(false);
+    expect(isAppRequest({ type: "CancelVaultImport", jobId: "job" })).toBe(true);
+    expect(
+      isAppRequest({
+        type: "CancelVaultImport",
+        jobId: "job",
+        expectedVaultId: "not-applicable",
+      }),
+    ).toBe(false);
+  });
+
   it("accepts only canonical Vault-scoped Artifact session requests", () => {
     expect(
       isAppRequest({

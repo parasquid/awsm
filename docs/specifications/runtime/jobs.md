@@ -311,6 +311,20 @@ The Job Framework SHOULD expose:
 
 # 18. Invariants
 
+## Complete Vault Import Job
+
+The browser Runtime persists only the current/latest Workspace-scoped Import Job. Its states are
+Created, Running, Succeeded, Failed, and Cancelled; its stages are Acquire, Authenticate, Validate,
+Prepare, Rebuild, and Commit. Created/Authenticate is the sole retryable authentication state.
+Running begins only after Root Key authentication and carries the authenticated destination Vault
+ID. Progress describes encrypted operational bytes and entries and is monotonic within a stage.
+
+A non-terminal Import Job owns the Workspace management lease. Passphrase, source filename,
+temporary path, Root Key, derived key, Vault name, and decrypted package data SHALL NOT enter the
+Job. Restart makes a non-terminal Import Job fail with `IMPORT_INTERRUPTED`; Import does not resume
+because its passphrase is not persisted. Success is written in the destination activation
+transaction. Cancellation before activation is terminal and idempotent.
+
 Jobs are durable.
 
 Workers are stateless.

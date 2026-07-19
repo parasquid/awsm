@@ -99,6 +99,11 @@ The record binds the Artifact Object ID to the exact wrapper byte length and SHA
 Object Store SHALL treat that pair as one immutable Object and SHALL NOT report a successful read
 until both wrapper and plaintext integrity validation complete.
 
+Complete Vault Import installs an Artifact Object by streaming the already encrypted wrapper
+unchanged into the validated destination Vault namespace, checking its exact bound length and
+SHA-256, and then atomically committing its compact Object record with the full imported graph.
+Prepared wrappers are not authoritative before that transaction and SHALL be removed on failure.
+
 ---
 
 # 8. Integrity

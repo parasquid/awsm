@@ -1,6 +1,6 @@
 import { readArtifactEnvelope, writeArtifactEnvelope } from "../../crypto/artifact-envelope";
 import { deriveContextKeyFromCryptoKey } from "../../crypto/hkdf";
-import { wipe } from "../../crypto/sodium";
+import { readySodium, wipe } from "../../crypto/sodium";
 import { bytesEqual } from "../../domain/hash";
 import { uuid } from "../../domain/validation";
 import type { StoredArtifactObjectV1 } from "../../drivers/indexeddb/schema";
@@ -21,6 +21,14 @@ async function vaultDirectory(vaultId: string): Promise<FileSystemDirectoryHandl
 
 function filename(objectId: string): string {
   return `${uuid(objectId, "artifactStore.objectId")}${SUFFIX}`;
+}
+
+function importStorageError(error: unknown): unknown {
+  return error instanceof DOMException && error.name === "QuotaExceededError"
+    ? Object.assign(new Error("There is not enough local storage to import this Vault."), {
+        id: "STORAGE_QUOTA_EXCEEDED",
+      })
+    : error;
 }
 
 async function fileStream(vaultId: string, objectId: string): Promise<ReadableStream<Uint8Array>> {
@@ -88,6 +96,59 @@ export class ChromeArtifactStore implements ArtifactStore {
       throw error;
     } finally {
       await wipe(key);
+    }
+  }
+
+  async prepareEncrypted(input: {
+    readonly vaultId: string;
+    readonly object: StoredArtifactObjectV1;
+    readonly encrypted: ReadableStream<Uint8Array>;
+    readonly signal?: AbortSignal;
+  }): Promise<void> {
+    const vaultId = uuid(input.vaultId, "artifactStore.vaultId");
+    const objectId = uuid(input.object.objectId, "artifactStore.objectId");
+    const directory = await vaultDirectory(vaultId);
+    const name = filename(objectId);
+    try {
+      await directory.getFileHandle(name);
+      throw new Error("An Artifact Object identifier already exists.");
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+    }
+    const reader = input.encrypted.getReader();
+    const sodium = await readySodium();
+    const hash = sodium.crypto_hash_sha256_init();
+    let byteLength = 0;
+    let writable: FileSystemWritableFileStream | undefined;
+    try {
+      const handle = await directory.getFileHandle(name, { create: true });
+      writable = await handle.createWritable({ keepExistingData: false });
+      for (;;) {
+        input.signal?.throwIfAborted();
+        const next = await reader.read();
+        if (next.done) break;
+        byteLength += next.value.byteLength;
+        if (!Number.isSafeInteger(byteLength)) throw new Error("Artifact wrapper is too large.");
+        sodium.crypto_hash_sha256_update(hash, next.value);
+        await writable.write(Uint8Array.from(next.value).buffer);
+      }
+      const checksum = Uint8Array.from(sodium.crypto_hash_sha256_final(hash));
+      if (
+        byteLength !== input.object.envelopeByteLength ||
+        !bytesEqual(checksum, input.object.envelopeChecksum)
+      ) {
+        throw new Error("Artifact wrapper does not match its authoritative Object record.");
+      }
+      await writable.close();
+      if ((await handle.getFile()).size !== byteLength)
+        throw new Error("Artifact write was truncated.");
+    } catch (error) {
+      await reader.cancel(error).catch(() => undefined);
+      await writable?.abort().catch(() => undefined);
+      await directory.removeEntry(name).catch(() => undefined);
+      throw importStorageError(error);
+    } finally {
+      reader.releaseLock();
     }
   }
 

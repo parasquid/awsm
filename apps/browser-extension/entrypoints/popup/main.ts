@@ -71,7 +71,9 @@ function status(
 }
 
 async function regenerateVaultName(input?: HTMLInputElement): Promise<void> {
-  const suggestion = await sendRequest<{ readonly name: string }>({ type: "SuggestVaultName" });
+  const suggestion = await sendRequest<{ readonly name: string }>({
+    type: "SuggestVaultName",
+  });
   suggestedVaultName = suggestion.name;
   if (input !== undefined) {
     input.value = suggestion.name;
@@ -289,7 +291,17 @@ function render(state: AppState, transientError?: string): void {
         () => render(state),
         (cause) => refresh(errorText(cause)),
       );
-    } else content.append(createVaultForm(state, false));
+    } else {
+      content.append(createVaultForm(state, false));
+      const importExisting = element("a", "Import existing Vault");
+      importExisting.href = `${browser.runtime.getURL("/library.html")}?import=1`;
+      importExisting.target = "_blank";
+      importExisting.addEventListener("click", (event) => {
+        event.preventDefault();
+        void browser.tabs.create({ url: importExisting.href });
+      });
+      content.append(importExisting);
+    }
   } else if (view.screen === "locked") {
     content.append(element("p", "Unlock the Vault before capturing or opening the library."));
     const device = element("button", "Unlock on this device", "primary");

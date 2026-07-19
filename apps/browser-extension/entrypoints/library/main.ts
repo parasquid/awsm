@@ -11,6 +11,7 @@ import type {
 } from "../../src/app/protocol";
 import type { ArtifactRole } from "../../src/domain/artifact-graph";
 import { decodeStructuredContentSequence } from "../../src/domain/structured-content";
+import { ChromeVaultImportHost } from "../../src/hosts/chrome/import";
 import {
   captureDropRequest,
   collectionLayerBundleIds,
@@ -41,7 +42,14 @@ let undoNotice: HTMLElement | undefined;
 let draggedCollectionId: string | undefined;
 let activeVaultId: string | undefined;
 let editingVaultId: string | undefined;
+let vaultMutationDisabled = false;
 let expandedLibrarySection: "Active" | "Deleted" = "Active";
+const importHost = new ChromeVaultImportHost();
+let importRouteOpened = false;
+let cancelPageOwnedImport: (() => void) | undefined;
+let pageOwnedImportJobId: string | undefined;
+let abortPageOwnedImport: (() => void) | undefined;
+let closePageOwnedImport: (() => void) | undefined;
 
 function expectedVaultId(): string {
   if (activeVaultId === undefined) throw new Error("No active Vault is selected.");
@@ -71,7 +79,15 @@ async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
     type: "SuggestVaultName",
   });
   const { dialog, form } = dialogShell("Create another Vault");
-  form.append(element("p", "Creating another Vault locks the current Vault.", "muted"));
+  form.append(
+    element(
+      "p",
+      activeVaultId === undefined
+        ? "Create an encrypted local Vault."
+        : "Creating another Vault locks the current Vault.",
+      "muted",
+    ),
+  );
   const label = element("label", "Vault name");
   const name = element("input");
   name.value = suggestion.name;
@@ -104,12 +120,12 @@ async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
   cancel.addEventListener("click", () => dialog.close());
   controls.append(submit, cancel);
   form.append(label, regenerate, controls);
-  form.addEventListener("submit", (event) => {
+  form.onsubmit = (event) => {
     event.preventDefault();
     submit.disabled = true;
     void sendRequest<AppState>({
       type: "CreateVault",
-      expectedActiveVaultId: expectedVaultId(),
+      ...(activeVaultId === undefined ? {} : { expectedActiveVaultId: activeVaultId }),
       name: name.value,
     }).then(
       async (next) => {
@@ -125,11 +141,261 @@ async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
         await handleContextError(error);
       },
     );
-  });
+  };
   dialog.addEventListener("close", () => restoreFocus.focus(), { once: true });
   dialog.showModal();
   name.focus();
   name.select();
+}
+
+function showImportVaultDialog(restoreFocus: HTMLElement): void {
+  const { dialog, form } = dialogShell("Import encrypted Vault");
+  const title = form.querySelector("h2");
+  if (title === null) throw new Error("Import dialog title is missing.");
+  const host = importHost;
+  let jobId: string | undefined;
+  let backgroundOwned = false;
+  let closing = false;
+  const acquisition = new AbortController();
+  const cancel = async (): Promise<void> => {
+    acquisition.abort();
+    if (jobId !== undefined) {
+      await sendRequest<null>({ type: "CancelVaultImport", jobId }).catch(() => undefined);
+    }
+  };
+  cancelPageOwnedImport = () => void cancel();
+  const close = (): void => {
+    closing = true;
+    dialog.close();
+  };
+  const renderAuthenticate = (fileSize: number, feedback?: string): void => {
+    const passphraseLabel = element("label", "Export passphrase");
+    const passphrase = element("input");
+    passphrase.type = "password";
+    passphrase.required = true;
+    passphrase.autocomplete = "current-password";
+    passphrase.setAttribute("aria-describedby", "import-passphrase-help import-feedback");
+    passphraseLabel.append(passphrase);
+    const help = element(
+      "p",
+      `Staged ${formatByteSize(fileSize)}. The passphrase is not saved and will not unlock the imported local Vault.`,
+      "muted",
+    );
+    help.id = "import-passphrase-help";
+    const error = element("p", feedback ?? "", "notice error");
+    error.id = "import-feedback";
+    error.setAttribute("role", "alert");
+    error.hidden = feedback === undefined;
+    const actions = element("div", undefined, "actions");
+    const submit = element("button", "Import Vault");
+    submit.type = "submit";
+    const cancelButton = element("button", "Cancel Import");
+    cancelButton.type = "button";
+    cancelButton.addEventListener("click", () => void cancel().then(close));
+    actions.append(submit, cancelButton);
+    form.replaceChildren(title, passphraseLabel, help, error, actions);
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      if (jobId === undefined) return;
+      submit.disabled = true;
+      cancelButton.disabled = false;
+      let secret = passphrase.value;
+      passphrase.value = "";
+      const importRequest = sendRequest<{
+        readonly jobId: string;
+        readonly vaultId: string;
+      }>({
+        type: "ImportVault",
+        jobId,
+        passphrase: secret,
+      });
+      secret = "";
+      void (async () => {
+        while (!backgroundOwned && dialog.open) {
+          const state = await sendRequest<AppState>({ type: "GetState" });
+          const job = state.latestImportJob;
+          if (job?.jobId === jobId && (job.state === "Running" || job.state === "Succeeded")) {
+            backgroundOwned = true;
+            cancelPageOwnedImport = undefined;
+            announcer.textContent =
+              "Authenticated Vault Package. Import continues in the background.";
+            close();
+            return;
+          }
+          if (job?.state === "Failed" || job?.state === "Cancelled") return;
+          await new Promise((resolve) => window.setTimeout(resolve, 100));
+        }
+      })().catch(() => undefined);
+      void importRequest.then(
+        async (result) => {
+          backgroundOwned = true;
+          cancelPageOwnedImport = undefined;
+          if (dialog.open) close();
+          const state = await sendRequest<AppState>({ type: "GetState" });
+          const imported = state.workspace.vaults.find((vault) => vault.vaultId === result.vaultId);
+          announcer.textContent = `Imported ${imported?.name ?? "Vault"} as a locked Vault.`;
+          reconcile();
+        },
+        async (cause) => {
+          if (cause instanceof AppClientError && cause.id === "IMPORT_AUTHENTICATION_FAILED") {
+            renderAuthenticate(
+              fileSize,
+              "The Vault Package could not be authenticated. Check the passphrase and try again.",
+            );
+            const next = form.querySelector<HTMLInputElement>('input[type="password"]');
+            next?.focus();
+            next?.select();
+            return;
+          }
+          const state = await sendRequest<AppState>({ type: "GetState" }).catch(() => undefined);
+          const job = state?.latestImportJob;
+          if (job !== undefined && job.jobId === jobId && job.destinationVaultId !== undefined) {
+            backgroundOwned = true;
+            cancelPageOwnedImport = undefined;
+            if (dialog.open) close();
+            announcer.textContent = "Vault Import stopped safely after authentication.";
+            reconcile();
+            return;
+          }
+          error.textContent =
+            cause instanceof AppClientError ? cause.message : "Vault Import failed safely.";
+          error.hidden = false;
+          submit.disabled = true;
+          cancelButton.textContent = "Close";
+          cancelButton.onclick = close;
+        },
+      );
+    };
+    passphrase.focus();
+  };
+  const intro = element(
+    "p",
+    "Choose an encrypted AWSM .awsm package. Import adds it as a locked Vault.",
+    "muted",
+  );
+  const fileLabel = element("label", "Vault Package");
+  const file = element("input");
+  file.type = "file";
+  file.accept = ".awsm,application/vnd.awsm.vault+zip";
+  file.required = true;
+  fileLabel.append(file);
+  const feedback = element("p", "", "notice error");
+  feedback.hidden = true;
+  feedback.setAttribute("role", "alert");
+  const actions = element("div", undefined, "actions");
+  const begin = element("button", "Continue");
+  begin.type = "submit";
+  const dismiss = element("button", "Cancel");
+  dismiss.type = "button";
+  dismiss.addEventListener("click", close);
+  actions.append(begin, dismiss);
+  form.append(intro, fileLabel, feedback, actions);
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    const source = file.files?.[0];
+    if (source === undefined) return;
+    begin.disabled = true;
+    dismiss.textContent = "Cancel Import";
+    const progress = element("progress") as HTMLProgressElement;
+    progress.max = source.size;
+    progress.value = 0;
+    progress.setAttribute("aria-label", "Vault Package acquisition progress");
+    const progressText = element("p", `Copied 0 of ${formatByteSize(source.size)}`, "muted");
+    form.replaceChildren(title, progressText, progress, dismiss);
+    dismiss.onclick = () => void cancel().then(close);
+    void sendRequest<{ readonly jobId: string }>({
+      type: "BeginVaultImport",
+      sourceByteLength: source.size,
+    })
+      .then(async (started) => {
+        jobId = started.jobId;
+        pageOwnedImportJobId = started.jobId;
+        abortPageOwnedImport = () => acquisition.abort();
+        closePageOwnedImport = () => {
+          announcer.textContent = "Vault Import cancelled.";
+          close();
+        };
+        if (acquisition.signal.aborted) {
+          await sendRequest<null>({ type: "CancelVaultImport", jobId });
+          throw new DOMException("Import acquisition was cancelled.", "AbortError");
+        }
+        let lastReportedAt = 0;
+        let lastReportedBytes = 0;
+        await host.stage({
+          jobId,
+          source,
+          signal: acquisition.signal,
+          onProgress: async (acquiredBytes) => {
+            progress.value = acquiredBytes;
+            progressText.textContent = `Copied ${formatByteSize(acquiredBytes)} of ${formatByteSize(source.size)}`;
+            const now = performance.now();
+            if (
+              acquiredBytes !== source.size &&
+              now - lastReportedAt < 100 &&
+              acquiredBytes - lastReportedBytes < 1024 * 1024
+            ) {
+              return;
+            }
+            await sendRequest<null>({
+              type: "ReportVaultImportProgress",
+              jobId: started.jobId,
+              acquiredBytes,
+            });
+            lastReportedAt = now;
+            lastReportedBytes = acquiredBytes;
+          },
+        });
+        await sendRequest<null>({
+          type: "CompleteVaultImportStaging",
+          jobId: started.jobId,
+        });
+        renderAuthenticate(source.size);
+      })
+      .catch(async (cause) => {
+        await cancel();
+        const state = await sendRequest<AppState>({ type: "GetState" }).catch(() => undefined);
+        const latestJob = state?.latestImportJob;
+        if (
+          acquisition.signal.aborted &&
+          latestJob !== undefined &&
+          latestJob.jobId === jobId &&
+          latestJob.state === "Cancelled"
+        ) {
+          announcer.textContent = "Vault Import cancelled.";
+          close();
+          return;
+        }
+        feedback.textContent =
+          cause instanceof AppClientError
+            ? cause.message
+            : "The Vault Package could not be staged.";
+        feedback.hidden = false;
+        form.replaceChildren(title, feedback, dismiss);
+      });
+  };
+  dialog.addEventListener(
+    "close",
+    () => {
+      if (!closing) closing = true;
+      if (!backgroundOwned) void cancel();
+      if (cancelPageOwnedImport !== undefined) cancelPageOwnedImport = undefined;
+      if (pageOwnedImportJobId === jobId) {
+        pageOwnedImportJobId = undefined;
+        abortPageOwnedImport = undefined;
+        closePageOwnedImport = undefined;
+      }
+      dialog.remove();
+      requestAnimationFrame(() => {
+        const focusTarget = restoreFocus.isConnected
+          ? restoreFocus
+          : document.querySelector<HTMLElement>("[data-import-vault='true']");
+        focusTarget?.focus();
+      });
+    },
+    { once: true },
+  );
+  dialog.showModal();
+  file.focus();
 }
 
 function showExportVaultDialog(restoreFocus: HTMLElement): void {
@@ -309,10 +575,79 @@ function renderLibraryTitle(state: AppState, restoreFocus = false): void {
   if (restoreFocus) rename.focus();
 }
 
+function appendImportJobStatus(bar: HTMLElement, state: AppState, currentVaultId?: string): void {
+  const importJob = state.latestImportJob;
+  if (importJob === undefined) return;
+  if (importJob.state === "Created" || importJob.state === "Running") {
+    const progress =
+      importJob.stage === "Acquire"
+        ? `${formatByteSize(importJob.acquiredBytes)} of ${formatByteSize(importJob.sourceByteLength)}`
+        : `${String(importJob.completedEntries)} of ${String(importJob.totalEntries)} entries`;
+    bar.append(element("p", `Import · ${importJob.stage} · ${progress}`, "muted"));
+    const cancelImport = element("button", "Cancel Import");
+    cancelImport.disabled = importJob.cancellationRequested || importJob.stage === "Commit";
+    cancelImport.addEventListener("click", () => {
+      cancelImport.disabled = true;
+      void sendRequest<null>({
+        type: "CancelVaultImport",
+        jobId: importJob.jobId,
+      }).catch(() => reconcile());
+    });
+    bar.append(cancelImport);
+    return;
+  }
+  if (importJob.state === "Failed") {
+    const message =
+      importJob.errorId === "SELECTIVE_IMPORT_UNSUPPORTED"
+        ? "This version can import only Complete Vault Packages."
+        : importJob.errorId === "VAULT_ALREADY_EXISTS"
+          ? "This Vault already exists on this device."
+          : importJob.errorId === "IMPORT_INTERRUPTED"
+            ? "Import was interrupted before the Vault was added. Select the package and try again."
+            : importJob.errorId === "STORAGE_QUOTA_EXCEEDED"
+              ? "There is not enough local storage to import this Vault."
+              : "This Vault Package is incomplete, corrupt, or unsupported.";
+    bar.append(element("p", message, "notice error"));
+    return;
+  }
+  if (importJob.state !== "Succeeded") return;
+  const importedVaultId = importJob.destinationVaultId;
+  const importedVault = state.workspace.vaults.find((vault) => vault.vaultId === importedVaultId);
+  bar.append(
+    element(
+      "p",
+      importedVault?.active === true && importedVault.unlocked
+        ? "The imported Vault is ready."
+        : "The imported Vault is ready and locked.",
+      "muted",
+    ),
+  );
+  if (
+    currentVaultId !== undefined &&
+    importedVaultId !== undefined &&
+    importedVaultId !== currentVaultId &&
+    importedVault !== undefined
+  ) {
+    const switchToImported = element("button", "Switch to imported Vault");
+    switchToImported.addEventListener("click", () => {
+      switchToImported.disabled = true;
+      void sendRequest<AppState>({
+        type: "SelectActiveVault",
+        expectedActiveVaultId: currentVaultId,
+        vaultId: importedVaultId,
+      })
+        .then(() => reconcile())
+        .catch(() => reconcile());
+    });
+    bar.append(switchToImported);
+  }
+}
+
 function renderVaultBar(state: AppState): void {
   activeVaultId = state.workspace.activeVaultId;
   document.querySelector("#vault-management")?.remove();
   const view = vaultManagementView(state.workspace);
+  vaultMutationDisabled = view.managementDisabled;
   const active = state.workspace.vaults.find((vault) => vault.active);
   if (
     active === undefined ||
@@ -322,7 +657,15 @@ function renderVaultBar(state: AppState): void {
     editingVaultId = undefined;
   }
   if (editingVaultId === undefined) renderLibraryTitle(state);
-  if (active === undefined) return;
+  if (active === undefined) {
+    if (state.latestImportJob !== undefined) {
+      const bar = element("section", undefined, "vault-control");
+      bar.id = "vault-management";
+      appendImportJobStatus(bar, state);
+      pageHeader.after(bar);
+    }
+    return;
+  }
   const bar = element("section", undefined, "vault-control");
   bar.id = "vault-management";
   bar.append(element("p", active.unlocked ? "Unlocked" : "Locked", "muted"));
@@ -394,6 +737,11 @@ function renderVaultBar(state: AppState): void {
     });
   });
   actions.append(create);
+  const importButton = element("button", "Import Vault");
+  importButton.dataset.importVault = "true";
+  importButton.disabled = view.managementDisabled;
+  importButton.addEventListener("click", () => showImportVaultDialog(importButton));
+  actions.append(importButton);
   const exportButton = element("button", "Export Vault");
   exportButton.disabled = !active.unlocked || view.managementDisabled;
   exportButton.addEventListener("click", () => showExportVaultDialog(exportButton));
@@ -424,6 +772,7 @@ function renderVaultBar(state: AppState): void {
       bar.append(element("p", "The last encrypted Vault Export was downloaded.", "muted"));
     }
   }
+  appendImportJobStatus(bar, state, active.vaultId);
   bar.append(actions);
   pageHeader.after(bar);
 }
@@ -569,6 +918,7 @@ function showUndoNotice(message: string, receipt: LibraryOperationReceipt): void
   notice.append(element("span", message));
   const undo = element("button", "Undo");
   undo.type = "button";
+  undo.disabled = vaultMutationDisabled;
   undo.addEventListener("click", () => {
     undo.disabled = true;
     void sendRequest<LibraryOperationReceipt>({
@@ -796,7 +1146,7 @@ function groupGrid(
   const grid = element("div", undefined, "grid");
   for (const group of groups) {
     const wrapper = element("article", undefined, "library-card");
-    if (status === "Active") {
+    if (status === "Active" && !vaultMutationDisabled) {
       wrapper.draggable = true;
       wrapper.addEventListener("dragstart", (event) => {
         draggedCollectionId = group.collectionId;
@@ -861,6 +1211,7 @@ function groupGrid(
       status === "Active" ? "remove" : undefined,
     );
     stateAction.type = "button";
+    stateAction.disabled = vaultMutationDisabled;
     stateAction.setAttribute(
       "aria-label",
       `${status === "Active" ? "Delete" : "Restore"} ${group.title} collection`,
@@ -873,6 +1224,7 @@ function groupGrid(
     if (status === "Active") {
       const merge = element("button", "Merge with…");
       merge.type = "button";
+      merge.disabled = vaultMutationDisabled;
       merge.addEventListener("click", () => showMergePicker(group));
       cardActions.append(merge);
     }
@@ -887,6 +1239,7 @@ function vacuumControl(captureCount: number, reclaimableBytes: number): HTMLButt
   const reclaimableSize = formatByteSize(reclaimableBytes);
   const vacuum = element("button", `Vacuum Vault · reclaim about ${reclaimableSize}`, "remove");
   vacuum.type = "button";
+  vacuum.disabled = vaultMutationDisabled;
   vacuum.addEventListener("click", () => {
     if (
       !window.confirm(
@@ -1002,11 +1355,13 @@ function renderGroup(group: LibraryPageGroupMessage): void {
     operation === "Delete" ? "remove" : undefined,
   );
   remove.setAttribute("aria-label", `${operation} ${group.title} collection`);
+  remove.disabled = vaultMutationDisabled;
   remove.addEventListener("click", () => confirmAndChangeGroup(group, remove, operation));
   actions.append(back, originalSiteLink(group));
   if (group.latest.status === "Active") {
     const merge = element("button", "Merge with…");
     merge.type = "button";
+    merge.disabled = vaultMutationDisabled;
     merge.addEventListener("click", () => showMergePicker(group));
     actions.append(merge);
   }
@@ -1034,8 +1389,8 @@ function renderGroup(group: LibraryPageGroupMessage): void {
   moveSelected.disabled = true;
   extractSelected.disabled = true;
   const updateSelection = (): void => {
-    moveSelected.disabled = selected.size === 0;
-    extractSelected.disabled = selected.size === 0;
+    moveSelected.disabled = vaultMutationDisabled || selected.size === 0;
+    extractSelected.disabled = vaultMutationDisabled || selected.size === 0;
   };
   moveSelected.addEventListener("click", () => showMovePicker([...selected], group.collectionId));
   extractSelected.addEventListener("click", () => {
@@ -1059,6 +1414,7 @@ function renderGroup(group: LibraryPageGroupMessage): void {
       const selectLabel = element("label", undefined, "version-select");
       const checkbox = element("input");
       checkbox.type = "checkbox";
+      checkbox.disabled = vaultMutationDisabled;
       checkbox.setAttribute(
         "aria-label",
         `Select capture from ${new Date(capture.capturedAt).toLocaleString()}`,
@@ -1070,7 +1426,9 @@ function renderGroup(group: LibraryPageGroupMessage): void {
       });
       selectLabel.append(checkbox, element("span", "Select", "sr-only"));
       row.append(selectLabel);
+      row.draggable = !vaultMutationDisabled;
       row.addEventListener("dragstart", (event) => {
+        if (vaultMutationDisabled) return;
         useTiltedDragPreview(event, row);
         const bundleIds = selected.has(capture.bundleId) ? [...selected] : [capture.bundleId];
         event.dataTransfer?.setData("application/x-awsm-captures", JSON.stringify(bundleIds));
@@ -1109,6 +1467,7 @@ function renderGroup(group: LibraryPageGroupMessage): void {
   const addDropTarget = (label: string, destination: string | "new"): void => {
     const target = element("button", label, "drop-target");
     target.type = "button";
+    target.disabled = vaultMutationDisabled;
     target.addEventListener("dragover", (event) => {
       event.preventDefault();
       if (event.dataTransfer !== null) event.dataTransfer.dropEffect = "move";
@@ -1185,6 +1544,7 @@ async function showUnlock(): Promise<void> {
       element("p", "Library metadata remains encrypted while locked."),
     );
     const device = element("button", "Unlock on this device");
+    device.disabled = vaultManagementView(state.workspace).managementDisabled;
     device.addEventListener("click", () => {
       device.disabled = true;
       void sendRequest<AppState>({
@@ -1261,6 +1621,7 @@ async function loadDetail(bundleId: string): Promise<void> {
       detail.item.status === "Active" ? "Delete capture" : "Restore capture",
       detail.item.status === "Active" ? "remove" : undefined,
     );
+    stateAction.disabled = vaultMutationDisabled;
     stateAction.addEventListener("click", () => {
       const operation = detail.item.status === "Active" ? "Delete" : "Restore";
       if (!window.confirm(libraryStateConfirmation(detail.item.title, 1, operation))) return;
@@ -1278,11 +1639,13 @@ async function loadDetail(bundleId: string): Promise<void> {
     if (detail.item.status === "Active") {
       const move = element("button", "Move to collection…");
       move.type = "button";
+      move.disabled = vaultMutationDisabled;
       move.addEventListener("click", () =>
         showMovePicker([detail.item.bundleId], group.collectionId),
       );
       const extract = element("button", "Extract to new collection");
       extract.type = "button";
+      extract.disabled = vaultMutationDisabled;
       extract.addEventListener("click", () => {
         void applyManagement(
           {
@@ -1490,21 +1853,47 @@ async function loadDetail(bundleId: string): Promise<void> {
 }
 
 window.addEventListener("pagehide", releaseScreenshot);
+window.addEventListener("pagehide", () => cancelPageOwnedImport?.());
 const requestedBundleId = new URLSearchParams(window.location.search).get("bundleId");
 const requestedVaultId = new URLSearchParams(window.location.search).get("vaultId");
 
 async function initialize(): Promise<void> {
   try {
     const state = await sendRequest<AppState>({ type: "GetState" });
+    if (
+      pageOwnedImportJobId !== undefined &&
+      state.latestImportJob?.jobId === pageOwnedImportJobId &&
+      state.latestImportJob.state === "Cancelled"
+    ) {
+      abortPageOwnedImport?.();
+      closePageOwnedImport?.();
+    }
     renderVaultBar(state);
     const active = state.workspace.vaults.find((vault) => vault.active);
     if (active === undefined) {
+      const create = element("button", "Create new Vault");
+      create.addEventListener("click", () => void showCreateVaultDialog(create));
+      const importExisting = element("button", "Import existing Vault");
+      importExisting.dataset.importVault = "true";
+      importExisting.addEventListener("click", () => showImportVaultDialog(importExisting));
+      const actions = element("div", undefined, "actions");
+      actions.append(create, importExisting);
       app.replaceChildren(
-        element("h2", "Create your first Vault"),
-        element("p", "Use the AWSM toolbar popup to create an encrypted local Vault."),
+        element("h2", "Create or import your first Vault"),
+        element("p", "Start a new encrypted local Vault or import an encrypted AWSM package."),
+        actions,
       );
       app.setAttribute("aria-busy", "false");
+      if (!importRouteOpened && new URLSearchParams(window.location.search).get("import") === "1") {
+        importRouteOpened = true;
+        showImportVaultDialog(importExisting);
+      }
       return;
+    }
+    if (!importRouteOpened && new URLSearchParams(window.location.search).get("import") === "1") {
+      importRouteOpened = true;
+      const trigger = document.querySelector<HTMLElement>("[data-import-vault='true']");
+      if (trigger !== null) showImportVaultDialog(trigger);
     }
     if (requestedVaultId !== null) {
       const route = deepLinkVaultRoute(state.workspace.activeVaultId, requestedVaultId);

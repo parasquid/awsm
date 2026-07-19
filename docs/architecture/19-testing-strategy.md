@@ -374,6 +374,14 @@ exercise counters beyond 4 GiB without proportional memory use. Browser tests SH
 two surfaces open for invalidation and visually inspect Artifact resting, loading, success, failure,
 focus, and narrow states.
 
+Complete Import coverage SHALL prove cold-Workspace Export-to-Import portability, wrong-passphrase
+retry without restaging, stable Vault/Generation/Event/Object identities, fresh non-exportable local
+credentials, exact encrypted Artifact wrapper copying, prepared-wrapper rollback, collision safety,
+atomic activation, cancellation and restart cleanup, and the Workspace-wide mutation lease. Rendered
+tests SHALL inspect first-launch entry, Select, Acquire, Authenticate, authentication error,
+execution progress, cancellation, terminal failure, Success, focus, and materially different narrow
+layouts.
+
 ---
 
 # Continuous Integration

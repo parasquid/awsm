@@ -216,6 +216,18 @@ against authoritative records at startup. Platform APIs remain behind the Driver
 
 The Runtime MUST NOT depend upon IndexedDB-specific or OPFS-specific APIs outside the selected Driver.
 
+Complete Vault Import SHALL stage its encrypted source through a Host-owned, Job-derived temporary
+file using bounded streaming. Validated Artifact wrappers are copied byte-for-byte to their
+destination Vault scope and checked against authoritative length and SHA-256 before activation.
+Compact Vault records, rebuilt Projections, encrypted name cache, directory entry, conditional
+active-Vault selection, and Import success SHALL commit in one Driver transaction. Failure before
+commit removes the source and exact prepared wrappers; restart cleanup SHALL first prove that no
+destination directory entry committed.
+
+Every Workspace or Vault mutation transaction SHALL include the Import lease store and reject a
+non-terminal Import before its first write. Runtime-only prechecks do not replace this transaction
+fence.
+
 ---
 
 # 16. Diagnostics

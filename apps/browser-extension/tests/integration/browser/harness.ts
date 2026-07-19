@@ -1,6 +1,7 @@
 import {
   type AtomicRegistrationV1,
   IndexedDbDriver,
+  IndexedDbImportRepository,
   IndexedDbVaultRepository,
   IndexedDbWorkspaceRepository,
   type StoredBundleDescriptorObjectV1,
@@ -9,6 +10,7 @@ import {
   vaultSingletonKey,
 } from "../../../src/drivers/indexeddb";
 import { ChromeArtifactStore } from "../../../src/hosts/chrome/artifact-store";
+import { ChromeVaultImportHost } from "../../../src/hosts/chrome/import";
 import {
   encryptWorkspaceVaultName,
   prepareVaultNameChange,
@@ -79,8 +81,12 @@ async function seedHead(driver: IndexedDbDriver): Promise<void> {
   await driver.getVaultHead();
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(driver.databaseName);
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("success", () => resolve(request.result), {
+      once: true,
+    });
+    request.addEventListener("error", () => reject(request.error), {
+      once: true,
+    });
   });
   const transaction = database.transaction("vault_head", "readwrite");
   transaction.objectStore("vault_head").put(
@@ -96,7 +102,9 @@ async function seedHead(driver: IndexedDbDriver): Promise<void> {
   );
   await new Promise<void>((resolve, reject) => {
     transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    transaction.addEventListener("error", () => reject(transaction.error), {
+      once: true,
+    });
   });
   database.close();
 }
@@ -171,7 +179,11 @@ async function makeVaultRecords(seed: number): Promise<VaultRecordsV1> {
       deviceId,
       createdAt: "2026-07-16T17:00:00.000Z",
       manuallyLocked: false,
-      verifier: { version: 1, nonce: new Uint8Array(24), ciphertext: new Uint8Array(38) },
+      verifier: {
+        version: 1,
+        nonce: new Uint8Array(24),
+        ciphertext: new Uint8Array(38),
+      },
     },
     deviceSlot: {
       version: 1,
@@ -202,8 +214,12 @@ async function makeVaultRecords(seed: number): Promise<VaultRecordsV1> {
 async function seedVaultRecords(databaseName: string, records: VaultRecordsV1): Promise<void> {
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(databaseName);
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("success", () => resolve(request.result), {
+      once: true,
+    });
+    request.addEventListener("error", () => reject(request.error), {
+      once: true,
+    });
   });
   const transaction = database.transaction(
     ["vault_metadata", "key_slots", "device_keys", "vault_generations", "vault_head"],
@@ -225,7 +241,9 @@ async function seedVaultRecords(databaseName: string, records: VaultRecordsV1): 
   transaction.objectStore("vault_head").add(records.head, vaultSingletonKey(vaultId, "active"));
   await new Promise<void>((resolve, reject) => {
     transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    transaction.addEventListener("error", () => reject(transaction.error), {
+      once: true,
+    });
   });
   database.close();
 }
@@ -492,7 +510,11 @@ async function atomicVaultSelectScenario(): Promise<unknown> {
   } catch (error) {
     busyErrorId = error instanceof Error && "id" in error ? String(error.id) : "unexpected";
   }
-  await busyDriver.saveCaptureJob({ ...busyJob, state: "Succeeded", stage: "Commit" });
+  await busyDriver.saveCaptureJob({
+    ...busyJob,
+    state: "Succeeded",
+    stage: "Commit",
+  });
   await busyDriver.close();
   await workspaceRepository.commitVaultSelect({
     expectedActiveVaultId: secondVaultId,
@@ -938,8 +960,12 @@ async function captureJobVaultIsolationScenario(): Promise<unknown> {
 
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(databaseName);
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("success", () => resolve(request.result), {
+      once: true,
+    });
+    request.addEventListener("error", () => reject(request.error), {
+      once: true,
+    });
   });
   const transaction = database.transaction("capture_jobs", "readwrite");
   transaction
@@ -947,7 +973,9 @@ async function captureJobVaultIsolationScenario(): Promise<unknown> {
     .put({ ...base, vaultId: secondVaultId, tabId: 9 }, vaultKey(firstVaultId, jobId));
   await new Promise<void>((resolve, reject) => {
     transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    transaction.addEventListener("error", () => reject(transaction.error), {
+      once: true,
+    });
   });
   database.close();
   let mismatchedReadRejected = false;
@@ -999,8 +1027,12 @@ async function vacuumRollbackScenario(): Promise<unknown> {
   await driver.commitRegistration(input);
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(databaseName);
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("success", () => resolve(request.result), {
+      once: true,
+    });
+    request.addEventListener("error", () => reject(request.error), {
+      once: true,
+    });
   });
   const corrupt = database.transaction(
     ["command_outcomes", "vault_head", "vacuum_jobs"],
@@ -1032,7 +1064,9 @@ async function vacuumRollbackScenario(): Promise<unknown> {
   );
   await new Promise<void>((resolve, reject) => {
     corrupt.addEventListener("complete", () => resolve(), { once: true });
-    corrupt.addEventListener("error", () => reject(corrupt.error), { once: true });
+    corrupt.addEventListener("error", () => reject(corrupt.error), {
+      once: true,
+    });
   });
   database.close();
   let failed = false;
@@ -1079,8 +1113,12 @@ async function vacuumCasConflictScenario(): Promise<unknown> {
   await driver.commitRegistration(input);
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(databaseName);
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("success", () => resolve(request.result), {
+      once: true,
+    });
+    request.addEventListener("error", () => reject(request.error), {
+      once: true,
+    });
   });
   const transaction = database.transaction(["vault_head", "vacuum_jobs"], "readwrite");
   transaction.objectStore("vault_head").put(
@@ -1106,7 +1144,9 @@ async function vacuumCasConflictScenario(): Promise<unknown> {
   );
   await new Promise<void>((resolve, reject) => {
     transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    transaction.addEventListener("error", () => reject(transaction.error), {
+      once: true,
+    });
   });
   database.close();
   let failed = false;
@@ -1149,8 +1189,12 @@ async function vacuumLeaseScenario(): Promise<unknown> {
   const driver = new IndexedDbDriver(`awsm-integration-${crypto.randomUUID()}`, id("0"));
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(driver.databaseName);
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("success", () => resolve(request.result), {
+      once: true,
+    });
+    request.addEventListener("error", () => reject(request.error), {
+      once: true,
+    });
   });
   const transaction = database.transaction("vault_head", "readwrite");
   transaction.objectStore("vault_head").put(
@@ -1166,7 +1210,9 @@ async function vacuumLeaseScenario(): Promise<unknown> {
   );
   await new Promise<void>((resolve, reject) => {
     transaction.addEventListener("complete", () => resolve(), { once: true });
-    transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+    transaction.addEventListener("error", () => reject(transaction.error), {
+      once: true,
+    });
   });
   database.close();
   await driver.acquireVacuum(id("989"), "2026-07-16T18:00:00.000Z");
@@ -1178,7 +1224,10 @@ async function vacuumLeaseScenario(): Promise<unknown> {
   }
   await driver.reconcileInterruptedVacuum();
   await driver.commitRegistration(registration(1));
-  const result = { blocked, committedAfterRecovery: await driver.hasObject(id("1")) };
+  const result = {
+    blocked,
+    committedAfterRecovery: await driver.hasObject(id("1")),
+  };
   await driver.deleteDatabase();
   return result;
 }
@@ -1269,8 +1318,12 @@ async function exportLeaseScenario(): Promise<unknown> {
   await driver.getVaultHead();
   const database = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(driver.databaseName);
-    request.addEventListener("success", () => resolve(request.result), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
+    request.addEventListener("success", () => resolve(request.result), {
+      once: true,
+    });
+    request.addEventListener("error", () => reject(request.error), {
+      once: true,
+    });
   });
   const setup = database.transaction(
     ["workspace_metadata", "vault_metadata", "vault_head"],
@@ -1292,7 +1345,11 @@ async function exportLeaseScenario(): Promise<unknown> {
       deviceId: id("998"),
       createdAt: "2026-07-18T12:59:00.000Z",
       manuallyLocked: false,
-      verifier: { version: 1, nonce: new Uint8Array(24), ciphertext: new Uint8Array(38) },
+      verifier: {
+        version: 1,
+        nonce: new Uint8Array(24),
+        ciphertext: new Uint8Array(38),
+      },
     },
     vaultSingletonKey(driver.vaultId, "metadata"),
   );
@@ -1345,13 +1402,19 @@ async function exportLeaseScenario(): Promise<unknown> {
         deviceId: id("998"),
         createdAt: "2026-07-18T12:59:00.000Z",
         manuallyLocked,
-        verifier: { version: 1, nonce: new Uint8Array(24), ciphertext: new Uint8Array(38) },
+        verifier: {
+          version: 1,
+          nonce: new Uint8Array(24),
+          ciphertext: new Uint8Array(38),
+        },
       },
       vaultSingletonKey(driver.vaultId, "metadata"),
     );
     await new Promise<void>((resolve, reject) => {
       transaction.addEventListener("complete", () => resolve(), { once: true });
-      transaction.addEventListener("error", () => reject(transaction.error), { once: true });
+      transaction.addEventListener("error", () => reject(transaction.error), {
+        once: true,
+      });
     });
   };
   let inactiveErrorId = "";
@@ -1415,7 +1478,11 @@ async function exportLeaseScenario(): Promise<unknown> {
     updatedAt: "2026-07-18T13:00:03.000Z",
   };
   await driver.acquireExport(second);
-  await driver.updateExportJob({ ...second, state: "Running", stage: "Package" });
+  await driver.updateExportJob({
+    ...second,
+    state: "Running",
+    stage: "Package",
+  });
   const reconciled = await driver.reconcileInterruptedExports("2026-07-18T13:00:04.000Z");
   const latest = await driver.latestExportJob();
   const result = {
@@ -1430,6 +1497,401 @@ async function exportLeaseScenario(): Promise<unknown> {
     interruptedState: latest?.state,
     interruptedErrorId: latest?.errorId,
   };
+  await driver.deleteDatabase();
+  return result;
+}
+
+async function importLeaseScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const vaultId = id("0");
+  const driver = new IndexedDbDriver(databaseName, vaultId);
+  const imports = new IndexedDbImportRepository(databaseName);
+  const vaults = new IndexedDbVaultRepository(databaseName);
+  await driver.getVaultHead();
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.addEventListener("success", () => resolve(request.result), {
+      once: true,
+    });
+    request.addEventListener("error", () => reject(request.error), {
+      once: true,
+    });
+  });
+  const setup = database.transaction(
+    ["workspace_metadata", "vault_metadata", "vault_head"],
+    "readwrite",
+  );
+  setup.objectStore("workspace_metadata").put(
+    {
+      version: 1,
+      workspaceId: id("999"),
+      createdAt: "2026-07-19T00:00:00.000Z",
+      activeVaultId: vaultId,
+    },
+    "local",
+  );
+  setup.objectStore("vault_metadata").put(
+    {
+      version: 1,
+      vaultId,
+      deviceId: id("998"),
+      createdAt: "2026-07-19T00:00:00.000Z",
+      manuallyLocked: false,
+      verifier: {
+        version: 1,
+        nonce: new Uint8Array(24),
+        ciphertext: new Uint8Array(38),
+      },
+    },
+    vaultSingletonKey(vaultId, "metadata"),
+  );
+  setup.objectStore("vault_head").put(
+    {
+      version: 1,
+      vaultId,
+      generationId: id("990"),
+      generationNumber: 0,
+      appendedObjectIds: [],
+      appendedEventIds: [],
+    },
+    vaultSingletonKey(vaultId, "active"),
+  );
+  await new Promise<void>((resolve, reject) => {
+    setup.addEventListener("complete", () => resolve(), { once: true });
+    setup.addEventListener("error", () => reject(setup.error), { once: true });
+  });
+  database.close();
+
+  const createdAt = "2026-07-19T00:01:00.000Z";
+  const job = await imports.begin({
+    jobId: id("701"),
+    sourceByteLength: 100,
+    createdAt,
+  });
+  let secondErrorId = "";
+  try {
+    await imports.begin({ jobId: id("702"), sourceByteLength: 100, createdAt });
+  } catch (error) {
+    secondErrorId = error instanceof Error && "id" in error ? String(error.id) : "unexpected";
+  }
+  let captureBlocked = false;
+  let registrationBlocked = false;
+  let vacuumBlocked = false;
+  let exportBlocked = false;
+  let lockBlocked = false;
+  try {
+    await driver.saveCaptureJob({
+      version: 1,
+      vaultId,
+      jobId: id("703"),
+      commandId: id("704"),
+      tabId: 1,
+      state: "Created",
+      stage: "Preflight",
+      createdAt,
+      updatedAt: createdAt,
+    });
+  } catch {
+    captureBlocked = true;
+  }
+  try {
+    await driver.commitRegistration(registration(1));
+  } catch {
+    registrationBlocked = true;
+  }
+  try {
+    await driver.acquireVacuum(id("705"), createdAt);
+  } catch {
+    vacuumBlocked = true;
+  }
+  try {
+    await driver.acquireExport({
+      version: 1,
+      vaultId,
+      jobId: id("706"),
+      packageId: id("707"),
+      state: "Created",
+      stage: "Preflight",
+      createdAt,
+      updatedAt: createdAt,
+      completedEntries: 0,
+      totalEntries: 0,
+      processedBytes: 0,
+      totalBytes: 0,
+      cancellationRequested: false,
+    });
+  } catch {
+    exportBlocked = true;
+  }
+  try {
+    await vaults.setManualLock(vaultId, true);
+  } catch {
+    lockBlocked = true;
+  }
+  await imports.cancel(job.jobId, "2026-07-19T00:02:00.000Z");
+  const busyAfterCancellation = await imports.isBusy();
+  const result = {
+    stage: job.stage,
+    busy: await imports.isBusy(),
+    secondErrorId,
+    captureBlocked,
+    registrationBlocked,
+    vacuumBlocked,
+    exportBlocked,
+    lockBlocked,
+    busyAfterCancellation,
+  };
+  await imports.close();
+  await vaults.close();
+  await driver.deleteDatabase();
+  return { ...result, busy: true };
+}
+
+async function importJobLifecycleScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const imports = new IndexedDbImportRepository(databaseName);
+  const createdAt = "2026-07-19T01:00:00.000Z";
+  const first = await imports.begin({
+    jobId: id("710"),
+    sourceByteLength: 100,
+    createdAt,
+  });
+  await imports.reportAcquired(first.jobId, 60, "2026-07-19T01:00:01.000Z");
+  let regressiveProgressErrorId = "";
+  let oversizedProgressErrorId = "";
+  let prematureStagingErrorId = "";
+  try {
+    await imports.reportAcquired(first.jobId, 59, "2026-07-19T01:00:02.000Z");
+  } catch (error) {
+    regressiveProgressErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  }
+  try {
+    await imports.reportAcquired(first.jobId, 101, "2026-07-19T01:00:02.000Z");
+  } catch (error) {
+    oversizedProgressErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  }
+  try {
+    await imports.completeStaging(first.jobId, 60, "2026-07-19T01:00:03.000Z");
+  } catch (error) {
+    prematureStagingErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  }
+  await imports.reportAcquired(first.jobId, 100, "2026-07-19T01:00:04.000Z");
+  const authenticate = await imports.completeStaging(first.jobId, 100, "2026-07-19T01:00:05.000Z");
+  const retry = await imports.authenticationFailed(first.jobId, "2026-07-19T01:00:06.000Z");
+  const running = await imports.authenticationSucceeded(
+    first.jobId,
+    id("711"),
+    "2026-07-19T01:00:07.000Z",
+  );
+  const prepared = await imports.advance(first.jobId, {
+    stage: "Prepare",
+    completedEntries: 2,
+    totalEntries: 3,
+    processedBytes: 40,
+    totalBytes: 80,
+    updatedAt: "2026-07-19T01:00:08.000Z",
+  });
+  let regressiveExecutionErrorId = "";
+  try {
+    await imports.advance(first.jobId, {
+      stage: "Prepare",
+      completedEntries: 1,
+      totalEntries: 3,
+      processedBytes: 39,
+      totalBytes: 80,
+      updatedAt: "2026-07-19T01:00:08.500Z",
+    });
+  } catch (error) {
+    regressiveExecutionErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  }
+  const cancelled = await imports.cancel(first.jobId, "2026-07-19T01:00:09.000Z");
+  const repeatedCancellation = await imports.cancel(first.jobId, "2026-07-19T01:00:10.000Z");
+  const second = await imports.begin({
+    jobId: id("712"),
+    sourceByteLength: 10,
+    createdAt: "2026-07-19T01:00:11.000Z",
+  });
+  await imports.reportAcquired(second.jobId, 10, "2026-07-19T01:00:12.000Z");
+  await imports.completeStaging(second.jobId, 10, "2026-07-19T01:00:13.000Z");
+  const reconciled = await imports.reconcileInterrupted("2026-07-19T01:00:14.000Z");
+  const interrupted = await imports.latest();
+  const result = {
+    regressiveProgressErrorId,
+    oversizedProgressErrorId,
+    prematureStagingErrorId,
+    authenticateStage: authenticate.stage,
+    retryState: retry.state,
+    runningStage: running.stage,
+    preparedEntries: prepared.completedEntries,
+    regressiveExecutionErrorId,
+    cancelledState: cancelled.state,
+    repeatedCancellationState: repeatedCancellation.state,
+    reconciled,
+    interruptedState: interrupted?.state,
+    interruptedErrorId: interrupted?.errorId,
+    busyAfterInterruption: await imports.isBusy(),
+  };
+  await imports.close();
+  const driver = new IndexedDbDriver(databaseName, id("0"));
+  await driver.deleteDatabase();
+  return result;
+}
+
+async function atomicVaultImportScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const workspaceRepository = new IndexedDbWorkspaceRepository(databaseName);
+  const workspace = await workspaceRepository.bootstrap("2026-07-19T02:00:00.000Z");
+  const imports = new IndexedDbImportRepository(databaseName);
+  const baseRecords = await makeVaultRecords(720);
+  const vaultId = baseRecords.metadata.vaultId;
+  const eventId = id("730");
+  const objectId = id("731");
+  const records: VaultRecordsV1 = {
+    ...baseRecords,
+    metadata: { ...baseRecords.metadata, manuallyLocked: true },
+    head: {
+      ...baseRecords.head,
+      appendedEventIds: [eventId],
+      appendedObjectIds: [objectId],
+    },
+  };
+  const event = {
+    version: 1 as const,
+    vaultId,
+    eventId,
+    referencedObjectIds: [objectId],
+    orderingTimestamp: "2026-07-19T02:00:00.000Z",
+    envelopeBytes: new Uint8Array([1, 2, 3]),
+  };
+  const storedObject = object(objectId, 9);
+  const nameCache = await encryptWorkspaceVaultName({
+    key: workspace.nameCacheKey,
+    workspaceId: workspace.metadata.workspaceId,
+    vaultId,
+    sourceEventId: eventId,
+    name: "Imported Archive",
+  });
+  async function runningCommit(jobId: string, minute: string) {
+    const job = await imports.begin({
+      jobId,
+      sourceByteLength: 1,
+      createdAt: `2026-07-19T02:${minute}:00.000Z`,
+    });
+    await imports.reportAcquired(job.jobId, 1, `2026-07-19T02:${minute}:01.000Z`);
+    await imports.completeStaging(job.jobId, 1, `2026-07-19T02:${minute}:02.000Z`);
+    await imports.authenticationSucceeded(job.jobId, vaultId, `2026-07-19T02:${minute}:03.000Z`);
+    return imports.advance(job.jobId, {
+      stage: "Commit",
+      completedEntries: 0,
+      totalEntries: 0,
+      processedBytes: 0,
+      totalBytes: 0,
+      updatedAt: `2026-07-19T02:${minute}:04.000Z`,
+    });
+  }
+  const input = {
+    records,
+    events: [event],
+    objects: [storedObject],
+    libraryProjections: [
+      {
+        version: 1 as const,
+        bundleId: id("733"),
+        envelopeBytes: new Uint8Array([4]),
+      },
+    ],
+    collectionProjection: {
+      version: 1 as const,
+      projectionId: vaultId,
+      envelopeBytes: new Uint8Array([5]),
+    },
+    vaultNameProjection: {
+      version: 1 as const,
+      vaultId,
+      sourceEventId: eventId,
+      envelopeBytes: new Uint8Array([6]),
+    },
+    nameCache,
+    preparedArtifactObjectIds: [],
+  };
+  const first = await runningCommit(id("732"), "01");
+  const rollbackVaultRepository = new IndexedDbVaultRepository(databaseName);
+  const rollbackResults: boolean[] = [];
+  for (let failAt = 1; failAt <= 14; failAt += 1) {
+    const originalAdd = IDBObjectStore.prototype.add;
+    const originalPut = IDBObjectStore.prototype.put;
+    let write = 0;
+    const inject = <T extends typeof originalAdd | typeof originalPut>(original: T) =>
+      function (this: IDBObjectStore, ...args: Parameters<T>): IDBRequest<IDBValidKey> {
+        write += 1;
+        if (write === failAt) throw new DOMException("Injected Import write failure", "AbortError");
+        return original.apply(this, args) as IDBRequest<IDBValidKey>;
+      };
+    IDBObjectStore.prototype.add = inject(originalAdd);
+    IDBObjectStore.prototype.put = inject(originalPut);
+    try {
+      await workspaceRepository.commitVaultImport({ job: first, ...input });
+    } catch {
+      // Every injected request failure must abort the complete activation transaction.
+    } finally {
+      IDBObjectStore.prototype.add = originalAdd;
+      IDBObjectStore.prototype.put = originalPut;
+    }
+    const rollbackDriver = new IndexedDbDriver(databaseName, vaultId);
+    const [after, directory, loaded, latest, events, objects, projections] = await Promise.all([
+      workspaceRepository.load(),
+      workspaceRepository.listVaultDirectory(),
+      rollbackVaultRepository.load(vaultId),
+      imports.latest(),
+      rollbackDriver.listStoredEvents(),
+      rollbackDriver.listStoredObjects(),
+      rollbackDriver.listEncryptedProjections(),
+    ]);
+    rollbackResults.push(
+      write === failAt &&
+        after?.metadata.activeVaultId === undefined &&
+        directory.length === 0 &&
+        loaded === undefined &&
+        latest?.state === "Running" &&
+        events.length === 0 &&
+        objects.length === 0 &&
+        projections.length === 0,
+    );
+    await rollbackDriver.close();
+  }
+  await workspaceRepository.commitVaultImport({ job: first, ...input });
+  const firstSucceeded = await imports.latest();
+  const driver = new IndexedDbDriver(databaseName, vaultId);
+  const state = await new WorkspaceService(workspaceRepository).state({});
+  const vaultRepository = new IndexedDbVaultRepository(databaseName);
+  const loaded = await vaultRepository.load(vaultId);
+  let collisionErrorId = "";
+  const second = await runningCommit(id("734"), "02");
+  try {
+    await workspaceRepository.commitVaultImport({
+      job: second,
+      ...input,
+      libraryProjections: [],
+    });
+  } catch (error) {
+    collisionErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  }
+  const result = {
+    selectedInEmptyWorkspace: state.activeVaultId === vaultId,
+    importedLocked: loaded?.metadata.manuallyLocked,
+    eventCount: (await driver.listStoredEvents()).length,
+    objectCount: (await driver.listStoredObjects()).length,
+    projectionCount: (await driver.listEncryptedProjections()).length,
+    jobState: firstSucceeded?.state,
+    collisionErrorId,
+    directoryCountAfterCollision: (await workspaceRepository.listVaultDirectory()).length,
+    rollbackFailurePoints: rollbackResults.length,
+    rollbackAlwaysAtomic: rollbackResults.every(Boolean),
+  };
+  await imports.close();
+  await rollbackVaultRepository.close();
+  await vaultRepository.close();
+  await workspaceRepository.close();
   await driver.deleteDatabase();
   return result;
 }
@@ -1467,6 +1929,52 @@ async function artifactStoreScenario(): Promise<unknown> {
   const encryptedText = new TextDecoder().decode(
     Uint8Array.from(encryptedParts.flatMap((value) => [...value])),
   );
+  const encryptedBytes = Uint8Array.from(encryptedParts.flatMap((value) => [...value]));
+  const importedVaultId = crypto.randomUUID();
+  await store.prepareEncrypted({
+    vaultId: importedVaultId,
+    object: prepared.object,
+    encrypted: new Blob([encryptedBytes.buffer]).stream(),
+  });
+  const importedEncrypted = new Uint8Array(
+    await new Response(await store.openEncrypted(importedVaultId, objectId)).arrayBuffer(),
+  );
+  const encryptedImportCopiedExactly =
+    importedEncrypted.length === encryptedBytes.length &&
+    importedEncrypted.every((byte, index) => byte === encryptedBytes[index]);
+  let corruptEncryptedImportRejected = false;
+  const corruptVaultId = crypto.randomUUID();
+  try {
+    await store.prepareEncrypted({
+      vaultId: corruptVaultId,
+      object: prepared.object,
+      encrypted: new Blob([Uint8Array.from(encryptedBytes.subarray(1)).buffer]).stream(),
+    });
+  } catch {
+    corruptEncryptedImportRejected = true;
+  }
+  const quotaVaultId = crypto.randomUUID();
+  let quotaErrorId = "";
+  let quotaArtifactRemoved = false;
+  const originalCreateWritable = FileSystemFileHandle.prototype.createWritable;
+  FileSystemFileHandle.prototype.createWritable = () =>
+    Promise.reject(new DOMException("Injected quota failure", "QuotaExceededError"));
+  try {
+    await store.prepareEncrypted({
+      vaultId: quotaVaultId,
+      object: prepared.object,
+      encrypted: new Blob([encryptedBytes.buffer]).stream(),
+    });
+  } catch (error) {
+    quotaErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  } finally {
+    FileSystemFileHandle.prototype.createWritable = originalCreateWritable;
+  }
+  try {
+    await store.openEncrypted(quotaVaultId, objectId);
+  } catch {
+    quotaArtifactRemoved = true;
+  }
   const plaintextReader = (
     await store.openPlaintext({
       vaultId,
@@ -1511,7 +2019,68 @@ async function artifactStoreScenario(): Promise<unknown> {
     recovered: new TextDecoder().decode(Uint8Array.from(recovered.flatMap((value) => [...value]))),
     collisionRejected,
     orphanRemoved,
+    encryptedImportCopiedExactly,
+    corruptEncryptedImportRejected,
+    quotaErrorId,
+    quotaArtifactRemoved,
   };
+}
+
+async function importSourceStagingScenario(): Promise<unknown> {
+  const host = new ChromeVaultImportHost();
+  const jobId = crypto.randomUUID();
+  const source = new Uint8Array(700_000);
+  for (let offset = 0; offset < source.byteLength; offset += 65_536) {
+    crypto.getRandomValues(source.subarray(offset, Math.min(offset + 65_536, source.byteLength)));
+  }
+  const progress: number[] = [];
+  await host.stage({
+    jobId,
+    source: new Blob([source.buffer]),
+    onProgress: (acquiredBytes) => {
+      progress.push(acquiredBytes);
+    },
+  });
+  const stored = new Uint8Array(await (await host.open(jobId)).arrayBuffer());
+  const progressMonotonic = progress.every(
+    (value, index) => index === 0 || value >= (progress[index - 1] ?? 0),
+  );
+  const result = {
+    storedBytes: stored.byteLength,
+    finalProgress: progress.at(-1),
+    progressMonotonic,
+    bytesMatch: stored.every((byte, index) => byte === source[index]),
+    cleanupRemoved: false,
+  };
+  await host.cleanup(jobId);
+  try {
+    await host.open(jobId);
+  } catch {
+    result.cleanupRemoved = true;
+  }
+  const quotaJobId = crypto.randomUUID();
+  let quotaErrorId = "";
+  let quotaSourceRemoved = false;
+  const originalCreateWritable = FileSystemFileHandle.prototype.createWritable;
+  FileSystemFileHandle.prototype.createWritable = () =>
+    Promise.reject(new DOMException("Injected quota failure", "QuotaExceededError"));
+  try {
+    await host.stage({
+      jobId: quotaJobId,
+      source: new Blob([new Uint8Array([1]).buffer]),
+      onProgress: () => undefined,
+    });
+  } catch (error) {
+    quotaErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  } finally {
+    FileSystemFileHandle.prototype.createWritable = originalCreateWritable;
+  }
+  try {
+    await host.open(quotaJobId);
+  } catch {
+    quotaSourceRemoved = true;
+  }
+  return { ...result, quotaErrorId, quotaSourceRemoved };
 }
 
 async function run(): Promise<void> {
@@ -1567,9 +2136,19 @@ async function run(): Promise<void> {
                                                     ? await managementBusyScenario()
                                                     : scenario === "export-lease"
                                                       ? await exportLeaseScenario()
-                                                      : scenario === "artifact-store"
-                                                        ? await artifactStoreScenario()
-                                                        : { error: "unknown scenario" };
+                                                      : scenario === "import-lease"
+                                                        ? await importLeaseScenario()
+                                                        : scenario === "artifact-store"
+                                                          ? await artifactStoreScenario()
+                                                          : scenario === "import-source-staging"
+                                                            ? await importSourceStagingScenario()
+                                                            : scenario === "import-job-lifecycle"
+                                                              ? await importJobLifecycleScenario()
+                                                              : scenario === "atomic-vault-import"
+                                                                ? await atomicVaultImportScenario()
+                                                                : {
+                                                                    error: "unknown scenario",
+                                                                  };
   const output = document.querySelector("#result");
   if (output !== null) {
     output.textContent = JSON.stringify(result);

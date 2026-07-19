@@ -443,6 +443,12 @@ Vault Package. Complete packages include every Artifact; Selective packages auth
 permitted heavyweight omission. Export shall remain distinct from Backup and shall not create a
 local passphrase credential.
 
+The client shall import a validated Complete Vault Package into a new local Vault. Import preserves
+the package Vault ID, Generation, head, Events, Objects, and encrypted Artifact wrappers; creates
+fresh device-local credentials and rebuildable Projections; and commits the imported Vault locked.
+It rejects an existing Vault identity and valid Selective packages. Import is distinct from Restore,
+does not merge or replace a Vault, and never uses the Export passphrase as a local unlock credential.
+
 The platform should support:
 
 Chrome

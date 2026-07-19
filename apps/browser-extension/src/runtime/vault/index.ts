@@ -38,9 +38,9 @@ export {
   type WorkspaceVaultNameCacheV1,
 } from "./workspace-name-cache";
 export {
-  type VaultBusyState,
   type VaultDirectoryEntryV1,
   type VaultSummary,
+  type WorkspaceBusyState,
   WorkspaceService,
   type WorkspaceServiceRepository,
   type WorkspaceState,

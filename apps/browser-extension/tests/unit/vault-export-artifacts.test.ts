@@ -23,8 +23,11 @@ import {
   VaultExportService,
   type VaultExportSource,
   validateVaultPackage,
+  withAuthenticatedVaultPackage,
   writeVaultPackage,
 } from "../../src/runtime/export";
+import { prepareImportedArtifacts } from "../../src/runtime/import/artifacts";
+import { prepareImportedVaultCredentials } from "../../src/runtime/import/credentials";
 import { type VaultRecordsV1, type VaultRepository, VaultService } from "../../src/runtime/vault";
 import { prepareVaultNameChange } from "../../src/runtime/vault/name-crypto";
 
@@ -74,10 +77,20 @@ class MemoryExportSource implements VaultExportSource {
 
 class MemoryArtifactStore {
   readonly encrypted = new Map<string, Uint8Array>();
+  readonly imported = new Map<string, Uint8Array>();
   openEncrypted(_vaultId: string, objectId: string): Promise<ReadableStream<Uint8Array>> {
     const bytes = this.encrypted.get(objectId);
     if (bytes === undefined) throw new Error("missing Artifact");
     return Promise.resolve(new Blob([Uint8Array.from(bytes).buffer]).stream());
+  }
+  async prepareEncrypted(input: {
+    readonly object: StoredArtifactObjectV1;
+    readonly encrypted: ReadableStream<Uint8Array>;
+  }): Promise<void> {
+    this.imported.set(
+      input.object.objectId,
+      new Uint8Array(await new Response(input.encrypted).arrayBuffer()),
+    );
   }
 }
 
@@ -278,14 +291,82 @@ describe("Artifact graph Vault Export", () => {
         coverage: "Complete",
         generationId: preparedVault.records.generation.generationId,
       },
+      generation: preparedVault.records.generation,
+      head: source.head,
+      currentVaultName: "Amber Archive",
+      vaultCreatedAt: "2026-07-18T20:00:00.000Z",
     });
+    const validated = await validateVaultPackage(completeBlob, options.passphrase);
+    expect(validated.events.map((event) => event.eventId)).toEqual([
+      created.event.eventId,
+      registration.event.eventId,
+    ]);
+    expect(validated.objects.map((object) => object.objectId).toSorted()).toEqual(
+      registration.objects.map((object) => object.objectId).toSorted(),
+    );
+    let scopedRawRootKey: Uint8Array | undefined;
+    await expect(
+      withAuthenticatedVaultPackage(
+        completeBlob,
+        options.passphrase,
+        (authenticated, rawRootKey) => {
+          scopedRawRootKey = rawRootKey;
+          expect(rawRootKey).toHaveLength(32);
+          expect(authenticated.rootKey.extractable).toBe(false);
+          return authenticated.manifest.originatingVaultId;
+        },
+      ),
+    ).resolves.toBe(preparedVault.records.metadata.vaultId);
+    expect(scopedRawRootKey).toEqual(new Uint8Array(32));
+    const consumerFailure = Object.assign(new Error("Import capability boundary"), {
+      id: "SELECTIVE_IMPORT_UNSUPPORTED",
+    });
+    await expect(
+      withAuthenticatedVaultPackage(completeBlob, options.passphrase, () => {
+        throw consumerFailure;
+      }),
+    ).rejects.toBe(consumerFailure);
+    const importedRecords = await withAuthenticatedVaultPackage(
+      completeBlob,
+      options.passphrase,
+      (authenticated, rawRootKey) => prepareImportedVaultCredentials(authenticated, rawRootKey),
+    );
+    expect(importedRecords.metadata).toMatchObject({
+      vaultId: preparedVault.records.metadata.vaultId,
+      createdAt: "2026-07-18T20:00:00.000Z",
+      manuallyLocked: true,
+    });
+    expect(importedRecords.metadata.deviceId).not.toBe(preparedVault.records.metadata.deviceId);
+    expect(importedRecords.deviceSlot.vaultId).toBe(preparedVault.records.metadata.vaultId);
+    expect(importedRecords.deviceSlot.deviceId).toBe(importedRecords.metadata.deviceId);
+    expect(importedRecords.deviceKey.extractable).toBe(false);
+    expect(importedRecords.generation).toEqual(preparedVault.records.generation);
+    expect(importedRecords.head).toEqual(source.head);
+    await prepareImportedArtifacts({
+      source: completeBlob,
+      vaultId: importedRecords.metadata.vaultId,
+      objects: validated.objects,
+      artifactStore: store as unknown as ArtifactStore,
+    });
+    expect([...store.imported.keys()].toSorted()).toEqual(
+      validated.objects
+        .filter((object) => object.objectType === "Artifact")
+        .map((object) => object.objectId)
+        .toSorted(),
+    );
+    for (const [objectId, bytes] of store.imported) {
+      expect(bytes).toEqual(store.encrypted.get(objectId));
+    }
 
     const selective = await service.prepare({
       ...options,
       packageId: "10000000-0000-4000-8000-000000000002",
       omitArtifactObjectIds: new Set([id(20)]),
     });
-    expect(selective.manifest).toMatchObject({ coverage: "Selective", artifactPayloadCount: 2 });
+    expect(selective.manifest).toMatchObject({
+      coverage: "Selective",
+      artifactPayloadCount: 2,
+    });
     expect(selective.manifest.omissions.map((entry) => entry.artifactObjectId)).toEqual([id(20)]);
     await expect(
       validateVaultPackage(await packageFixture(selective.entries), options.passphrase),
