@@ -85,6 +85,7 @@ describe("incremental synchronization pull", () => {
       },
       {
         getVaultGeneration: async () => generation.generation,
+        getVaultHead: async () => generation.head,
         listStoredEvents: async () => [],
         listStoredObjects: async () => [],
       },
@@ -160,6 +161,7 @@ describe("incremental synchronization pull", () => {
     await expect(runner.run(rootKey)).resolves.toBe(true);
     expect(requested[0]).toContain("after=0");
     expect(committed?.registration.deliveryCursor).toBe(2);
+    expect(committed?.expectedLocalHead).toEqual(generation.head);
     expect(committed?.events.map((event) => event.eventId)).toEqual([
       created.event.eventId,
       renamed.event.eventId,

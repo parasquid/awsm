@@ -1,4 +1,8 @@
-export { IndexedDbAccountRepository } from "./account-repository";
+export {
+  type AccountCredentialScope,
+  IndexedDbAccountRepository,
+  type ServerSwitchReplicaPromotion,
+} from "./account-repository";
 export { IndexedDbDriver } from "./driver";
 export {
   StorageDriverError,
@@ -14,6 +18,11 @@ export type {
   ImportJobStage,
   ImportJobState,
   ImportJobV1,
+  ServerSwitchCheckpointV1,
+  ServerSwitchDirection,
+  ServerSwitchJobState,
+  ServerSwitchJobV1,
+  ServerSwitchStage,
   StoreCounts,
   StoredAccountVaultV1,
   StoredArtifactObjectV1,
@@ -33,5 +42,10 @@ export type {
   WorkspaceMetadataV1,
   WorkspaceRecordsV1,
 } from "./schema";
+export {
+  decodeServerSwitchCheckpoint,
+  decodeServerSwitchJob,
+  IndexedDbServerSwitchRepository,
+} from "./server-switch-repository";
 export { IndexedDbVaultRepository } from "./vault-repository";
 export { IndexedDbWorkspaceRepository } from "./workspace-repository";

@@ -19,6 +19,49 @@ describe("application request routing", () => {
     ).toBe(false);
   });
 
+  it("accepts only the fieldless synchronization wake", () => {
+    expect(isAppRequest({ type: "WakeSynchronization" })).toBe(true);
+    expect(isAppRequest({ type: "WakeSynchronization", reason: "poll" })).toBe(false);
+  });
+
+  it("routes only canonical Server Switch Commands and rejects the superseded change Command", () => {
+    expect(
+      isAppRequest({
+        type: "BeginServerSwitch",
+        candidateOrigin: "https://candidate.example.test",
+        expectedVaultId: "vault",
+      }),
+    ).toBe(true);
+    expect(
+      isAppRequest({
+        type: "LoginServerSwitchCandidate",
+        email: "reader@example.test",
+        password: "secret",
+      }),
+    ).toBe(true);
+    expect(
+      isAppRequest({
+        type: "SignupServerSwitchCandidate",
+        email: "reader@example.test",
+        password: "secret",
+      }),
+    ).toBe(true);
+    expect(isAppRequest({ type: "CancelServerSwitch", jobId: "job" })).toBe(true);
+    expect(isAppRequest({ type: "RetryServerSwitch", jobId: "job" })).toBe(true);
+    expect(
+      isAppRequest({ type: "ChangeSyncServer", serverOrigin: "https://candidate.example.test" }),
+    ).toBe(false);
+    expect(
+      isAppRequest({
+        type: "BeginServerSwitch",
+        candidateOrigin: "https://candidate.example.test",
+      }),
+    ).toBe(false);
+    expect(
+      isAppRequest({ type: "CancelServerSwitch", jobId: "job", candidateOrigin: "leak" }),
+    ).toBe(false);
+  });
+
   it("routes scoped Export and cancellation requests", () => {
     expect(
       isAppRequest({ type: "ExportVault", expectedVaultId: "vault", passphrase: "secret" }),

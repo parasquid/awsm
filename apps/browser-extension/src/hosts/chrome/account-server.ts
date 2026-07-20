@@ -17,6 +17,7 @@ export class ChromeAccountServerHost implements ServerConfigurationHost {
   }> {
     const response = await fetch(url, {
       method: "GET",
+      signal: AbortSignal.timeout(10_000),
       redirect: "manual",
       cache: "no-store",
       credentials: "omit",

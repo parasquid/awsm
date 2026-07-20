@@ -3,7 +3,7 @@ module Coordination
     module_function
 
     def vault(vault)
-      generation = vault.active_generation || vault.vault_generations.find_by!(generation_number: 0)
+      generation = vault.active_generation || vault.vault_generations.find_by!(state: "Candidate")
       result = { vaultId: vault.vault_id, state: vault.state, generationId: generation.generation_id,
        generationNumber: generation.generation_number, headCursor: vault.head_cursor,
        accountSlot: AccountPayload.slot(vault) }

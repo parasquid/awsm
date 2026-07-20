@@ -65,7 +65,15 @@ by that descriptor. Reclaimable bytes for an Artifact use the exact external wra
 safe counters beyond 4 GiB. Startup reconciliation SHALL remove orphan wrapper files but SHALL treat
 a committed Artifact record with a missing or corrupt wrapper as corruption.
 
-Vacuum MUST retain or rewrite `CollectionsMerged`, `CapturesMoved`, and `CollectionMergeReverted` whenever they affect a retained Capture's effective Collection. It MAY omit facts concerning only reclaimed Captures or identities with no retained members. A mixed `CapturesMoved` Event MUST be rewritten under a new Event ID with only retained moves. Verification MUST prove that each retained Capture remains in the same effective Collection.
+Vacuum MUST retain or rewrite `CollectionsMerged`, `CapturesMoved`, and
+`CollectionMergeReverted` whenever they affect a retained Capture's effective Collection. It MAY
+omit facts concerning only reclaimed Captures or identities with no retained members. A mixed
+`CapturesMoved` Event MUST be rewritten under a new Event ID with only retained moves. Any retained
+management Event whose dependency Object is reclaimed MUST be rewritten under a new Event ID and
+anchored to a retained Capture descriptor. When a rewritten `CollectionMergeReverted` names a
+rewritten `CollectionsMerged` Event, it MUST name the replacement Event ID. Verification MUST prove
+that each retained Capture remains in the same effective Collection and that every retained Event's
+declared Object dependencies are in successor reachability.
 
 ## 5. Failure and cancellation
 

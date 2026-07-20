@@ -88,6 +88,7 @@ export interface AtomicRemoteBootstrap {
 export interface AtomicRemoteReconciliation {
   readonly expectedGenerationId: string;
   readonly expectedDeliveryCursor: number;
+  readonly expectedLocalHead: StoredVaultHeadV1;
   readonly registration: import("./schema").StoredAccountVaultV1;
   readonly job: SynchronizationJobV1;
   readonly head: StoredVaultHeadV1;
@@ -1117,7 +1118,17 @@ export class IndexedDbWorkspaceRepository {
         storedRegistration?.vaultId !== vaultId ||
         storedRegistration.deliveryCursor !== input.expectedDeliveryCursor ||
         storedJob?.jobId !== input.job.jobId ||
-        storedHead?.generationId !== input.expectedGenerationId
+        storedHead?.generationId !== input.expectedGenerationId ||
+        storedHead.appendedEventIds.join("\n") !==
+          input.expectedLocalHead.appendedEventIds.join("\n") ||
+        storedHead.appendedObjectIds.join("\n") !==
+          input.expectedLocalHead.appendedObjectIds.join("\n") ||
+        input.expectedLocalHead.appendedEventIds.some(
+          (eventId) => !input.head.appendedEventIds.includes(eventId),
+        ) ||
+        input.expectedLocalHead.appendedObjectIds.some(
+          (objectId) => !input.head.appendedObjectIds.includes(objectId),
+        )
       )
         throw Object.assign(new Error("Remote reconciliation ownership changed."), {
           id: "VAULT_CONTEXT_CHANGED",

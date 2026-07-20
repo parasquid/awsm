@@ -98,4 +98,86 @@ describe("synchronized Vault Vacuum", () => {
       8,
     );
   });
+
+  for (const failurePoint of ["candidate", "seal", "activate"] as const) {
+    it(`does not commit local authority when authentication expires at ${failurePoint}`, async () => {
+      const vaultId = crypto.randomUUID();
+      const predecessor = crypto.randomUUID();
+      const successor = crypto.randomUUID();
+      const authentication = Object.assign(new Error("expired"), {
+        id: "SYNCHRONIZATION_AUTHENTICATION_REQUIRED",
+      });
+      const commitLocal = vi.fn(async () => undefined);
+      const markRemoteActivated = vi.fn(async () => undefined);
+      const activator = new SynchronizedVacuumActivator(
+        vaultId,
+        0,
+        7,
+        { listStoredObjects: async () => [], listStoredEvents: async () => [] },
+        {
+          request: async (method, path) => {
+            if (
+              (failurePoint === "candidate" && path.endsWith("/generation-candidates")) ||
+              (failurePoint === "seal" && path.endsWith("/seal")) ||
+              (failurePoint === "activate" && path.endsWith("/activate"))
+            )
+              throw authentication;
+            if (path.endsWith("/generation-candidates"))
+              return {
+                status: 201,
+                body: {
+                  upload: {
+                    uploadId: crypto.randomUUID(),
+                    partSizeBytes: 1024,
+                    receivedParts: [],
+                  },
+                  ticket: { url: "/parts/{partNumber}" },
+                },
+              };
+            if (path.endsWith("/activate"))
+              return {
+                status: 200,
+                body: { generationId: successor, generationNumber: 1, headCursor: 8 },
+              };
+            return { status: method === "PUT" ? 204 : 200, body: {} };
+          },
+          putTransfer: async () => undefined,
+        },
+        commitLocal,
+        {
+          persistCandidate: async () => undefined,
+          markRemoteActivated,
+        },
+      );
+
+      await expect(
+        activator.activate({
+          jobId: crypto.randomUUID(),
+          objectIds: [],
+          eventIds: [],
+          eventsToAdd: [],
+          bundleIds: [],
+          expectedGenerationId: predecessor,
+          generation: {
+            version: 1,
+            generationId: successor,
+            generationNumber: 1,
+            predecessorGenerationId: predecessor,
+            envelopeBytes: new Uint8Array([1]),
+          },
+          head: {
+            version: 1,
+            vaultId,
+            generationId: successor,
+            generationNumber: 1,
+            appendedObjectIds: [],
+            appendedEventIds: [],
+          },
+          deletedArtifactObjectIds: [],
+        }),
+      ).rejects.toBe(authentication);
+      expect(markRemoteActivated).not.toHaveBeenCalled();
+      expect(commitLocal).not.toHaveBeenCalled();
+    });
+  }
 });

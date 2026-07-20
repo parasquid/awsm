@@ -52,6 +52,13 @@ assert(!/(?:^|\s)'unsafe-eval'(?:\s|;|$)/u.test(csp), "General unsafe-eval is pr
 
 const builtFiles = await files(output.pathname);
 for (const path of builtFiles) {
+  if (extname(path) === ".js") {
+    const source = await readFile(path, "utf8");
+    assert(
+      !source.includes("awsm:test-fault-control"),
+      `E2E fault controls found in ${relative(output.pathname, path)}.`,
+    );
+  }
   if (![".html", ".css"].includes(extname(path))) continue;
   const source = await readFile(path, "utf8");
   assert(

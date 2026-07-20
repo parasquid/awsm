@@ -42,10 +42,65 @@ Replica while retaining offline access through its device-local slot. The server
 ciphertext and wrapped keys only. Polling is sufficient for convergence; Action Cable is advisory.
 When a local Replica is stale, AWSM offers a Complete Export, re-authors its current logical state as
 a fresh local-only Vault, and only then replaces the synchronized Vault with verified server data.
+An authenticated Vault can move between compatible Coordination Servers without signing out first:
+AWSM verifies the candidate Account and Root Key, publishes an empty candidate, safely unions
+same-Generation append-only history, fast-forwards only with cryptographic ancestry proof, and
+reports divergent Generations without overwriting either side.
 
 The implementation remains pre-release. Device signing/revocation, Account Recovery Keys, password
 change, quotas, shared object storage, billing, and production deployment hardening remain future
 work.
+
+---
+
+# Install the Chrome Extension
+
+AWSM is pre-release and is not available from the Chrome Web Store. Install it as an unpacked
+developer-mode extension. Use a GitHub Release archive when one is published, or build the extension
+from source.
+
+## From a GitHub Release
+
+1. Download the Chrome extension ZIP from the applicable [GitHub Release](../../releases).
+2. Extract the ZIP into a permanent directory.
+3. Open `chrome://extensions` in Chrome.
+4. Enable **Developer mode**.
+5. Select **Load unpacked**.
+6. Choose the extracted directory that contains `manifest.json`.
+7. Optionally pin AWSM from Chrome's Extensions menu.
+
+Keep the extracted directory in place because Chrome loads the extension from that directory.
+Updates are manual during pre-release: download and extract the newer build, then reload it from
+`chrome://extensions`. Create an encrypted Complete Export before replacing an installation.
+
+## Build From Source
+
+The development environment requires Node.js and Corepack. From a clone of this repository, run:
+
+```bash
+corepack pnpm install
+corepack pnpm build
+```
+
+Then use **Load unpacked** in `chrome://extensions` and select:
+
+```text
+apps/browser-extension/.output/chrome-mv3
+```
+
+To create the distributable Chrome ZIP locally, run:
+
+```bash
+corepack pnpm zip
+```
+
+After installation, open the AWSM toolbar icon and choose a compatible self-hosted Coordination
+Server or continue without synchronization. The hosted service is not currently advertised as an
+available public service.
+
+Chrome may display warnings for developer-mode extensions. Moving or deleting the unpacked
+directory can disable the installation, and installing the same build from a different directory
+may give it a different extension identity and separate local browser storage.
 
 ---
 

@@ -97,4 +97,71 @@ describe("Account Coordination Server selection", () => {
     expect(probe).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
   });
+
+  it("maps permission API rejection to a stable public error without probing", async () => {
+    const probe = vi.fn();
+    await expect(
+      configureSyncServer("https://sync.example.test", {
+        requestPermission: async () => {
+          throw new Error("host failure");
+        },
+        probe,
+        commit: vi.fn(),
+      }),
+    ).rejects.toMatchObject({ id: "SERVER_PERMISSION_DENIED" });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "probe timeout",
+      probe: async () => Promise.reject(new DOMException("Timed out", "TimeoutError")),
+    },
+    {
+      name: "probe transport failure",
+      probe: async () => Promise.reject(new TypeError("Failed to fetch")),
+    },
+  ])("maps $name to a stable public error without committing", async ({ probe }) => {
+    const commit = vi.fn();
+    await expect(
+      configureSyncServer("https://sync.example.test", {
+        requestPermission: async () => true,
+        probe,
+        commit,
+      }),
+    ).rejects.toMatchObject({ id: "SERVER_INCOMPATIBLE" });
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { service: "AWSM Coordination Server" },
+    {
+      service: "AWSM Coordination Server",
+      protocolVersion: "2",
+      capabilities: {},
+    },
+    {
+      service: "AWSM Coordination Server",
+      protocolVersion: "1",
+      capabilities: {
+        accountPassword: true,
+        accountVaultLimit: 1,
+        completeReplicaSynchronization: true,
+        unexpected: true,
+      },
+    },
+  ])("rejects malformed or incompatible server information %#", async (body) => {
+    const commit = vi.fn();
+    await expect(
+      configureSyncServer("https://sync.example.test", {
+        requestPermission: async () => true,
+        probe: async () => ({ status: 200, redirected: false, body }),
+        commit,
+      }),
+    ).rejects.toMatchObject({ id: "SERVER_INCOMPATIBLE" });
+    expect(commit).not.toHaveBeenCalled();
+  });
 });

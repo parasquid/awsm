@@ -1,5 +1,8 @@
 import { wipe } from "../../crypto/sodium";
-import type { IndexedDbAccountRepository } from "../../drivers/indexeddb/account-repository";
+import type {
+  AccountCredentialScope,
+  IndexedDbAccountRepository,
+} from "../../drivers/indexeddb/account-repository";
 import type { AccountHttp } from "./http";
 
 export class AccountSessionManager {
@@ -9,6 +12,7 @@ export class AccountSessionManager {
   constructor(
     private readonly http: Pick<AccountHttp, "refresh" | "logout">,
     private readonly repository: IndexedDbAccountRepository,
+    private readonly scope: AccountCredentialScope = "active",
   ) {}
 
   setAccessToken(value: string): void {
@@ -31,12 +35,13 @@ export class AccountSessionManager {
       // Local credential erasure is mandatory even if the server is unavailable.
     } finally {
       this.access = undefined;
-      await this.repository.logout();
+      if (this.scope === "active") await this.repository.logout();
+      else await this.repository.eraseAuthenticated(this.scope);
     }
   }
 
   private async refreshAccess(): Promise<string> {
-    const stored = await this.repository.loadAuthenticated();
+    const stored = await this.repository.loadAuthenticated(this.scope);
     if (stored === undefined)
       throw Object.assign(new Error("Account authentication is required"), {
         id: "SYNCHRONIZATION_AUTHENTICATION_REQUIRED",
@@ -50,18 +55,21 @@ export class AccountSessionManager {
         throw Object.assign(new Error("Account identity changed"), {
           id: "SYNCHRONIZATION_INTEGRITY_FAILED",
         });
-      await this.repository.saveAuthenticated({
-        metadata: {
-          version: 1,
-          accountId: session.account.accountId,
-          sessionId: session.sessionId,
-          email: session.account.email,
-          accountKeyId: session.account.accountKeyEnvelope.accountKeyId,
-          accountKeyEnvelope: session.account.accountKeyEnvelope,
+      await this.repository.saveAuthenticated(
+        {
+          metadata: {
+            version: 1,
+            accountId: session.account.accountId,
+            sessionId: session.sessionId,
+            email: session.account.email,
+            accountKeyId: session.account.accountKeyEnvelope.accountKeyId,
+            accountKeyEnvelope: session.account.accountKeyEnvelope,
+          },
+          accountEncryptionKey: stored.accountEncryptionKey,
+          refreshToken: session.refreshToken,
         },
-        accountEncryptionKey: stored.accountEncryptionKey,
-        refreshToken: session.refreshToken,
-      });
+        this.scope,
+      );
       this.access = session.accessToken;
       return session.accessToken;
     } finally {

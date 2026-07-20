@@ -81,8 +81,13 @@ const EVENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   CapturesDeleted: [...COMMON_EVENT_FIELDS, "bundleIds", "rewrite"],
   CapturesRestored: [...COMMON_EVENT_FIELDS, "bundleIds", "rewrite"],
   CapturesMoved: [...COMMON_EVENT_FIELDS, "moves", "revertsEventId", "rewrite"],
-  CollectionsMerged: [...COMMON_EVENT_FIELDS, "destinationCollectionId", "sourceCollectionIds"],
-  CollectionMergeReverted: [...COMMON_EVENT_FIELDS, "mergeEventId"],
+  CollectionsMerged: [
+    ...COMMON_EVENT_FIELDS,
+    "destinationCollectionId",
+    "sourceCollectionIds",
+    "rewrite",
+  ],
+  CollectionMergeReverted: [...COMMON_EVENT_FIELDS, "mergeEventId", "rewrite"],
   VaultCreated: [...COMMON_EVENT_FIELDS, "protocolVersion", "name"],
   VaultRenamed: [...COMMON_EVENT_FIELDS, "protocolVersion", "name"],
 };
@@ -226,6 +231,44 @@ async function rewrittenMoveEvent(
   }
 }
 
+async function rewrittenManagementEvent(
+  source: StoredEvent,
+  payload: Record<string, unknown>,
+  objectId: string,
+  rootKey: CryptoKey,
+  vaultId: string,
+): Promise<StoredEvent> {
+  const eventId = crypto.randomUUID();
+  const key = await deriveContextKeyFromCryptoKey(rootKey, {
+    vaultId,
+    domain: "vault:event:v1",
+    contextId: eventId,
+    keyVersion: 1,
+  });
+  try {
+    return {
+      version: 1,
+      vaultId,
+      eventId,
+      referencedObjectIds: [objectId],
+      orderingTimestamp: source.orderingTimestamp,
+      envelopeBytes: encodeEncryptedEnvelope(
+        await encryptEnvelope({
+          objectType: "Event",
+          objectId: eventId,
+          plaintext: encodeCanonicalCbor({
+            ...payload,
+            rewrite: { version: 1, sourceEventId: source.eventId },
+          }),
+          key,
+        }),
+      ),
+    };
+  } finally {
+    await wipe(key);
+  }
+}
+
 export class VaultVacuumService {
   constructor(
     readonly repository: VacuumRepository,
@@ -314,6 +357,7 @@ export class VaultVacuumService {
     const replayState = new Map<string, "Active" | "Deleted">();
     const eventIds: string[] = [];
     const eventsToAdd: StoredEvent[] = [];
+    const rewrittenManagementEventIds = new Map<string, string>();
     const vaultNameEvents: VaultNameEventV1[] = [];
     let eventBytes = 0;
     let rewrittenEventBytes = 0;
@@ -415,10 +459,55 @@ export class VaultVacuumService {
         payload.sourceCollectionIds.forEach((value, index) => {
           string(value, `event.sourceCollectionIds.${String(index)}`);
         });
+        if (event.referencedObjectIds.some((objectId) => deletedObjectIds.has(objectId))) {
+          const anchor = items
+            .filter((item) => item.status === "Active")
+            .toSorted((left, right) => left.bundleId.localeCompare(right.bundleId))[0];
+          if (anchor === undefined)
+            throw new Error("A retained Collection merge has no retained Capture anchor.");
+          eventIds.push(event.eventId);
+          eventBytes += event.envelopeBytes.byteLength;
+          const rewritten = await rewrittenManagementEvent(
+            event,
+            payload,
+            anchor.descriptorObjectId,
+            this.rootKey,
+            this.vaultId,
+          );
+          eventsToAdd.push(rewritten);
+          rewrittenEventBytes += rewritten.envelopeBytes.byteLength;
+          rewrittenManagementEventIds.set(event.eventId, rewritten.eventId);
+        }
         continue;
       }
       if (eventType === "CollectionMergeReverted") {
-        string(payload.mergeEventId, "event.mergeEventId");
+        const mergeEventId = string(payload.mergeEventId, "event.mergeEventId");
+        const rewrittenMergeEventId = rewrittenManagementEventIds.get(mergeEventId);
+        if (
+          rewrittenMergeEventId !== undefined ||
+          event.referencedObjectIds.some((objectId) => deletedObjectIds.has(objectId))
+        ) {
+          const anchor = items
+            .filter((item) => item.status === "Active")
+            .toSorted((left, right) => left.bundleId.localeCompare(right.bundleId))[0];
+          if (anchor === undefined)
+            throw new Error("A retained Collection merge reversal has no retained Capture anchor.");
+          eventIds.push(event.eventId);
+          eventBytes += event.envelopeBytes.byteLength;
+          const rewritten = await rewrittenManagementEvent(
+            event,
+            {
+              ...payload,
+              mergeEventId: rewrittenMergeEventId ?? mergeEventId,
+            },
+            anchor.descriptorObjectId,
+            this.rootKey,
+            this.vaultId,
+          );
+          eventsToAdd.push(rewritten);
+          rewrittenEventBytes += rewritten.envelopeBytes.byteLength;
+          rewrittenManagementEventIds.set(event.eventId, rewritten.eventId);
+        }
         continue;
       }
       throw new Error(`Unsupported Event type during Vault Vacuum: ${eventType}`);

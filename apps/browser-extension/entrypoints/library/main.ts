@@ -55,6 +55,7 @@ let abortPageOwnedImport: (() => void) | undefined;
 let closePageOwnedImport: (() => void) | undefined;
 let renderedState: AppState | undefined;
 let staleRecoveryDialogOpened = false;
+let libraryOperationError: string | undefined;
 
 function expectedVaultId(): string {
   if (activeVaultId === undefined) throw new Error("No active Vault is selected.");
@@ -95,6 +96,135 @@ function showAccountSettings(): void {
     element("p", `Account · ${account.email ?? "Not signed in"}`, "muted"),
     element("p", `Synchronization · ${account.vaultSyncState}`, "muted"),
   );
+  const serverSwitch = state.serverSwitch;
+  if (serverSwitch !== undefined) {
+    if (serverSwitch.state === "Conflict") form.append(element("h3", "Server switch conflict"));
+    form.append(
+      element("p", `Candidate · ${serverSwitch.candidateOrigin}`, "muted"),
+      element(
+        "p",
+        serverSwitch.state === "AuthenticationRequired"
+          ? "Sign in to the candidate server. Your current server remains active while AWSM compares both Vaults."
+          : serverSwitch.state === "Comparing"
+            ? "Comparing authenticated Vault history… Your current server is still active."
+            : serverSwitch.state === "Applying"
+              ? serverSwitch.direction === "PublishLocal"
+                ? "Publishing this Vault to the candidate server…"
+                : serverSwitch.direction === "FastForwardCandidate"
+                  ? "Fast-forwarding the candidate server…"
+                  : serverSwitch.direction === "FastForwardLocal"
+                    ? "Fast-forwarding this device…"
+                    : serverSwitch.direction === "Union"
+                      ? "Combining compatible append-only history…"
+                      : "Applying the verified reconciliation…"
+              : serverSwitch.state === "VaultLocked"
+                ? "Unlock this Vault to continue the server change."
+                : serverSwitch.state === "Conflict"
+                  ? serverSwitch.candidateAuthorityChanged === true
+                    ? `Server switch stopped after a concurrent change. Some verified append-only history reached the candidate server before its history changed. Your active Vault is still synchronizing with ${server}. Neither Vault was overwritten.`
+                    : `AWSM could not prove a safe fast-forward (${serverSwitch.reason ?? "unknown history"}). No changes were made. AWSM is still synchronizing with ${server}.`
+                  : serverSwitch.errorId === "SERVER_SWITCH_VAULT_MISMATCH"
+                    ? "This Account already contains a different Vault. Your current server is unchanged."
+                    : `The switch stopped safely (${serverSwitch.errorId ?? "unexpected failure"}). Your current server is unchanged.`,
+        serverSwitch.state === "Conflict" || serverSwitch.state === "Failed"
+          ? "notice error"
+          : "notice",
+      ),
+    );
+    if (serverSwitch.state === "AuthenticationRequired") {
+      const emailLabel = element("label", "Email");
+      const email = element("input");
+      email.type = "email";
+      email.required = true;
+      email.autocomplete = "username";
+      emailLabel.append(email);
+      const passwordLabel = element("label", "Password");
+      const password = element("input");
+      password.type = "password";
+      password.required = true;
+      password.autocomplete = "current-password";
+      passwordLabel.append(password);
+      form.append(emailLabel, passwordLabel);
+      const candidateActions = element("div", undefined, "actions");
+      const login = element("button", "Sign in");
+      login.type = "button";
+      const signup = element("button", "Create account");
+      signup.type = "button";
+      const authenticate = (type: "LoginServerSwitchCandidate" | "SignupServerSwitchCandidate") => {
+        login.disabled = true;
+        signup.disabled = true;
+        void sendRequest<AppState>({ type, email: email.value, password: password.value }).then(
+          (next) => {
+            dialog.close();
+            renderVaultBar(next);
+          },
+          (error) => {
+            login.disabled = false;
+            signup.disabled = false;
+            form.querySelector(".error")?.remove();
+            form.append(
+              element(
+                "p",
+                error instanceof AppClientError
+                  ? error.message
+                  : "The candidate Account could not be authenticated.",
+                "notice error",
+              ),
+            );
+          },
+        );
+      };
+      login.addEventListener("click", () => authenticate("LoginServerSwitchCandidate"));
+      signup.addEventListener("click", () => authenticate("SignupServerSwitchCandidate"));
+      candidateActions.append(login, signup);
+      form.append(candidateActions);
+    }
+    if (serverSwitch.state === "Failed") {
+      const retrySwitch = element("button", "Try candidate again");
+      retrySwitch.type = "button";
+      retrySwitch.addEventListener("click", () => {
+        retrySwitch.disabled = true;
+        void sendRequest<AppState>({ type: "RetryServerSwitch", jobId: serverSwitch.jobId }).then(
+          (next) => {
+            dialog.close();
+            renderVaultBar(next);
+          },
+          () => {
+            retrySwitch.disabled = false;
+          },
+        );
+      });
+      form.append(retrySwitch);
+    }
+    if (serverSwitch.state !== "Applying" && serverSwitch.state !== "VaultLocked") {
+      const keepSource = element(
+        "button",
+        serverSwitch.state === "Conflict" || serverSwitch.state === "Failed"
+          ? "Try another server"
+          : "Cancel server change",
+      );
+      keepSource.type = "button";
+      keepSource.addEventListener("click", () => {
+        keepSource.disabled = true;
+        void sendRequest<AppState>({ type: "CancelServerSwitch", jobId: serverSwitch.jobId }).then(
+          (next) => {
+            dialog.close();
+            renderVaultBar(next);
+          },
+          () => {
+            keepSource.disabled = false;
+          },
+        );
+      });
+      form.append(keepSource);
+    }
+    form.append(element("button", "Close"));
+    (form.lastElementChild as HTMLButtonElement).type = "button";
+    form.lastElementChild?.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("close", () => accountSettings.focus(), { once: true });
+    dialog.showModal();
+    return;
+  }
   const actions = element("div", undefined, "actions");
   if (account.vaultSyncState === "SetupRequired") {
     const finish = element("button", "Finish setup");
@@ -159,7 +289,7 @@ function showAccountSettings(): void {
     warning.append(
       confirmed,
       document.createTextNode(
-        " Changing servers signs out this Account. Local Vault data remains on this device.",
+        " AWSM will verify and reconcile the candidate before changing the active server.",
       ),
     );
     form.append(warning);
@@ -186,13 +316,16 @@ function showAccountSettings(): void {
             "SERVER_PERMISSION_DENIED",
             "Chrome did not grant access to that synchronization server.",
           );
-        return sendRequest<AppState>({
-          type:
-            account.configuration.mode === "Configured"
-              ? "ChangeSyncServer"
-              : "ConfigureSyncServer",
-          serverOrigin: origin.value,
-        });
+        return account.configuration.mode === "Configured"
+          ? sendRequest<AppState>({
+              type: "BeginServerSwitch",
+              candidateOrigin: origin.value,
+              expectedVaultId: expectedVaultId(),
+            })
+          : sendRequest<AppState>({
+              type: "ConfigureSyncServer",
+              serverOrigin: origin.value,
+            });
       })
       .then(
         (next) => {
@@ -1584,15 +1717,22 @@ function vacuumControl(captureCount: number, reclaimableBytes: number): HTMLButt
     )
       return;
     vacuum.disabled = true;
+    libraryOperationError = undefined;
+    if (announcer.textContent === "Vault Vacuum could not be completed safely.")
+      announcer.textContent = "";
     void sendRequest<{
       readonly deletedCaptureCount: number;
       readonly reclaimedBytes: number;
     }>({ type: "VacuumVault", expectedVaultId: expectedVaultId() }).then(
       async (result) => {
+        libraryOperationError = undefined;
         announcer.textContent = `Vault Vacuum removed ${String(result.deletedCaptureCount)} captures and reclaimed ${formatByteSize(result.reclaimedBytes)}`;
         await loadList("Deleted");
       },
-      () => renderError("Vault Vacuum could not be completed safely."),
+      () => {
+        libraryOperationError = "Vault Vacuum could not be completed safely.";
+        reconcile();
+      },
     );
   });
   return vacuum;
@@ -2281,6 +2421,7 @@ async function initialize(): Promise<void> {
     }
     if (requestedBundleId === null) await loadList();
     else await loadDetail(requestedBundleId);
+    if (libraryOperationError !== undefined) announcer.textContent = libraryOperationError;
   } catch (error) {
     renderError(
       error instanceof AppClientError ? error.message : "The local Vault could not be opened.",
@@ -2306,6 +2447,10 @@ function reconcile(): void {
   });
 }
 
+function wakeSynchronization(): void {
+  void sendRequest<AppState>({ type: "WakeSynchronization" }).catch(() => undefined);
+}
+
 browser.runtime.onMessage.addListener((message: unknown) => {
   if (
     typeof message === "object" &&
@@ -2326,8 +2471,16 @@ browser.runtime.onMessage.addListener((message: unknown) => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") reconcile();
+  if (document.visibilityState === "visible") {
+    wakeSynchronization();
+    reconcile();
+  }
 });
-window.addEventListener("focus", reconcile);
+window.addEventListener("focus", () => {
+  wakeSynchronization();
+  reconcile();
+});
+window.addEventListener("online", wakeSynchronization);
 
+wakeSynchronization();
 reconcile();

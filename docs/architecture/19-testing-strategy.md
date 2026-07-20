@@ -392,6 +392,60 @@ exercise counters beyond 4 GiB without proportional memory use. Browser tests SH
 two surfaces open for invalidation and visually inspect Artifact resting, loading, success, failure,
 focus, and narrow states.
 
+The packaged-Chrome Account proof SHALL include one cold first-use journey through the real
+self-hosted Coordination Server. Through visible extension controls it SHALL choose the server,
+create an Account, capture and organize content, bootstrap a second browser profile, prove live
+cross-profile Collection convergence, disconnect that profile before a remote Generation change,
+delete and Vacuum from the authoritative profile, resolve the resulting stale Replica with
+the export-first warning and explicit overwrite confirmations, preserve its prior state as a fresh
+local-only Vault, and install the server-authoritative Replica. The dedicated Vault Package suite
+owns Export-to-Import portability because headless Chrome cannot complete the native save-as Host
+boundary. Test harness accommodations for headless Chrome MAY grant permissions only in a
+disposable packaged copy; the release-manifest verifier remains authoritative for shipped
+permissions.
+
+The proof SHALL also show that state reads do not create synchronization work, a visible Retry can
+rediscover a server-superseded Generation without reauthentication, and a stable synchronized
+Vault remains UpToDate after Vacuum. Focused tests SHALL prove wake coalescing, retention of the
+final mutation wake, maintenance exclusion while Vacuum activates a Generation, preservation of
+same-Generation predecessor metadata, and rejection of remote reconciliation when either the local
+Head or the server's coverage of locally appended authority changes.
+
+The packaged proof SHALL expire authentication during synchronized Vacuum and verify retained
+deleted content, SignedOut plus AuthenticationRequired state, visible recovery guidance, successful
+reauthentication, and later Vacuum completion. It SHALL terminate the extension Worker at every
+stale-recovery preparation and activation checkpoint and prove restart returns pre-commit stages to
+Conflict while the post-commit stage retains the complete activated result. It SHALL also replace
+the server while a pull is paused immediately before reconciliation and prove the prior context
+cannot commit after replacement. Browser integration tests SHALL independently close and reopen
+IndexedDB at each persisted recovery stage. Test-only fault controls MUST be absent from release
+artifacts, and release verification SHALL inspect emitted JavaScript for their namespace.
+
+Coordination Server switching SHALL have five independent, serial, packaged-Chrome journeys against
+two real Coordination Servers with separate databases and opaque stores: publishing to an empty
+candidate, fast-forwarding a candidate from an exact recovered predecessor, fast-forwarding a stale
+local Replica from a candidate successor, unioning independent same-Generation append tails, and
+rejecting sibling successor Generations. Each journey uses fresh Accounts and browser profiles and
+MUST NOT seed authoritative client or server rows.
+
+The fast-forward journeys SHALL terminate the Worker after remote activation and before local
+activation respectively, then prove idempotent startup convergence. The union journey SHALL pause
+after classification, lock the Vault during application, inspect `WaitingForUnlock`, unlock, and
+finish the same Job. Supporting packaged tests SHALL cover wrong password, unknown Account, another
+Vault ID, and candidate reauthentication before writes and after remote activation while proving the
+source context remains live. A separate packaged race proof SHALL pause after the first
+candidate-accepted Union Event, rewrite the candidate Generation through its independent browser,
+render the truthful concurrent-change conflict, and prove a later source mutation still
+synchronizes. Browser integration SHALL inject failure at every Account-plus-Replica promotion write
+and prove complete rollback. Exact encrypted Artifact preparation replay SHALL be idempotent so
+restart cannot turn verified staging into a false collision.
+
+Rendered evidence SHALL include candidate authentication, all four applying directions, locked,
+conflict, terminal failure, and success states at desktop and materially different narrow widths.
+Visible state assertions include geometry and accessibility names where relevant; DOM existence is
+not visual proof. Production builds MUST exclude the fault-control namespace and disposable E2E host
+permissions.
+
 Complete Import coverage SHALL prove cold-Workspace Export-to-Import portability, wrong-passphrase
 retry without restaging, stable Vault/Generation/Event/Object identities, fresh non-exportable local
 credentials, exact encrypted Artifact wrapper copying, prepared-wrapper rollback, collision safety,

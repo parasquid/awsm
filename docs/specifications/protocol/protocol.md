@@ -37,6 +37,12 @@ interprets plaintext or commands client eviction.
 
 # 4. Opaque Upload
 
+When an Account without a Vault attaches its first Replica, the client supplies the Vault's current
+active Generation identity and any nonnegative Generation number. The Service records that exact
+Generation as its first known active Generation with no server-side predecessor, even when the
+authenticated encrypted Generation Object names earlier history. Attachment does not renumber the
+Generation, infer missing predecessor rows, or interpret its encrypted contents.
+
 The client begins an upload with immutable identity, broad Object type, exact byte length,
 ciphertext SHA-256, and target Generation. Events additionally declare their canonical ordering
 timestamp and lexically sorted unique dependency Object IDs. Dependencies must already exist in an
@@ -52,6 +58,13 @@ One commit names one finalized Event, its exact bound dependency list, and the a
 and number. Under a Vault lock, the Service requires the entire closure to be durable and eligible.
 It atomically commits newly introduced records, records active membership, persists one Event commit,
 assigns one per-Vault Delivery Cursor, and records one `EventCommitted` delivery change.
+
+If the immutable Event and exact dependency closure are already committed and are all members of
+the requested active Generation, the commit is an idempotent acknowledgement. This includes a
+closure retained into a successor Generation: the Service does not create another Event commit,
+advance the Delivery Cursor, or reject the request merely because the original commit named the
+predecessor Generation. A changed dependency declaration or a closure absent from the active
+Generation still conflicts.
 
 The Delivery Cursor orders acceptance for incremental discovery only. Canonical Event replay order
 continues to come from the Event specification. A late Event with an older ordering timestamp still

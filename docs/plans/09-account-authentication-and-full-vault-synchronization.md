@@ -595,9 +595,11 @@ bounded timeout. Require exact service name, protocol `1`, password capability, 
 Complete Replica synchronization. Any mismatch is `SERVER_INCOMPATIBLE` and commits no selected
 server.
 
-Persist server configuration only after a successful probe. Changing server requires logout,
-cancels no authoritative local work, removes the old exact optional permission after secrets are
-cleared, and starts unconfigured onboarding for the new origin.
+Persist initial server configuration only after a successful probe. Authenticated Coordination
+Server switching is governed by
+`docs/plans/10-git-like-synchronization-server-switching.md`: it keeps the source context live while
+an isolated candidate is probed, authenticated, cryptographically compared, reconciled, and
+atomically promoted. It does not log out first or restart unconfigured onboarding.
 
 ---
 
@@ -951,8 +953,8 @@ layout, including focus, pending, disabled, error, success, offline, and conflic
 - Use bounded timeouts for server probe, control requests, transfer parts, and Cable confirmation.
 - Treat browser suspension like interruption, not cancellation.
 - Persist safe retry checkpoints before announcing visible progress.
-- Cancel prepared downloads/forks on logout or server change without touching authoritative local
-  data.
+- Cancel prepared stale-recovery downloads/forks on logout without touching authoritative local
+  data. Server Switch preparation follows its persisted restart and terminal-cleanup contract.
 - Never cancel a committed local mutation because its upload failed.
 - Never put email in general request logs beyond explicitly secured Account audit records; log
   Account/session IDs instead.

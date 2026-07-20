@@ -2,6 +2,7 @@ import type { CaptureWarningId } from "../../domain/contracts";
 
 const MAX_CANVAS_DIMENSION = 16_384;
 const MIN_CAPTURE_INTERVAL_MS = 600;
+const HOST_OPERATION_TIMEOUT_MS = 15_000;
 
 export interface PageDimensions {
   readonly documentWidth: number;
@@ -121,27 +122,49 @@ export function computeTilePlan(dimensions: PageDimensions): ScreenshotPlan {
   return { outputWidth, outputHeight, truncated, tiles };
 }
 
-export async function acquireBestEffortScreenshot(host: ScreenshotHost): Promise<ScreenshotResult> {
+function bounded<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error("Screenshot Host operation timed out.")),
+      timeoutMs,
+    );
+    operation.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (cause: unknown) => {
+        clearTimeout(timeout);
+        reject(cause);
+      },
+    );
+  });
+}
+
+export async function acquireBestEffortScreenshot(
+  host: ScreenshotHost,
+  operationTimeoutMs = HOST_OPERATION_TIMEOUT_MS,
+): Promise<ScreenshotResult> {
   let stage: "measure" | "prepare" | "capture" | "stitch" = "measure";
   try {
-    const plan = computeTilePlan(await host.measure());
+    const plan = computeTilePlan(await bounded(host.measure(), operationTimeoutMs));
     stage = "capture";
     const captured: CapturedTile[] = [];
     let previousCaptureAt = 0;
     for (const tile of plan.tiles) {
       stage = "prepare";
-      await host.prepareTile(tile, tile.index > 0);
+      await bounded(host.prepareTile(tile, tile.index > 0), operationTimeoutMs);
       if (captured.length > 0) {
         const remaining = MIN_CAPTURE_INTERVAL_MS - (host.now() - previousCaptureAt);
         if (remaining > 0) await host.wait(remaining);
       }
       stage = "capture";
-      const imageBytes = await host.captureVisible();
+      const imageBytes = await bounded(host.captureVisible(), operationTimeoutMs);
       previousCaptureAt = host.now();
       captured.push({ geometry: tile, imageBytes });
     }
     stage = "stitch";
-    const stitched = await host.stitch(plan, captured);
+    const stitched = await bounded(host.stitch(plan, captured), operationTimeoutMs);
     if (stitched.webpBlob.size === 0) throw new Error("empty screenshot");
     return { ...stitched, warnings: plan.truncated ? ["SCREENSHOT_TRUNCATED"] : [] };
   } catch {
@@ -150,7 +173,7 @@ export async function acquireBestEffortScreenshot(host: ScreenshotHost): Promise
     };
   } finally {
     try {
-      await host.restore();
+      await bounded(host.restore(), operationTimeoutMs);
     } catch {
       // Restoration is deliberately attempted after every path. Its failure cannot expose partial bytes.
     }

@@ -10,6 +10,8 @@ export const STORES = {
   accountVault: "account_vault",
   synchronizationJobs: "synchronization_jobs",
   synchronizationCheckpoints: "synchronization_checkpoints",
+  serverSwitchJobs: "server_switch_jobs",
+  serverSwitchCheckpoints: "server_switch_checkpoints",
   vaultDirectory: "vault_directory",
   vaultNameCache: "vault_name_cache",
   vaultNameProjection: "vault_name_projection",
@@ -115,6 +117,73 @@ export interface SynchronizationCheckpointV1 {
   readonly vaultId: string;
   readonly entityId: string;
   readonly kind: "Object" | "Event";
+  readonly state: "Prepared" | "Uploading" | "Durable" | "Committed";
+  readonly createIdempotencyKey: string;
+  readonly completeIdempotencyKey: string;
+  readonly commitIdempotencyKey?: string;
+  readonly uploadId?: string;
+  readonly receivedParts: readonly number[];
+}
+
+export type ServerSwitchDirection =
+  | "PublishLocal"
+  | "FastForwardCandidate"
+  | "FastForwardLocal"
+  | "Union";
+
+export type ServerSwitchJobState =
+  | "AuthenticationRequired"
+  | "WaitingForUnlock"
+  | "Running"
+  | "Conflict"
+  | "Failed"
+  | "Succeeded";
+
+export type ServerSwitchStage =
+  | "AuthenticateCandidate"
+  | "Compare"
+  | "PrepareRemote"
+  | "ActivateRemote"
+  | "PrepareLocal"
+  | "ActivateLocal"
+  | "PromoteContext"
+  | "RevokePriorSession"
+  | "Terminal";
+
+export interface ServerSwitchJobV1 {
+  readonly version: 1;
+  readonly jobId: string;
+  readonly sourceOrigin: string;
+  readonly candidateOrigin: string;
+  readonly vaultId: string;
+  readonly state: ServerSwitchJobState;
+  readonly stage: ServerSwitchStage;
+  readonly direction?: ServerSwitchDirection;
+  readonly expectedLocalHead: StoredVaultHeadV1;
+  readonly candidateGenerationId?: string;
+  readonly candidateGenerationNumber?: number;
+  readonly candidatePredecessorGenerationId?: string;
+  readonly candidateHeadCursor?: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly completedItems: number;
+  readonly totalItems: number;
+  readonly processedBytes: number;
+  readonly totalBytes: number;
+  readonly retryCount: number;
+  readonly retryAt?: string;
+  readonly candidateAuthorityChanged: boolean;
+  readonly errorId?: string;
+  readonly conflictReason?: "AncestryUnavailable" | "DivergedGeneration";
+  readonly attachIdempotencyKey: string;
+  readonly candidateIdempotencyKey: string;
+}
+
+export interface ServerSwitchCheckpointV1 {
+  readonly version: 1;
+  readonly jobId: string;
+  readonly kind: "Object" | "Event" | "Generation" | "Recovery";
+  readonly entityId: string;
   readonly state: "Prepared" | "Uploading" | "Durable" | "Committed";
   readonly createIdempotencyKey: string;
   readonly completeIdempotencyKey: string;

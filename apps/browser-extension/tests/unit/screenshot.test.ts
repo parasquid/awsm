@@ -148,6 +148,19 @@ describe("best-effort screenshot lifecycle", () => {
     },
   );
 
+  it("bounds a Host operation that never settles and still attempts restoration", async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = host({ captureVisible: vi.fn(() => new Promise<Uint8Array>(() => undefined)) });
+      const result = acquireBestEffortScreenshot(fake, 25);
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(result).resolves.toEqual({ warnings: ["SCREENSHOT_CAPTURE_FAILED"] });
+      expect(fake.restore).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("persists a native-resolution truncated screenshot with a warning", async () => {
     const fake = host({
       measure: vi.fn(async () => ({

@@ -1,5 +1,6 @@
 import type { StoredEvent, StoredObjectV1 } from "../../drivers/indexeddb/schema";
 import { bytesToBase64Url } from "../account/wire";
+import { noRuntimeFaultCheckpoint, type RuntimeFaultCheckpoint } from "../fault-checkpoint";
 import type { VacuumCandidate } from "../library/vacuum";
 
 interface VacuumTransport {
@@ -50,11 +51,13 @@ export class SynchronizedVacuumActivator {
       activatedHeadCursor: number,
     ) => Promise<void>,
     private readonly journal?: VacuumActivationJournal,
+    private readonly faultCheckpoint: RuntimeFaultCheckpoint = noRuntimeFaultCheckpoint,
   ) {}
 
   async activate(candidate: VacuumCandidate): Promise<void> {
     if (candidate.expectedGenerationId === undefined)
       throw integrity("Vacuum predecessor is unavailable");
+    await this.faultCheckpoint.reach("vacuum:before-candidate");
     await this.journal?.persistCandidate(candidate);
     const generationBytes = candidate.generation.envelopeBytes;
     const created = object(
@@ -108,6 +111,7 @@ export class SynchronizedVacuumActivator {
         crypto.randomUUID(),
       );
     }
+    await this.faultCheckpoint.reach("vacuum:before-seal");
     await this.transport.request(
       "POST",
       `/api/vaults/${this.vaultId}/generation-candidates/${candidate.generation.generationId}/seal`,
@@ -120,6 +124,7 @@ export class SynchronizedVacuumActivator {
       },
       crypto.randomUUID(),
     );
+    await this.faultCheckpoint.reach("vacuum:before-activate");
     const activated = object(
       (
         await this.transport.request(

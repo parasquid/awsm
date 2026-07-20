@@ -7,6 +7,7 @@ import type {
 } from "../../drivers/indexeddb/schema";
 import type { AtomicStaleRecovery } from "../../drivers/indexeddb/workspace-repository";
 import type { ArtifactStore } from "../artifact";
+import { noRuntimeFaultCheckpoint, type RuntimeFaultCheckpoint } from "../fault-checkpoint";
 import { LibraryProjectionRebuilder } from "../library/rebuild";
 import type { VaultRecordsV1 } from "../vault";
 import { encryptWorkspaceVaultName } from "../vault";
@@ -50,6 +51,7 @@ export class StaleReplicaRecoveryService {
     private readonly forkBuilder: LocalRecoveryForkBuilder,
     private readonly downloader: Pick<RemoteReplicaDownloader, "prepare">,
     private readonly artifacts: ArtifactStore,
+    private readonly faultCheckpoint: RuntimeFaultCheckpoint = noRuntimeFaultCheckpoint,
   ) {}
 
   async execute(now = new Date().toISOString()): Promise<{ readonly forkVaultId: string }> {
@@ -73,6 +75,7 @@ export class StaleReplicaRecoveryService {
       updatedAt: now,
     };
     await this.accounts.saveSynchronizationJob(job);
+    await this.faultCheckpoint.reach("stale-recovery:prepare-fork");
     let forkVaultId: string | undefined;
     let remotePreparedIds: readonly string[] = [];
     let committed = false;
@@ -87,8 +90,10 @@ export class StaleReplicaRecoveryService {
         job = { ...job, recoveryForkVaultId: forkVaultId, updatedAt: now };
         await this.accounts.saveSynchronizationJob(job);
       }
+      await this.faultCheckpoint.reach("stale-recovery:fork-persisted");
       job = { ...job, stage: "PrepareServerReplacement", updatedAt: now };
       await this.accounts.saveSynchronizationJob(job);
+      await this.faultCheckpoint.reach("stale-recovery:prepare-server-replacement");
       const [events, objects, generation] = await Promise.all([
         this.source.listStoredEvents(),
         this.source.listStoredObjects(),
@@ -101,6 +106,7 @@ export class StaleReplicaRecoveryService {
         { generation, events, objects },
       );
       remotePreparedIds = prepared.preparedArtifactObjectIds;
+      await this.faultCheckpoint.reach("stale-recovery:remote-prepared");
       const remote = await verifyPreparedRemoteReplica({
         vaultId,
         prepared,
@@ -138,6 +144,7 @@ export class StaleReplicaRecoveryService {
       ]);
       job = { ...job, stage: "ActivateRecovery", updatedAt: now };
       await this.accounts.saveSynchronizationJob(job);
+      await this.faultCheckpoint.reach("stale-recovery:before-activation");
       await this.workspace.commitStaleRecovery({
         job,
         expectedStaleGenerationId: staleGenerationId,
@@ -162,6 +169,7 @@ export class StaleReplicaRecoveryService {
         },
       });
       committed = true;
+      await this.faultCheckpoint.reach("stale-recovery:after-activation");
       await this.artifacts
         .reconcile(
           vaultId,

@@ -110,8 +110,32 @@ export class ChromeArtifactStore implements ArtifactStore {
     const directory = await vaultDirectory(vaultId);
     const name = filename(objectId);
     try {
-      await directory.getFileHandle(name);
-      throw new Error("An Artifact Object identifier already exists.");
+      const existing = await directory.getFileHandle(name);
+      const file = await existing.getFile();
+      let matches = file.size === input.object.envelopeByteLength;
+      if (matches) {
+        const sodium = await readySodium();
+        const hash = sodium.crypto_hash_sha256_init();
+        const reader = file.stream().getReader();
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            sodium.crypto_hash_sha256_update(hash, next.value);
+          }
+          matches = bytesEqual(
+            Uint8Array.from(sodium.crypto_hash_sha256_final(hash)),
+            input.object.envelopeChecksum,
+          );
+        } finally {
+          reader.releaseLock();
+        }
+      }
+      if (matches) {
+        await input.encrypted.cancel();
+        return;
+      }
+      await directory.removeEntry(name);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
     }

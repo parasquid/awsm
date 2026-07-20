@@ -48,7 +48,7 @@ RSpec.describe "Vault lifecycle", type: :request do
     )
   end
 
-  it "attaches a provisional Vault with a Generation-zero upload and scoped ticket" do
+  it "attaches a provisional Vault with its current Generation upload and scoped ticket" do
     post "/api/vaults", params: attach_body.to_json, headers: headers
 
     expect(response).to have_http_status(:created)
@@ -57,6 +57,47 @@ RSpec.describe "Vault lifecycle", type: :request do
     expect(response.parsed_body.dig("ticket", "method")).to eq("PUT")
     expect(VaultReplica.find_by!(vault_id:).account).to eq(account)
     expect(response.parsed_body.dig("vault", "accountSlot")).to eq(account_slot.deep_stringify_keys)
+  end
+
+  it "preserves a nonzero current Generation through attachment and activation" do
+    current = attach_body.deep_dup
+    current[:generationNumber] = 7
+
+    post "/api/vaults", params: current.to_json, headers: headers
+
+    expect(response).to have_http_status(:created)
+    expect(response.parsed_body.fetch("vault")).to include(
+      "state" => "Provisional", "generationId" => generation_id, "generationNumber" => 7
+    )
+    generation = VaultReplica.find_by!(vault_id:).vault_generations.find_by!(generation_id:)
+    expect(generation.generation_number).to eq(7)
+    generation.generation_record.update!(state: "DurableUncommitted",
+      storage_key: "objects/#{generation_id}", durable_at: Time.current)
+
+    post "/api/vaults/#{vault_id}/complete",
+      params: { generationId: generation_id }.to_json,
+      headers: headers.merge("Idempotency-Key" => "01900000-0000-7000-8000-000000000014")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to include(
+      "state" => "Active", "generationId" => generation_id, "generationNumber" => 7,
+      "headCursor" => 1
+    )
+    expect(VaultReplica.find_by!(vault_id:).active_generation_number).to eq(7)
+  end
+
+  it "rejects negative and unsafe current Generation numbers" do
+    [ -1, 9_007_199_254_740_992 ].each_with_index do |number, index|
+      invalid = attach_body.deep_dup
+      invalid[:generationNumber] = number
+
+      post "/api/vaults", params: invalid.to_json,
+        headers: headers.merge("Idempotency-Key" => format("01900000-0000-7000-8000-%012d", 20 + index))
+
+      expect(response).to have_http_status(:bad_request)
+      expect(response.parsed_body.fetch("outcome")).to eq("REQUEST_INVALID")
+      expect(VaultReplica.where(account:).count).to eq(0)
+    end
   end
 
   it "returns the same logical attachment for an identical idempotent replay" do

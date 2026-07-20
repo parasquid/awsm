@@ -3,10 +3,12 @@ import type {
   StoredEvent,
   StoredObjectV1,
   StoredVaultGenerationV1,
+  StoredVaultHeadV1,
   SynchronizationJobV1,
 } from "../../drivers/indexeddb/schema";
 import type { AtomicRemoteReconciliation } from "../../drivers/indexeddb/workspace-repository";
 import type { ArtifactStore } from "../artifact";
+import { noRuntimeFaultCheckpoint, type RuntimeFaultCheckpoint } from "../fault-checkpoint";
 import { LibraryProjectionRebuilder } from "../library/rebuild";
 import { encryptWorkspaceVaultName } from "../vault";
 import { type RemoteReplicaDownloader, verifyPreparedRemoteReplica } from "./download";
@@ -20,6 +22,7 @@ interface PullSource {
   listStoredEvents(): Promise<readonly StoredEvent[]>;
   listStoredObjects(): Promise<readonly StoredObjectV1[]>;
   getVaultGeneration(generationId: string): Promise<StoredVaultGenerationV1 | undefined>;
+  getVaultHead(): Promise<StoredVaultHeadV1 | undefined>;
 }
 
 interface PullWorkspaceStore {
@@ -64,6 +67,8 @@ export class IncrementalPullRunner {
     private readonly artifacts: ArtifactStore,
     private readonly transport: PullTransport,
     private readonly downloader: Pick<RemoteReplicaDownloader, "prepare">,
+    private readonly faultCheckpoint: RuntimeFaultCheckpoint = noRuntimeFaultCheckpoint,
+    private readonly signal?: AbortSignal,
   ) {}
 
   async run(rootKey: CryptoKey, now = new Date().toISOString()): Promise<boolean> {
@@ -88,12 +93,14 @@ export class IncrementalPullRunner {
       job.generationId,
       registration.deliveryCursor,
     );
-    const [generation, events, objects] = await Promise.all([
+    const [generation, localHead, events, objects] = await Promise.all([
       this.source.getVaultGeneration(job.generationId),
+      this.source.getVaultHead(),
       this.source.listStoredEvents(),
       this.source.listStoredObjects(),
     ]);
-    if (generation === undefined) throw integrity("Local Generation is unavailable");
+    if (generation === undefined || localHead === undefined)
+      throw integrity("Local Generation authority is unavailable");
     const prepared = await this.downloader.prepare(
       { ...job, state: "Running", stage: "DownloadRecords", updatedAt: now },
       rootKey,
@@ -127,9 +134,11 @@ export class IncrementalPullRunner {
         sourceEventId: projections.vaultNameProjection.sourceEventId,
         name: verified.currentVaultName,
       });
+      await this.faultCheckpoint.reach("synchronization:before-reconciliation-commit", this.signal);
       await this.workspace.commitRemoteReconciliation({
         expectedGenerationId: job.generationId,
         expectedDeliveryCursor: registration.deliveryCursor,
+        expectedLocalHead: localHead,
         registration: { ...registration, deliveryCursor: snapshotCursor },
         job: { ...job, snapshotCursor, updatedAt: now },
         head: verified.head,

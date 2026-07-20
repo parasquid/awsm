@@ -84,6 +84,9 @@ describe("synchronization upload ordering", () => {
       },
       { openEncrypted: vi.fn() },
       transport,
+      async () => {
+        calls.push("ACTIVATE");
+      },
     );
 
     await runner.run("2026-07-19T21:01:00.000Z");
@@ -92,8 +95,13 @@ describe("synchronization upload ordering", () => {
       (call) => call.includes(`uploads/`) && call.endsWith("/complete"),
     );
     const commit = calls.findIndex((call) => call.endsWith("/commits"));
+    const activation = calls.indexOf("ACTIVATE");
+    const lastDurable = calls.findLastIndex(
+      (call) => call.includes("uploads/") && call.endsWith("/complete"),
+    );
     expect(descriptorComplete).toBeGreaterThan(-1);
-    expect(commit).toBeGreaterThan(descriptorComplete);
+    expect(activation).toBeGreaterThan(lastDurable);
+    expect(commit).toBeGreaterThan(activation);
     expect(checkpoints.get(`Event:${eventId}`)?.state).toBe("Committed");
     expect(job.stage).toBe("FetchChanges");
   });

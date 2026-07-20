@@ -8,7 +8,7 @@ export default defineConfig({
   reporter: "line",
   timeout: 90_000,
   expect: { timeout: 15_000 },
-  use: { trace: "retain-on-failure" },
+  use: { actionTimeout: 60_000, trace: "retain-on-failure" },
   webServer: [
     {
       command: "node tests/e2e/server.mjs",

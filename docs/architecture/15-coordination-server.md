@@ -32,6 +32,11 @@ access and refresh credentials are digest-only at rest, and reuse of a consumed 
 revokes its logical session. Each Account owns at most one Vault replica record. That record stores
 one opaque Account-wrapped Vault slot and exactly one active Generation.
 
+An empty Account may attach a Vault at its current nonnegative Generation number. The Coordination
+Server preserves that supplied identity and number as the Replica's first known active Generation;
+it does not renumber the Generation, synthesize predecessor rows, or infer ancestry from encrypted
+Generation contents.
+
 The server does not authorize Devices or possess the Account Encryption Key, Vault Root Key, or
 device-local slot. Shared Vaults, roles, invitations, Device signing/revocation, billing, quotas,
 password change, and Account Recovery Keys remain outside the current boundary. The black-box proof

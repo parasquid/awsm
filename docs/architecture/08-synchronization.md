@@ -57,6 +57,39 @@ Action Cable hints carry only Vault ID and latest cursor. Subscribe-before-fetch
 hint, generation-guard reconciliation, coalesce bursts without losing the final wake-up, and poll on
 visibility/focus. Correctness MUST survive every hint being lost.
 
+One client coordinator owns active synchronization execution. A Coordination Server switch stages a
+second, isolated candidate Account and transport while the source coordinator and Cable remain live.
+Candidate hints never enter the active coordinator. Only after trusted reconciliation and atomic
+local promotion does the coordinator abort and await source transport, drop queued source wakes,
+install the candidate context, and begin candidate Cable delivery. Pull commits independently fence
+the observed local Head and remote coverage, so a late response cannot overwrite a local mutation
+or cross a server-context boundary.
+
+# Git-Like Server Reconciliation
+
+The Git analogy is authenticated reachability, not mutable files or numeric Generation ordering. An
+empty candidate receives the current complete Vault. Independent append-only Events in one active
+Generation form a safe union after immutable intersection and complete dependency validation. A
+direct successor Generation fast-forwards only when the predecessor identity, number, and exact
+recovered authoritative closure prove ancestry. Sibling successors or unavailable ancestry are a
+conflict and never an overwrite.
+
+The source and candidate Accounts have independent identities and Account Encryption Keys even when
+their emails match. The trusted Runtime unwraps the candidate Account slot and verifies the same
+Vault Root Key without exposing it. The Coordination Server stores and transfers opaque records but
+never classifies, merges, or interprets history.
+
+A persisted Server Switch Job and candidate-scoped checkpoints fence comparison, remote staging,
+local staging, promotion, and prior-session revocation. Local authority plus Account/server promotion
+is one transaction. Candidate authentication can be renewed on the same Job, locking pauses the Job,
+and startup resumes idempotently from the last durable boundary. Exact prepared Artifact wrappers
+are reusable restart state; malformed or partial wrappers are non-authoritative and removed.
+
+The candidate Event response cursor is the remote-write journal boundary for a same-Generation
+union. One candidate-head race may restart comparison only while that boundary has not advanced.
+After it advances, a concurrent Generation rewrite becomes a truthful terminal conflict: the source
+remains active, the candidate append is retained, and neither side is overwritten.
+
 # Generation Reconciliation
 
 Generation zero is explicit. Vault History Rewrite constructs one inactive successor and submits the
@@ -78,6 +111,12 @@ transaction install the fork and replace the original synchronized Vault with se
 data. A failure before that transaction changes neither authority; an interrupted attempt returns
 to the explicit Conflict state.
 
+The preparation stages persist enough operational state for deterministic startup reconciliation.
+Startup removes provisional fork Artifact wrappers and returns `PrepareRecoveryFork`,
+`PrepareServerReplacement`, or `ActivateRecovery` work to Conflict. The final replacement is one
+IndexedDB transaction, so termination after it observes the complete recovered pair rather than a
+partially replaced Vault.
+
 Superseded server membership remains temporarily available only through explicit recovery
 resources. Server recovery retention supports diagnosis and controlled retrieval but never decides
 client semantic truth.
@@ -89,10 +128,17 @@ Event, Vault, and Generation identifiers additionally prevent conflicting reuse.
 from the authenticated Account's Vault scope. Durable-uncommitted, candidate, superseded, recovery,
 and active records MUST NOT leak into one another's read paths.
 
+Synchronized Vacuum is coordinated maintenance. It journals the candidate, creates and seals the
+remote successor Generation, records remote activation, and only then commits local deletion. If
+authentication expires before remote activation, the client signs out, retains the local candidate
+and deleted content, and exposes AuthenticationRequired until reauthentication safely resumes or
+discards the interrupted candidate from observed server state.
+
 # Current Product Boundary
 
 The Chrome Host implements Account authentication, client-only Account-key enrollment, one Complete
 synchronized Vault per Account, polling and advisory Cable wakes, remote bootstrap, incremental
-reconciliation, synchronized Vacuum, and stale-Replica recovery. Device request signing and
+reconciliation, Git-like Coordination Server switching, synchronized Vacuum, and stale-Replica
+recovery. Device request signing and
 revocation, shared Vaults, Selective Replicas, quotas, shared immutable-byte storage, password
 change, and Account Recovery Keys remain future work.

@@ -1,4 +1,5 @@
 import { browser } from "wxt/browser";
+import { wipe } from "../crypto/sodium";
 import type { RuntimeErrorId } from "../domain/contracts";
 import {
   encodeStructuredContentSequence,
@@ -8,8 +9,10 @@ import {
   IndexedDbAccountRepository,
   IndexedDbDriver,
   IndexedDbImportRepository,
+  IndexedDbServerSwitchRepository,
   IndexedDbVaultRepository,
   IndexedDbWorkspaceRepository,
+  type ServerSwitchReplicaPromotion,
 } from "../drivers/indexeddb";
 import { ChromeAccountServerHost } from "../hosts/chrome/account-server";
 import { ChromeCaptureHost, ChromeScreenshotHost } from "../hosts/chrome/api";
@@ -18,12 +21,14 @@ import { acquireMandatoryMhtml, preflightCapture } from "../hosts/chrome/capture
 import { ChromeVaultExportHost } from "../hosts/chrome/export";
 import { ChromeVaultImportHost } from "../hosts/chrome/import";
 import { acquireBestEffortScreenshot } from "../hosts/chrome/screenshot";
+import { TestingFaultCheckpoint } from "../hosts/testing/fault-checkpoint";
 import { CoordinationAccountHttp } from "../runtime/account/http";
-import { configureSyncServer } from "../runtime/account/server";
+import { configureSyncServer, validateSyncServer } from "../runtime/account/server";
 import { AccountAuthenticationService } from "../runtime/account/service";
 import { AccountSessionManager } from "../runtime/account/session";
 import { CaptureRuntime, defaultPrepareRegistration } from "../runtime/capture/service";
 import { VaultExportService } from "../runtime/export";
+import { noRuntimeFaultCheckpoint } from "../runtime/fault-checkpoint";
 import { VaultImportService } from "../runtime/import/service";
 import { prepareLibraryStateChange, selectLibraryItems } from "../runtime/library/lifecycle";
 import {
@@ -44,17 +49,37 @@ import {
 } from "../runtime/library/vacuum";
 import { RemoteBootstrapRunner } from "../runtime/synchronization/bootstrap";
 import { CableHintSubscriber } from "../runtime/synchronization/cable";
+import { SynchronizationCoordinator } from "../runtime/synchronization/coordinator";
 import { AccountVaultDiscovery } from "../runtime/synchronization/discovery";
-import { RemoteReplicaDownloader } from "../runtime/synchronization/download";
-import { EnrollmentService } from "../runtime/synchronization/enrollment";
+import {
+  RemoteReplicaDownloader,
+  verifyPreparedRemoteReplica,
+} from "../runtime/synchronization/download";
+import {
+  createAccountVaultRegistration,
+  EnrollmentService,
+} from "../runtime/synchronization/enrollment";
 import { SynchronizationHttp } from "../runtime/synchronization/http";
 import { IncrementalPullRunner } from "../runtime/synchronization/pull";
 import { StaleReplicaRecoveryService } from "../runtime/synchronization/recovery";
 import { LocalRecoveryForkBuilder } from "../runtime/synchronization/recovery-fork";
+import { InterruptedStaleRecoveryReconciler } from "../runtime/synchronization/recovery-reconciliation";
 import { EnrollmentRunner } from "../runtime/synchronization/runner";
+import { ServerSwitchService } from "../runtime/synchronization/server-switch";
+import { classifyServerSwitch } from "../runtime/synchronization/server-switch-classifier";
+import { ServerSwitchCandidateInspector } from "../runtime/synchronization/server-switch-inspection";
+import { serverSwitchRaceDisposition } from "../runtime/synchronization/server-switch-race";
+import { ServerSwitchRecoveryProver } from "../runtime/synchronization/server-switch-recovery";
+import { ServerSwitchRemoteApplicator } from "../runtime/synchronization/server-switch-remote";
+import { serverSwitchStartupDecision } from "../runtime/synchronization/server-switch-startup";
 import { UploadRunner } from "../runtime/synchronization/upload";
 import { SynchronizedVacuumActivator } from "../runtime/synchronization/vacuum";
-import { VaultService, WorkspaceContextManager, WorkspaceService } from "../runtime/vault";
+import {
+  encryptWorkspaceVaultName,
+  VaultService,
+  WorkspaceContextManager,
+  WorkspaceService,
+} from "../runtime/vault";
 import { unwrapDeviceSlot } from "../runtime/vault/slots";
 import { recentCaptureMatchesActiveUrl } from "../ui/popup-view";
 import { bytesToBase64 } from "./base64";
@@ -70,6 +95,21 @@ const databaseName = "awsm-vault";
 const vaultRepository = new IndexedDbVaultRepository();
 const workspaceRepository = new IndexedDbWorkspaceRepository();
 const accountRepository = new IndexedDbAccountRepository();
+const serverSwitchRepository = new IndexedDbServerSwitchRepository();
+const liveServerSwitchRepository = {
+  loadJob: () => serverSwitchRepository.loadJob(),
+  saveJob: async (job: import("../drivers/indexeddb").ServerSwitchJobV1) => {
+    await serverSwitchRepository.saveJob(job);
+    await notifyAppStateChanged();
+  },
+  loadCheckpoint: (
+    jobId: string,
+    kind: import("../drivers/indexeddb").ServerSwitchCheckpointV1["kind"],
+    entityId: string,
+  ) => serverSwitchRepository.loadCheckpoint(jobId, kind, entityId),
+  saveCheckpoint: (checkpoint: import("../drivers/indexeddb").ServerSwitchCheckpointV1) =>
+    serverSwitchRepository.saveCheckpoint(checkpoint),
+};
 const accountServerHost = new ChromeAccountServerHost((configuration) =>
   accountRepository.saveConfiguration(configuration),
 );
@@ -78,8 +118,12 @@ const importRepository = new IndexedDbImportRepository();
 const importHost = new ChromeVaultImportHost();
 const importControllers = new Map<string, AbortController>();
 const enrollment = new EnrollmentService(accountRepository, vaultRepository);
+const serverSwitchService = new ServerSwitchService(serverSwitchRepository, accountRepository);
 let activeSessionManager: AccountSessionManager | undefined;
 let activeSessionOrigin: string | undefined;
+let candidateSessionManager: AccountSessionManager | undefined;
+let candidateSessionOrigin: string | undefined;
+let serverSwitchController: AbortController | undefined;
 let activeCable: CableHintSubscriber | undefined;
 let activeCableContext: string | undefined;
 
@@ -97,6 +141,19 @@ async function sessionManager(): Promise<AccountSessionManager> {
     activeSessionOrigin = configuration.serverOrigin;
   }
   return activeSessionManager;
+}
+
+function serverSwitchSession(origin: string, accessToken?: string): AccountSessionManager {
+  if (candidateSessionManager === undefined || candidateSessionOrigin !== origin) {
+    candidateSessionManager = new AccountSessionManager(
+      new CoordinationAccountHttp(origin),
+      accountRepository,
+      "server-switch-candidate",
+    );
+    candidateSessionOrigin = origin;
+  }
+  if (accessToken !== undefined) candidateSessionManager.setAccessToken(accessToken);
+  return candidateSessionManager;
 }
 
 function remoteVaultHead(value: unknown): {
@@ -130,11 +187,14 @@ function remoteVaultHead(value: unknown): {
   };
 }
 
-async function resumeInterruptedSynchronizedVacuum(configuration: {
-  readonly version: 1;
-  readonly mode: "Configured";
-  readonly serverOrigin: string;
-}): Promise<void> {
+async function resumeInterruptedSynchronizedVacuum(
+  configuration: {
+    readonly version: 1;
+    readonly mode: "Configured";
+    readonly serverOrigin: string;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
   const context = contexts.active();
   if (context === undefined) return;
   const vacuum = await context.driver.latestVacuumJob();
@@ -149,7 +209,12 @@ async function resumeInterruptedSynchronizedVacuum(configuration: {
   }
   let activatedHeadCursor = vacuum.activatedHeadCursor;
   if (activatedHeadCursor === undefined) {
-    const transport = new SynchronizationHttp(configuration.serverOrigin, await sessionManager());
+    const transport = new SynchronizationHttp(
+      configuration.serverOrigin,
+      await sessionManager(),
+      fetch,
+      signal,
+    );
     const remote = remoteVaultHead((await transport.request("GET", "/api/vaults")).body);
     if (
       remote.generationId !== vacuum.candidate.generation.generationId ||
@@ -181,13 +246,12 @@ async function resumeInterruptedSynchronizedVacuum(configuration: {
   await notifyAppStateChanged();
 }
 
-async function executeSynchronization(): Promise<void> {
+async function executeSynchronization(signal?: AbortSignal): Promise<void> {
   const configuration = await accountRepository.loadConfiguration();
   if (configuration.mode !== "Configured") return;
   if (!(await accountRepository.hasAuthenticatedSecrets())) return;
   try {
-    await resumeInterruptedSynchronizedVacuum(configuration);
-    await accountRepository.wakePull();
+    await resumeInterruptedSynchronizedVacuum(configuration, signal);
     const pending = await accountRepository.latestSynchronizationJob();
     if (
       pending?.state === "AuthenticationRequired" ||
@@ -201,7 +265,7 @@ async function executeSynchronization(): Promise<void> {
     const runner = new EnrollmentRunner(
       accountRepository,
       vaultRepository,
-      new SynchronizationHttp(configuration.serverOrigin, await sessionManager()),
+      new SynchronizationHttp(configuration.serverOrigin, await sessionManager(), fetch, signal),
     );
     await runner.run();
     const job = await accountRepository.latestSynchronizationJob();
@@ -213,7 +277,7 @@ async function executeSynchronization(): Promise<void> {
         accountRepository,
         new IndexedDbDriver(databaseName, job.vaultId),
         artifactStore,
-        new SynchronizationHttp(configuration.serverOrigin, await sessionManager()),
+        new SynchronizationHttp(configuration.serverOrigin, await sessionManager(), fetch, signal),
       ).run();
     }
     const afterUpload = await accountRepository.latestSynchronizationJob();
@@ -223,7 +287,12 @@ async function executeSynchronization(): Promise<void> {
         workspaceRepository,
         artifactStore,
         new RemoteReplicaDownloader(
-          new SynchronizationHttp(configuration.serverOrigin, await sessionManager()),
+          new SynchronizationHttp(
+            configuration.serverOrigin,
+            await sessionManager(),
+            fetch,
+            signal,
+          ),
           artifactStore,
         ),
       ).run();
@@ -237,7 +306,12 @@ async function executeSynchronization(): Promise<void> {
       pullJob.vaultId === active.vaultId &&
       active.vault.isUnlocked()
     ) {
-      const transport = new SynchronizationHttp(configuration.serverOrigin, await sessionManager());
+      const transport = new SynchronizationHttp(
+        configuration.serverOrigin,
+        await sessionManager(),
+        fetch,
+        signal,
+      );
       await new IncrementalPullRunner(
         accountRepository,
         active.driver,
@@ -245,13 +319,59 @@ async function executeSynchronization(): Promise<void> {
         artifactStore,
         transport,
         new RemoteReplicaDownloader(transport, artifactStore),
+        runtimeFaultCheckpoint,
+        signal,
       ).run(active.vault.requireRootKey());
     }
   } catch (error) {
+    if (signal?.aborted) return;
+    testingFaultCheckpoint?.recordFailure(error);
     const job = await accountRepository.latestSynchronizationJob();
     if (job === undefined) throw error;
     const id =
       error instanceof Error && "id" in error ? String(error.id) : "SYNCHRONIZATION_INTERRUPTED";
+    if (id === "VAULT_CONTEXT_CHANGED" && job.vaultId !== undefined) {
+      const { errorId: _errorId, retryAt: _retryAt, ...stableJob } = job;
+      await accountRepository.saveSynchronizationJob({
+        ...stableJob,
+        state: "Succeeded",
+        stage: "Checkpoint",
+        updatedAt: new Date().toISOString(),
+      });
+      void synchronizationCoordinator.mutation(job.vaultId);
+      await notifyAppStateChanged();
+      return;
+    }
+    if (id === "VAULT_GENERATION_SUPERSEDED") {
+      try {
+        await discoverAccountVault();
+      } catch (discoveryError) {
+        const discoveryId =
+          discoveryError instanceof Error && "id" in discoveryError
+            ? String(discoveryError.id)
+            : "SYNCHRONIZATION_INTERRUPTED";
+        const authentication =
+          discoveryId === "SYNCHRONIZATION_AUTHENTICATION_REQUIRED" ||
+          discoveryId === "AUTHENTICATION_FAILED";
+        const integrity = discoveryId === "SYNCHRONIZATION_INTEGRITY_FAILED";
+        await accountRepository.saveSynchronizationJob({
+          ...job,
+          state: authentication ? "AuthenticationRequired" : integrity ? "Failed" : "Waiting",
+          retryCount: job.retryCount + 1,
+          updatedAt: new Date().toISOString(),
+          errorId: integrity ? discoveryId : "VAULT_GENERATION_SUPERSEDED",
+          ...(authentication || integrity
+            ? {}
+            : {
+                retryAt: new Date(
+                  Date.now() + Math.min(5_000 * 2 ** job.retryCount, 15 * 60_000),
+                ).toISOString(),
+              }),
+        });
+      }
+      await notifyAppStateChanged();
+      return;
+    }
     const terminal = id === "SYNCHRONIZATION_INTEGRITY_FAILED" || id === "SYNCHRONIZATION_CONFLICT";
     const authentication =
       id === "SYNCHRONIZATION_AUTHENTICATION_REQUIRED" || id === "AUTHENTICATION_FAILED";
@@ -282,14 +402,17 @@ async function executeSynchronization(): Promise<void> {
     const cableContext = `${configuration.serverOrigin}\n${registration.vaultId}`;
     if (activeCable === undefined || activeCableContext !== cableContext) {
       activeCable?.disconnect();
-      const transport = new SynchronizationHttp(configuration.serverOrigin, await sessionManager());
+      const transport = new SynchronizationHttp(
+        configuration.serverOrigin,
+        await sessionManager(),
+        fetch,
+        signal,
+      );
       activeCable = new CableHintSubscriber(
         configuration.serverOrigin,
         transport,
         (latestCursor) => {
-          void accountRepository.wakePull(latestCursor).then((woke) => {
-            if (woke) void runEnrollment();
-          });
+          void synchronizationCoordinator.cable(latestCursor);
         },
       );
       activeCableContext = cableContext;
@@ -299,15 +422,32 @@ async function executeSynchronization(): Promise<void> {
   await notifyAppStateChanged();
 }
 
-let activeSynchronizationRun: Promise<void> | undefined;
+const synchronizationCoordinator = new SynchronizationCoordinator({
+  execute: executeSynchronization,
+  preparePassivePoll: async () => {
+    await accountRepository.wakePull();
+  },
+  prepareInteractiveWake: async () => {
+    const job = await accountRepository.latestSynchronizationJob();
+    if (job?.errorId === "VAULT_GENERATION_SUPERSEDED") {
+      await discoverAccountVault();
+      return;
+    }
+    if (job?.state === "Waiting") await accountRepository.retrySynchronization();
+    await accountRepository.wakePull();
+  },
+  prepareMutation: async (vaultId) => {
+    await accountRepository.wakeSynchronization(vaultId);
+  },
+  prepareCableWake: async (latestCursor) => {
+    const job = await accountRepository.latestSynchronizationJob();
+    if (job?.state === "Waiting") await accountRepository.retrySynchronization();
+    await accountRepository.wakePull(latestCursor);
+  },
+});
 
 function runEnrollment(): Promise<void> {
-  if (activeSynchronizationRun !== undefined) return activeSynchronizationRun;
-  const run = executeSynchronization().finally(() => {
-    if (activeSynchronizationRun === run) activeSynchronizationRun = undefined;
-  });
-  activeSynchronizationRun = run;
-  return run;
+  return synchronizationCoordinator.continue();
 }
 
 async function discoverAccountVault(): Promise<void> {
@@ -338,14 +478,31 @@ async function notifyAppStateChanged(): Promise<void> {
 }
 
 async function wakeVaultSynchronization(vaultId: string): Promise<void> {
-  if (await accountRepository.wakeSynchronization(vaultId)) void runEnrollment();
+  void synchronizationCoordinator.mutation(vaultId);
 }
 
 async function assertVaultMutationAllowed(vaultId: string): Promise<void> {
+  const serverSwitch = await serverSwitchRepository.loadJob();
+  if (
+    serverSwitch?.vaultId === vaultId &&
+    serverSwitch.state === "Running" &&
+    serverSwitch.stage !== "Compare"
+  )
+    throw Object.assign(new Error("The Vault is applying a Server Switch."), {
+      id: "VAULT_BUSY",
+    });
   const job = await accountRepository.latestSynchronizationJob();
   if (job?.vaultId === vaultId && job.state === "Conflict")
     throw Object.assign(new Error("This stale Replica is read-only until it is resolved."), {
       id: "SYNCHRONIZATION_CONFLICT",
+    });
+}
+
+async function assertNoApplyingServerSwitch(): Promise<void> {
+  const job = await serverSwitchRepository.loadJob();
+  if (job?.state === "Running" && job.stage !== "Compare")
+    throw Object.assign(new Error("A Server Switch is applying."), {
+      id: "VAULT_BUSY",
     });
 }
 
@@ -358,6 +515,658 @@ const contexts = new WorkspaceContextManager({
 });
 const captureHost = new ChromeCaptureHost();
 const artifactStore = new ChromeArtifactStore();
+
+function sameVaultHead(
+  left: import("../drivers/indexeddb/schema").StoredVaultHeadV1,
+  right: import("../drivers/indexeddb/schema").StoredVaultHeadV1,
+): boolean {
+  return (
+    left.vaultId === right.vaultId &&
+    left.generationId === right.generationId &&
+    left.generationNumber === right.generationNumber &&
+    left.appendedObjectIds.join("\n") === right.appendedObjectIds.join("\n") &&
+    left.appendedEventIds.join("\n") === right.appendedEventIds.join("\n")
+  );
+}
+
+async function compareServerSwitch(accessToken?: string): Promise<void> {
+  const job = await serverSwitchRepository.loadJob();
+  if (job?.state !== "Running" || job.stage !== "Compare") return;
+  const context = contexts.snapshot(job.vaultId);
+  if (!context.vault.isUnlocked()) {
+    await liveServerSwitchRepository.saveJob({
+      ...job,
+      state: "WaitingForUnlock",
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  const records = await vaultRepository.load(job.vaultId);
+  const freshHead = await context.driver.getVaultHead();
+  if (records === undefined || freshHead === undefined)
+    throw Object.assign(new Error("Local Vault authority is unavailable"), {
+      id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+    });
+  const localGeneration = await context.driver.getVaultGeneration(freshHead.generationId);
+  if (localGeneration === undefined)
+    throw Object.assign(new Error("Local Generation is unavailable"), {
+      id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+    });
+  const controller = new AbortController();
+  serverSwitchController?.abort();
+  serverSwitchController = controller;
+  const transport = new SynchronizationHttp(
+    job.candidateOrigin,
+    serverSwitchSession(job.candidateOrigin, accessToken),
+    fetch,
+    controller.signal,
+  );
+  const localRootBytes = await unwrapDeviceSlot(records.deviceSlot, records.deviceKey);
+  try {
+    const inspected = await new ServerSwitchCandidateInspector(
+      accountRepository,
+      transport,
+    ).inspect(job.vaultId, localRootBytes);
+    const immutableIntersectionEqual = true;
+    let candidateClosure: Awaited<ReturnType<typeof verifyPreparedRemoteReplica>> | undefined;
+    if (inspected.replica === undefined) {
+      const metadata = await accountRepository.loadMetadata("server-switch-candidate");
+      const accountEncryptionKey =
+        await accountRepository.loadAccountEncryptionKey("server-switch-candidate");
+      try {
+        if (metadata === undefined)
+          throw Object.assign(new Error("Candidate Account metadata is unavailable"), {
+            id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+          });
+        await accountRepository.saveAccountVault(
+          await createAccountVaultRegistration({
+            metadata,
+            records,
+            accountEncryptionKey,
+          }),
+          "server-switch-candidate",
+        );
+      } finally {
+        await wipe(accountEncryptionKey);
+      }
+    } else {
+      const metadata = await accountRepository.loadMetadata("server-switch-candidate");
+      if (metadata === undefined)
+        throw Object.assign(new Error("Candidate Account metadata is unavailable"), {
+          id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+        });
+      const existing = {
+        generation: localGeneration,
+        events: await context.driver.listStoredEvents(),
+        objects: await context.driver.listStoredObjects(),
+      };
+      const prepared = await new RemoteReplicaDownloader(transport, artifactStore).prepare(
+        {
+          version: 1,
+          jobId: job.jobId,
+          accountId: metadata.accountId,
+          vaultId: job.vaultId,
+          generationId: inspected.replica.generation.generationId,
+          generationNumber: inspected.replica.generation.generationNumber,
+          ...(inspected.replica.generation.predecessorGenerationId === undefined
+            ? {}
+            : {
+                predecessorGenerationId: inspected.replica.generation.predecessorGenerationId,
+              }),
+          state: "Running",
+          stage: "DownloadRecords",
+          snapshotCursor: inspected.headCursor,
+          createdAt: job.createdAt,
+          updatedAt: new Date().toISOString(),
+          completedItems: 0,
+          totalItems: 0,
+          processedBytes: 0,
+          totalBytes: 0,
+          retryCount: 0,
+          attachIdempotencyKey: job.attachIdempotencyKey,
+        },
+        context.vault.requireRootKey(),
+        existing,
+      );
+      candidateClosure = await verifyPreparedRemoteReplica({
+        vaultId: job.vaultId,
+        prepared,
+        rootKey: context.vault.requireRootKey(),
+        artifacts: artifactStore,
+      });
+      if (inspected.registration !== undefined)
+        await accountRepository.saveAccountVault(inspected.registration, "server-switch-candidate");
+    }
+    const finalHead = await context.driver.getVaultHead();
+    if (finalHead === undefined || !sameVaultHead(freshHead, finalHead))
+      throw Object.assign(new Error("Local Vault changed during comparison"), {
+        id: "VAULT_CONTEXT_CHANGED",
+      });
+    const localClosure = {
+      generation: localGeneration,
+      head: freshHead,
+      events: await context.driver.listStoredEvents(),
+      objects: await context.driver.listStoredObjects(),
+    };
+    const sourceRecovery =
+      inspected.replica !== undefined &&
+      candidateClosure !== undefined &&
+      localGeneration.predecessorGenerationId === inspected.replica.generation.generationId
+        ? await new ServerSwitchRecoveryProver(
+            new SynchronizationHttp(job.sourceOrigin, await sessionManager()),
+            artifactStore,
+          ).prove({
+            vaultId: job.vaultId,
+            expected: candidateClosure,
+            rootKey: context.vault.requireRootKey(),
+          })
+        : undefined;
+    const candidateRecovery =
+      inspected.replica !== undefined &&
+      candidateClosure !== undefined &&
+      inspected.replica.generation.predecessorGenerationId === localGeneration.generationId
+        ? await new ServerSwitchRecoveryProver(transport, artifactStore).prove({
+            vaultId: job.vaultId,
+            expected: localClosure,
+            rootKey: context.vault.requireRootKey(),
+          })
+        : undefined;
+    const classification = classifyServerSwitch({
+      local: {
+        vaultId: job.vaultId,
+        generation: {
+          generationId: localGeneration.generationId,
+          generationNumber: localGeneration.generationNumber,
+          ...(localGeneration.predecessorGenerationId === undefined
+            ? {}
+            : {
+                predecessorGenerationId: localGeneration.predecessorGenerationId,
+              }),
+        },
+      },
+      ...(inspected.replica === undefined ? {} : { candidate: inspected.replica }),
+      rootKeysEqual: true,
+      immutableIntersectionEqual,
+      ...(sourceRecovery === undefined ? {} : { sourceRecovery }),
+      ...(candidateRecovery === undefined ? {} : { candidateRecovery }),
+    });
+    if (classification.kind === "Conflict") {
+      await accountRepository.eraseAuthenticated("server-switch-candidate");
+      await accountRepository.eraseAccountVault("server-switch-candidate");
+      await serverSwitchRepository.clearCheckpoints(job.jobId);
+      await liveServerSwitchRepository.saveJob({
+        ...job,
+        expectedLocalHead: freshHead,
+        state: "Conflict",
+        stage: "Terminal",
+        errorId: classification.errorId,
+        conflictReason: classification.reason,
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if (classification.kind === "Failure")
+      throw Object.assign(new Error(classification.errorId), {
+        id: classification.errorId,
+      });
+    await liveServerSwitchRepository.saveJob({
+      ...job,
+      expectedLocalHead: freshHead,
+      state: "Running",
+      stage: classification.direction === "FastForwardLocal" ? "PrepareLocal" : "PrepareRemote",
+      direction: classification.direction,
+      ...(inspected.replica === undefined
+        ? {}
+        : {
+            candidateGenerationId: inspected.replica.generation.generationId,
+            candidateGenerationNumber: inspected.replica.generation.generationNumber,
+            ...(inspected.replica.generation.predecessorGenerationId === undefined
+              ? {}
+              : {
+                  candidatePredecessorGenerationId:
+                    inspected.replica.generation.predecessorGenerationId,
+                }),
+            candidateHeadCursor: inspected.headCursor,
+          }),
+      updatedAt: new Date().toISOString(),
+    });
+    await runtimeFaultCheckpoint.reach("server-switch:after-classification");
+    if (classification.direction === "PublishLocal")
+      await new ServerSwitchRemoteApplicator(
+        liveServerSwitchRepository,
+        accountRepository,
+        {
+          listStoredObjects: () => context.driver.listStoredObjects(),
+          listStoredEvents: () => context.driver.listStoredEvents(),
+        },
+        artifactStore,
+        transport,
+        runtimeFaultCheckpoint,
+      ).publishLocal(records);
+    if (classification.direction === "FastForwardCandidate")
+      await new ServerSwitchRemoteApplicator(
+        liveServerSwitchRepository,
+        accountRepository,
+        {
+          listStoredObjects: () => context.driver.listStoredObjects(),
+          listStoredEvents: () => context.driver.listStoredEvents(),
+        },
+        artifactStore,
+        transport,
+        runtimeFaultCheckpoint,
+      ).fastForwardCandidate(records);
+    if (classification.direction === "Union")
+      await new ServerSwitchRemoteApplicator(
+        liveServerSwitchRepository,
+        accountRepository,
+        {
+          listStoredObjects: () => context.driver.listStoredObjects(),
+          listStoredEvents: () => context.driver.listStoredEvents(),
+        },
+        artifactStore,
+        transport,
+        runtimeFaultCheckpoint,
+      ).union(records);
+    if (
+      classification.direction === "PublishLocal" ||
+      classification.direction === "FastForwardCandidate"
+    )
+      await verifyAndPromoteUnchangedLocal(context, transport, localRootBytes);
+    if (classification.direction === "Union" || classification.direction === "FastForwardLocal")
+      await applyCandidateReplica(context, transport);
+  } finally {
+    localRootBytes.fill(0);
+    if (serverSwitchController === controller) serverSwitchController = undefined;
+  }
+}
+
+async function verifyAndPromoteUnchangedLocal(
+  context: ReturnType<typeof contexts.snapshot>,
+  transport: SynchronizationHttp,
+  localRootBytes?: Uint8Array,
+): Promise<void> {
+  const job = await serverSwitchRepository.loadJob();
+  if (
+    job?.state !== "Running" ||
+    job.stage !== "PromoteContext" ||
+    !job.candidateAuthorityChanged ||
+    (job.direction !== "PublishLocal" && job.direction !== "FastForwardCandidate")
+  )
+    throw Object.assign(new Error("Candidate activation was not recorded"), {
+      id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+    });
+  const records = await vaultRepository.load(job.vaultId);
+  const localGeneration = await context.driver.getVaultGeneration(
+    job.expectedLocalHead.generationId,
+  );
+  const currentHead = await context.driver.getVaultHead();
+  if (
+    records === undefined ||
+    localGeneration === undefined ||
+    currentHead === undefined ||
+    !sameVaultHead(currentHead, job.expectedLocalHead)
+  )
+    throw Object.assign(new Error("Local authority changed before promotion"), {
+      id: "VAULT_CONTEXT_CHANGED",
+    });
+  const ownedRootBytes =
+    localRootBytes ?? (await unwrapDeviceSlot(records.deviceSlot, records.deviceKey));
+  try {
+    const verified = await new ServerSwitchCandidateInspector(accountRepository, transport).inspect(
+      job.vaultId,
+      ownedRootBytes,
+    );
+    if (
+      verified.replica?.generation.generationId !== currentHead.generationId ||
+      verified.replica.generation.generationNumber !== currentHead.generationNumber
+    )
+      throw Object.assign(new Error("Candidate activation differs from local authority"), {
+        id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+      });
+    if (verified.registration !== undefined)
+      await accountRepository.saveAccountVault(verified.registration, "server-switch-candidate");
+    const candidateMetadata = await accountRepository.loadMetadata("server-switch-candidate");
+    if (candidateMetadata === undefined)
+      throw Object.assign(new Error("Candidate Account metadata is unavailable"), {
+        id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+      });
+    const prepared = await new RemoteReplicaDownloader(transport, artifactStore).prepare(
+      {
+        version: 1,
+        jobId: job.jobId,
+        accountId: candidateMetadata.accountId,
+        vaultId: job.vaultId,
+        generationId: currentHead.generationId,
+        generationNumber: currentHead.generationNumber,
+        state: "Running",
+        stage: "DownloadRecords",
+        snapshotCursor: verified.headCursor,
+        createdAt: job.createdAt,
+        updatedAt: new Date().toISOString(),
+        completedItems: 0,
+        totalItems: 0,
+        processedBytes: 0,
+        totalBytes: 0,
+        retryCount: 0,
+        attachIdempotencyKey: job.attachIdempotencyKey,
+      },
+      context.vault.requireRootKey(),
+      {
+        generation: localGeneration,
+        events: await context.driver.listStoredEvents(),
+        objects: await context.driver.listStoredObjects(),
+      },
+    );
+    await verifyPreparedRemoteReplica({
+      vaultId: job.vaultId,
+      prepared,
+      rootKey: context.vault.requireRootKey(),
+      artifacts: artifactStore,
+    });
+    await promoteServerSwitch(job);
+  } finally {
+    if (localRootBytes === undefined) ownedRootBytes.fill(0);
+  }
+}
+
+async function applyCandidateReplica(
+  context: ReturnType<typeof contexts.snapshot>,
+  transport: SynchronizationHttp,
+): Promise<void> {
+  let job = await serverSwitchRepository.loadJob();
+  if (
+    job?.state !== "Running" ||
+    job.stage !== "PrepareLocal" ||
+    (job.direction !== "Union" && job.direction !== "FastForwardLocal") ||
+    job.candidateGenerationId === undefined ||
+    job.candidateGenerationNumber === undefined ||
+    job.candidateHeadCursor === undefined
+  )
+    throw Object.assign(new Error("Candidate local application context is incomplete"), {
+      id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+    });
+  const [metadata, registration, localGeneration, localHead, events, objects] = await Promise.all([
+    accountRepository.loadMetadata("server-switch-candidate"),
+    accountRepository.loadAccountVault("server-switch-candidate"),
+    context.driver.getVaultGeneration(job.expectedLocalHead.generationId),
+    context.driver.getVaultHead(),
+    context.driver.listStoredEvents(),
+    context.driver.listStoredObjects(),
+  ]);
+  if (
+    metadata === undefined ||
+    registration === undefined ||
+    localGeneration === undefined ||
+    localHead === undefined ||
+    !sameVaultHead(localHead, job.expectedLocalHead)
+  )
+    throw Object.assign(new Error("Local authority changed before candidate application"), {
+      id: "VAULT_CONTEXT_CHANGED",
+    });
+  const prepared = await new RemoteReplicaDownloader(transport, artifactStore).prepare(
+    {
+      version: 1,
+      jobId: job.jobId,
+      accountId: metadata.accountId,
+      vaultId: job.vaultId,
+      generationId: job.candidateGenerationId,
+      generationNumber: job.candidateGenerationNumber,
+      ...(job.candidatePredecessorGenerationId === undefined
+        ? {}
+        : { predecessorGenerationId: job.candidatePredecessorGenerationId }),
+      state: "Running",
+      stage: "DownloadRecords",
+      snapshotCursor: job.candidateHeadCursor,
+      createdAt: job.createdAt,
+      updatedAt: new Date().toISOString(),
+      completedItems: 0,
+      totalItems: 0,
+      processedBytes: 0,
+      totalBytes: 0,
+      retryCount: 0,
+      attachIdempotencyKey: job.attachIdempotencyKey,
+    },
+    context.vault.requireRootKey(),
+    { generation: localGeneration, events, objects },
+  );
+  const verified = await verifyPreparedRemoteReplica({
+    vaultId: job.vaultId,
+    prepared,
+    rootKey: context.vault.requireRootKey(),
+    artifacts: artifactStore,
+  });
+  if (
+    job.direction === "Union" &&
+    (job.expectedLocalHead.appendedObjectIds.some(
+      (objectId) => !verified.head.appendedObjectIds.includes(objectId),
+    ) ||
+      job.expectedLocalHead.appendedEventIds.some(
+        (eventId) => !verified.head.appendedEventIds.includes(eventId),
+      ))
+  )
+    throw Object.assign(new Error("Candidate union omitted local authority"), {
+      id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+    });
+  const allObjects = new Map(verified.objects.map((entry) => [entry.objectId, entry]));
+  const projections = await new LibraryProjectionRebuilder(
+    {
+      listStoredEvents: () => Promise.resolve(verified.events),
+      getStoredObject: (objectId) => Promise.resolve(allObjects.get(objectId)),
+      replaceLibraryProjections: () => Promise.resolve(),
+    },
+    context.vault.requireRootKey(),
+    job.vaultId,
+    artifactStore,
+  ).prepare(new AbortController().signal);
+  const workspaceRecords = await workspaceRepository.load();
+  if (workspaceRecords === undefined)
+    throw Object.assign(new Error("Workspace is unavailable"), {
+      id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+    });
+  const nameCache = await encryptWorkspaceVaultName({
+    key: workspaceRecords.nameCacheKey,
+    workspaceId: workspaceRecords.metadata.workspaceId,
+    vaultId: job.vaultId,
+    sourceEventId: projections.vaultNameProjection.sourceEventId,
+    name: verified.currentVaultName,
+  });
+  if (!context.vault.isUnlocked()) {
+    await liveServerSwitchRepository.saveJob({
+      ...job,
+      state: "WaitingForUnlock",
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+  const finalHead = await context.driver.getVaultHead();
+  if (finalHead === undefined || !sameVaultHead(finalHead, job.expectedLocalHead))
+    throw Object.assign(new Error("Local authority changed before activation"), {
+      id: "VAULT_CONTEXT_CHANGED",
+    });
+  job = {
+    ...job,
+    stage: "ActivateLocal",
+    updatedAt: new Date().toISOString(),
+  };
+  await liveServerSwitchRepository.saveJob(job);
+  await runtimeFaultCheckpoint.reach("server-switch:before-local-activation");
+  job = {
+    ...job,
+    stage: "PromoteContext",
+    updatedAt: new Date().toISOString(),
+  };
+  await liveServerSwitchRepository.saveJob(job);
+  await promoteServerSwitch(job, {
+    generation: verified.generation,
+    head: verified.head,
+    events: verified.events,
+    objects: verified.objects,
+    libraryProjections: projections.itemProjections,
+    collectionProjection: projections.collectionProjection,
+    vaultNameProjection: projections.vaultNameProjection,
+    nameCache,
+  });
+  await artifactStore
+    .reconcile(
+      job.vaultId,
+      new Set(
+        verified.objects
+          .filter((object) => object.objectType === "Artifact")
+          .map((object) => object.objectId),
+      ),
+    )
+    .catch(() => undefined);
+}
+
+async function promoteServerSwitch(
+  job: import("../drivers/indexeddb").ServerSwitchJobV1,
+  replica?: ServerSwitchReplicaPromotion,
+): Promise<void> {
+  await synchronizationCoordinator.replaceContext(async () => {
+    activeCable?.disconnect();
+    activeCable = undefined;
+    activeCableContext = undefined;
+    if (replica === undefined)
+      await accountRepository.promoteServerSwitch({
+        job,
+        candidateOrigin: job.candidateOrigin,
+        now: new Date().toISOString(),
+      });
+    else
+      await accountRepository.promoteServerSwitchWithReplica({
+        job,
+        candidateOrigin: job.candidateOrigin,
+        now: new Date().toISOString(),
+        replica,
+      });
+    activeSessionManager = undefined;
+    activeSessionOrigin = undefined;
+    candidateSessionManager = undefined;
+    candidateSessionOrigin = undefined;
+    serverSwitchController = undefined;
+  });
+  const promoted = await serverSwitchRepository.loadJob();
+  if (promoted?.stage !== "RevokePriorSession")
+    throw Object.assign(new Error("Candidate Account promotion is incomplete"), {
+      id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+    });
+  await runtimeFaultCheckpoint.reach("server-switch:after-promotion");
+  await completePriorRevocation(promoted);
+  void synchronizationCoordinator.continue();
+}
+
+async function completePriorRevocation(
+  job: import("../drivers/indexeddb").ServerSwitchJobV1,
+): Promise<void> {
+  await new AccountSessionManager(
+    new CoordinationAccountHttp(job.sourceOrigin),
+    accountRepository,
+    "server-switch-prior",
+  ).logout();
+  await serverSwitchRepository.clearCheckpoints(job.jobId);
+  await liveServerSwitchRepository.saveJob({
+    ...job,
+    state: "Succeeded",
+    stage: "Terminal",
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+async function compareServerSwitchSafely(
+  accessToken: string,
+  afterAuthentication = false,
+): Promise<void> {
+  try {
+    if (afterAuthentication)
+      await runtimeFaultCheckpoint.reach("server-switch:after-candidate-authentication");
+    const current = await serverSwitchRepository.loadJob();
+    if (
+      (current?.state === "Running" || current?.state === "WaitingForUnlock") &&
+      current.stage !== "Compare"
+    ) {
+      serverSwitchSession(current.candidateOrigin, accessToken);
+      await reconcileServerSwitchOnStartup(contexts.snapshot(current.vaultId));
+    } else await compareServerSwitch(accessToken);
+  } catch (error) {
+    testingFaultCheckpoint?.recordFailure(error);
+    const job = await serverSwitchRepository.loadJob();
+    const errorId =
+      error instanceof Error && "id" in error && typeof error.id === "string"
+        ? error.id
+        : "SYNCHRONIZATION_INTERRUPTED";
+    if (job?.state === "Running" && errorId === "SYNCHRONIZATION_AUTHENTICATION_REQUIRED") {
+      await accountRepository.eraseAuthenticationSecrets("server-switch-candidate");
+      await liveServerSwitchRepository.saveJob({
+        ...job,
+        state: "AuthenticationRequired",
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+    const race = serverSwitchRaceDisposition(job, errorId);
+    if (job?.state === "Running" && race !== undefined) {
+      if (race.kind === "Recompare") {
+        if (job.direction === "FastForwardCandidate")
+          await new SynchronizationHttp(
+            job.candidateOrigin,
+            serverSwitchSession(job.candidateOrigin, accessToken),
+          )
+            .request(
+              "DELETE",
+              `/api/vaults/${job.vaultId}/generation-candidates/${job.expectedLocalHead.generationId}`,
+              undefined,
+              job.candidateIdempotencyKey,
+            )
+            .catch(() => undefined);
+        await serverSwitchRepository.clearCheckpoints(job.jobId);
+        const {
+          direction: _direction,
+          candidateGenerationId: _candidateGenerationId,
+          candidateGenerationNumber: _candidateGenerationNumber,
+          candidatePredecessorGenerationId: _candidatePredecessorGenerationId,
+          candidateHeadCursor: _candidateHeadCursor,
+          ...comparable
+        } = job;
+        await liveServerSwitchRepository.saveJob({
+          ...comparable,
+          stage: "Compare",
+          retryCount: 1,
+          updatedAt: new Date().toISOString(),
+        });
+        await compareServerSwitchSafely(accessToken);
+        return;
+      }
+      await accountRepository.eraseAuthenticated("server-switch-candidate");
+      await accountRepository.eraseAccountVault("server-switch-candidate");
+      await serverSwitchRepository.clearCheckpoints(job.jobId);
+      await liveServerSwitchRepository.saveJob({
+        ...job,
+        state: "Conflict",
+        stage: "Terminal",
+        errorId: "SERVER_SWITCH_CONFLICT",
+        conflictReason: "DivergedGeneration",
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if (job?.state === "Running" && job.stage === "Compare") {
+      await accountRepository.eraseAuthenticated("server-switch-candidate");
+      await accountRepository.eraseAccountVault("server-switch-candidate");
+      await serverSwitchRepository.clearCheckpoints(job.jobId);
+      await liveServerSwitchRepository.saveJob({
+        ...job,
+        state: "Failed",
+        stage: "Terminal",
+        errorId,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    throw error;
+  }
+}
+const testingFaultCheckpoint =
+  import.meta.env.MODE === "e2e" ? new TestingFaultCheckpoint() : undefined;
+const runtimeFaultCheckpoint = testingFaultCheckpoint ?? noRuntimeFaultCheckpoint;
 const exportHost = new ChromeVaultExportHost();
 const exportControllers = new Map<string, AbortController>();
 const ARTIFACT_MESSAGE_CHUNK_BYTES = 256 * 1024;
@@ -369,27 +1178,6 @@ interface ArtifactSession {
   pending?: Uint8Array;
 }
 const artifactSessions = new Map<string, ArtifactSession>();
-
-async function reconcileInterruptedStaleRecovery(): Promise<boolean> {
-  const job = await accountRepository.latestSynchronizationJob();
-  if (
-    job?.state !== "Running" ||
-    (job.stage !== "PrepareRecoveryFork" &&
-      job.stage !== "PrepareServerReplacement" &&
-      job.stage !== "ActivateRecovery")
-  )
-    return false;
-  if (job.recoveryForkVaultId !== undefined)
-    await artifactStore.reconcile(job.recoveryForkVaultId, new Set()).catch(() => undefined);
-  const { recoveryForkVaultId: _recoveryForkVaultId, ...withoutFork } = job;
-  await accountRepository.saveSynchronizationJob({
-    ...withoutFork,
-    state: "Conflict",
-    stage: "Checkpoint",
-    updatedAt: new Date().toISOString(),
-  });
-  return true;
-}
 
 async function cancelArtifactSessions(): Promise<void> {
   const sessions = [...artifactSessions.values()];
@@ -412,9 +1200,132 @@ function artifactFilename(
   return `awsm-${bundleId.slice(0, 8)}-${role.toLowerCase().replaceAll("_", "-")}.${extension}`;
 }
 
+async function reconcileServerSwitchOnStartup(
+  context: ReturnType<typeof contexts.snapshot>,
+): Promise<void> {
+  let job = await serverSwitchRepository.loadJob();
+  if (job === undefined) return;
+  let decision = serverSwitchStartupDecision(job, context.vault.isUnlocked());
+  if (decision === "PresentAuthentication") return;
+  if (decision === "CleanupFailure") {
+    await accountRepository.eraseAuthenticated("server-switch-candidate");
+    await accountRepository.eraseAccountVault("server-switch-candidate");
+    await serverSwitchRepository.clearCheckpoints(job.jobId);
+    return;
+  }
+  if (decision === "CleanupSuccess") {
+    const configuration = await accountRepository.loadConfiguration();
+    if (
+      configuration.mode === "Configured" &&
+      configuration.serverOrigin === job.candidateOrigin &&
+      !(await accountRepository.hasAuthenticatedSecrets("server-switch-prior"))
+    )
+      await serverSwitchRepository.deleteJob(job.jobId);
+    return;
+  }
+  if (decision === "WaitForUnlock") {
+    if (job.state !== "WaitingForUnlock")
+      await liveServerSwitchRepository.saveJob({
+        ...job,
+        state: "WaitingForUnlock",
+        updatedAt: new Date().toISOString(),
+      });
+    return;
+  }
+  if (job.state === "WaitingForUnlock") {
+    job = { ...job, state: "Running", updatedAt: new Date().toISOString() };
+    await liveServerSwitchRepository.saveJob(job);
+  }
+  decision = serverSwitchStartupDecision(job, true);
+  serverSwitchController ??= new AbortController();
+  const transport = new SynchronizationHttp(
+    job.candidateOrigin,
+    serverSwitchSession(job.candidateOrigin),
+    fetch,
+    serverSwitchController.signal,
+  );
+  if (decision === "Compare") {
+    await compareServerSwitch();
+    return;
+  }
+  if (decision === "ApplyRemote") {
+    const records = await vaultRepository.load(job.vaultId);
+    if (records === undefined)
+      throw Object.assign(new Error("Server Switch Vault is unavailable"), {
+        id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+      });
+    const applicator = new ServerSwitchRemoteApplicator(
+      liveServerSwitchRepository,
+      accountRepository,
+      {
+        listStoredObjects: () => context.driver.listStoredObjects(),
+        listStoredEvents: () => context.driver.listStoredEvents(),
+      },
+      artifactStore,
+      transport,
+      runtimeFaultCheckpoint,
+    );
+    if (job.direction === "PublishLocal") await applicator.publishLocal(records);
+    else if (job.direction === "FastForwardCandidate")
+      await applicator.fastForwardCandidate(records);
+    else if (job.direction === "Union") await applicator.union(records);
+    else
+      throw Object.assign(new Error("Remote Server Switch direction is invalid"), {
+        id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+      });
+    job = (await serverSwitchRepository.loadJob()) ?? job;
+    decision = serverSwitchStartupDecision(job, true);
+  }
+  if (decision === "CompleteRemoteActivation") {
+    if (!job.candidateAuthorityChanged)
+      throw Object.assign(new Error("Remote activation journal is incomplete"), {
+        id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+      });
+    job = {
+      ...job,
+      stage: "PromoteContext",
+      updatedAt: new Date().toISOString(),
+    };
+    await liveServerSwitchRepository.saveJob(job);
+    decision = serverSwitchStartupDecision(job, true);
+  }
+  if (
+    decision === "ApplyLocal" &&
+    job.stage === "PromoteContext" &&
+    (job.direction === "Union" || job.direction === "FastForwardLocal")
+  ) {
+    job = {
+      ...job,
+      stage: "PrepareLocal",
+      updatedAt: new Date().toISOString(),
+    };
+    await liveServerSwitchRepository.saveJob(job);
+  }
+  if (decision === "ApplyLocal" && job.stage === "ActivateLocal") {
+    job = {
+      ...job,
+      stage: "PrepareLocal",
+      updatedAt: new Date().toISOString(),
+    };
+    await liveServerSwitchRepository.saveJob(job);
+  }
+  if (decision === "ApplyLocal" && job.stage === "PrepareLocal") {
+    await applyCandidateReplica(context, transport);
+    return;
+  }
+  if (decision === "PromoteUnchangedLocal") {
+    await verifyAndPromoteUnchangedLocal(context, transport);
+    return;
+  }
+  if (decision === "RevokePriorSession") await completePriorRevocation(job);
+}
+
 const startup = contexts.initialize().then(async () => {
-  await browser.alarms.create("awsm:synchronization-poll", { periodInMinutes: 1 });
-  if (await reconcileInterruptedStaleRecovery()) await notifyAppStateChanged();
+  await browser.alarms.create("awsm:synchronization-poll", {
+    periodInMinutes: 1,
+  });
+  if (await new InterruptedStaleRecoveryReconciler(accountRepository, artifactStore).execute())
+    await notifyAppStateChanged();
   const interruptedImport = await importRepository.latest();
   if (await importRepository.reconcileInterrupted(new Date().toISOString())) {
     if (interruptedImport !== undefined) {
@@ -432,9 +1343,27 @@ const startup = contexts.initialize().then(async () => {
   }
   const context = contexts.active();
   if (context === undefined) {
-    await runEnrollment();
+    await synchronizationCoordinator.passivePoll();
     return;
   }
+  await reconcileServerSwitchOnStartup(context).catch(async (error) => {
+    const job = await serverSwitchRepository.loadJob();
+    if (job?.state === "WaitingForUnlock") return;
+    if (job?.state === "Running") {
+      await accountRepository.eraseAuthenticated("server-switch-candidate");
+      await accountRepository.eraseAccountVault("server-switch-candidate");
+      await liveServerSwitchRepository.saveJob({
+        ...job,
+        state: "Failed",
+        errorId:
+          error instanceof Error && "id" in error && typeof error.id === "string"
+            ? error.id
+            : "SYNCHRONIZATION_INTERRUPTED",
+        updatedAt: new Date().toISOString(),
+      });
+      await notifyAppStateChanged();
+    }
+  });
   await context.driver.reconcileInterruptedVacuum();
   await context.driver.reconcileInterruptedJobs(new Date().toISOString());
   const authoritativeObjects = await context.driver.listStoredObjects();
@@ -453,11 +1382,11 @@ const startup = contexts.initialize().then(async () => {
     }
     await notifyAppStateChanged();
   }
-  await runEnrollment();
+  await synchronizationCoordinator.passivePoll();
 });
 
 browser.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "awsm:synchronization-poll") void runEnrollment();
+  if (alarm.name === "awsm:synchronization-poll") void synchronizationCoordinator.passivePoll();
 });
 
 function safeError(error: unknown): AppResponse {
@@ -498,6 +1427,10 @@ function safeError(error: unknown): AppResponse {
     SYNCHRONIZATION_INTEGRITY_FAILED: "Downloaded synchronization data could not be verified.",
     SYNCHRONIZATION_CONFLICT:
       "This stale Replica is read-only until you preserve it and use the server version.",
+    SERVER_SWITCH_CONFLICT:
+      "AWSM could not prove a safe fast-forward. Your current synchronization server is unchanged.",
+    SERVER_SWITCH_VAULT_MISMATCH:
+      "That Account owns a different Vault. Your current synchronization server is unchanged.",
   };
   return {
     ok: false,
@@ -509,13 +1442,19 @@ function safeError(error: unknown): AppResponse {
 }
 
 async function state(): Promise<AppState> {
-  const [accountConfiguration, accountMetadata, authenticated, synchronizationJob] =
-    await Promise.all([
-      accountRepository.loadConfiguration(),
-      accountRepository.loadMetadata(),
-      accountRepository.hasAuthenticatedSecrets(),
-      accountRepository.latestSynchronizationJob(),
-    ]);
+  const [
+    accountConfiguration,
+    accountMetadata,
+    authenticated,
+    synchronizationJob,
+    serverSwitchJob,
+  ] = await Promise.all([
+    accountRepository.loadConfiguration(),
+    accountRepository.loadMetadata(),
+    accountRepository.hasAuthenticatedSecrets(),
+    accountRepository.latestSynchronizationJob(),
+    serverSwitchRepository.loadJob(),
+  ]);
   const context = contexts.active();
   const records = context === undefined ? undefined : await vaultRepository.load(context.vaultId);
   let latestJob = context === undefined ? undefined : await context.driver.latestCaptureJob();
@@ -566,7 +1505,10 @@ async function state(): Promise<AppState> {
     account: {
       configuration:
         accountConfiguration.mode === "Configured"
-          ? { mode: "Configured", serverOrigin: accountConfiguration.serverOrigin }
+          ? {
+              mode: "Configured",
+              serverOrigin: accountConfiguration.serverOrigin,
+            }
           : { mode: accountConfiguration.mode },
       ...(accountMetadata === undefined ? {} : { email: accountMetadata.email }),
       accountState: authenticated ? "Authenticated" : "SignedOut",
@@ -586,7 +1528,8 @@ async function state(): Promise<AppState> {
                       ? "Offline"
                       : synchronizationJob === undefined || synchronizationJob.state === "Succeeded"
                         ? "UpToDate"
-                        : synchronizationJob.stage === "DownloadRecords" ||
+                        : synchronizationJob.stage === "FetchChanges" ||
+                            synchronizationJob.stage === "DownloadRecords" ||
                             synchronizationJob.stage === "ActivateLocal"
                           ? "Downloading"
                           : synchronizationJob.stage === "EnrollVault"
@@ -602,10 +1545,51 @@ async function state(): Promise<AppState> {
         : {}),
       ...(latestImportJob?.state === "Created" || latestImportJob?.state === "Running"
         ? { busy: { operation: "Import" as const } }
-        : context === undefined || busyOperation === undefined
-          ? {}
-          : { busy: { vaultId: context.vaultId, operation: busyOperation } }),
+        : serverSwitchJob?.state === "Running" && serverSwitchJob.stage !== "Compare"
+          ? {
+              busy: {
+                vaultId: serverSwitchJob.vaultId,
+                operation: "Server Switch" as const,
+              },
+            }
+          : context === undefined || busyOperation === undefined
+            ? {}
+            : { busy: { vaultId: context.vaultId, operation: busyOperation } }),
     }),
+    ...(serverSwitchJob === undefined || serverSwitchJob.state === "Succeeded"
+      ? {}
+      : {
+          serverSwitch: {
+            jobId: serverSwitchJob.jobId,
+            candidateOrigin: serverSwitchJob.candidateOrigin,
+            state:
+              serverSwitchJob.state === "AuthenticationRequired"
+                ? ("AuthenticationRequired" as const)
+                : serverSwitchJob.state === "WaitingForUnlock"
+                  ? ("VaultLocked" as const)
+                  : serverSwitchJob.state === "Conflict"
+                    ? ("Conflict" as const)
+                    : serverSwitchJob.state === "Failed"
+                      ? ("Failed" as const)
+                      : serverSwitchJob.stage === "Compare"
+                        ? ("Comparing" as const)
+                        : ("Applying" as const),
+            completedItems: serverSwitchJob.completedItems,
+            totalItems: serverSwitchJob.totalItems,
+            processedBytes: serverSwitchJob.processedBytes,
+            totalBytes: serverSwitchJob.totalBytes,
+            ...(serverSwitchJob.direction === undefined
+              ? {}
+              : { direction: serverSwitchJob.direction }),
+            ...(serverSwitchJob.errorId === undefined ? {} : { errorId: serverSwitchJob.errorId }),
+            ...(serverSwitchJob.conflictReason === undefined
+              ? {}
+              : { reason: serverSwitchJob.conflictReason }),
+            ...(serverSwitchJob.state === "Conflict" && serverSwitchJob.candidateAuthorityChanged
+              ? { candidateAuthorityChanged: true }
+              : {}),
+          },
+        }),
     ...(latestJob === undefined ? {} : { latestJob }),
     ...(latestWarnings === undefined ? {} : { latestWarnings }),
     ...(recentCapture === undefined ? {} : { recentCapture }),
@@ -643,7 +1627,9 @@ async function completeAccountVault(input: {
   ) {
     const current = contexts.active();
     if (current === undefined)
-      throw Object.assign(new Error("Vault not found"), { id: "VAULT_NOT_FOUND" });
+      throw Object.assign(new Error("Vault not found"), {
+        id: "VAULT_NOT_FOUND",
+      });
     await contexts.select({
       expectedActiveVaultId: current.vaultId,
       vaultId: input.existingVaultId,
@@ -653,7 +1639,9 @@ async function completeAccountVault(input: {
     await contexts.unlockWithDevice(input.existingVaultId);
   const synchronized = contexts.active();
   if (synchronized === undefined)
-    throw Object.assign(new Error("Vault not found"), { id: "VAULT_NOT_FOUND" });
+    throw Object.assign(new Error("Vault not found"), {
+      id: "VAULT_NOT_FOUND",
+    });
   await enrollment.prepare(synchronized.vaultId);
   await runEnrollment();
 }
@@ -1135,32 +2123,99 @@ async function handle(request: AppRequest): Promise<AppResponse> {
   try {
     switch (request.type) {
       case "GetState":
-        void runEnrollment();
+        return { ok: true, value: await state() };
+      case "WakeSynchronization":
+        void synchronizationCoordinator.interactiveWake();
         return { ok: true, value: await state() };
       case "ChooseLocalOnly":
-        await accountRepository.saveConfiguration({ version: 1, mode: "LocalOnly" });
+        await assertNoApplyingServerSwitch();
+        await accountRepository.saveConfiguration({
+          version: 1,
+          mode: "LocalOnly",
+        });
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       case "ConfigureSyncServer":
+        await assertNoApplyingServerSwitch();
         await configureSyncServer(request.serverOrigin, accountServerHost);
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
-      case "ChangeSyncServer": {
-        activeCable?.disconnect();
-        activeCable = undefined;
-        activeCableContext = undefined;
-        if (await accountRepository.hasAuthenticatedSecrets())
-          await (await sessionManager()).logout();
-        activeSessionManager = undefined;
-        activeSessionOrigin = undefined;
-        await configureSyncServer(request.serverOrigin, accountServerHost);
+      case "BeginServerSwitch": {
+        const configuration = await accountRepository.loadConfiguration();
+        if (configuration.mode !== "Configured")
+          throw Object.assign(new Error("No synchronized source Account is active"), {
+            id: "VAULT_CONTEXT_CHANGED",
+          });
+        const context = contexts.snapshot(request.expectedVaultId);
+        if (!context.vault.isUnlocked())
+          throw Object.assign(new Error("Unlock the synchronized Vault"), {
+            id: "VAULT_LOCKED",
+          });
+        const registration = await accountRepository.loadAccountVault();
+        if (registration?.vaultId !== context.vaultId)
+          throw Object.assign(new Error("The active Vault is not the synchronized Vault"), {
+            id: "VAULT_CONTEXT_CHANGED",
+          });
+        if ((await context.driver.managementBusy()) !== undefined)
+          throw Object.assign(new Error("The Vault is busy"), {
+            id: "VAULT_BUSY",
+          });
+        const head = await context.driver.getVaultHead();
+        if (head === undefined)
+          throw Object.assign(new Error("The active Vault head is unavailable"), {
+            id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+          });
+        const candidateOrigin = await validateSyncServer(
+          request.candidateOrigin,
+          accountServerHost,
+        );
+        await serverSwitchService.begin({
+          sourceOrigin: configuration.serverOrigin,
+          candidateOrigin,
+          vaultId: context.vaultId,
+          expectedLocalHead: head,
+        });
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       }
-      case "RetrySynchronization":
-        if (await accountRepository.retrySynchronization()) void runEnrollment();
+      case "LoginServerSwitchCandidate": {
+        const accessToken = await serverSwitchService.authenticate("Login", request);
+        await compareServerSwitchSafely(accessToken, true);
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
+      }
+      case "SignupServerSwitchCandidate": {
+        const accessToken = await serverSwitchService.authenticate("Signup", request);
+        await compareServerSwitchSafely(accessToken, true);
+        await notifyAppStateChanged();
+        return { ok: true, value: await state() };
+      }
+      case "CancelServerSwitch":
+        await serverSwitchService.cancel(request.jobId);
+        await notifyAppStateChanged();
+        return { ok: true, value: await state() };
+      case "RetryServerSwitch":
+        await serverSwitchService.retry(request.jobId);
+        await notifyAppStateChanged();
+        return { ok: true, value: await state() };
+      case "RetrySynchronization": {
+        const retryJob = await accountRepository.latestSynchronizationJob();
+        if (retryJob?.state === "Waiting" || retryJob?.state === "Failed") {
+          try {
+            await discoverAccountVault();
+          } catch (error) {
+            const errorId =
+              error instanceof Error && "id" in error && typeof error.id === "string"
+                ? error.id
+                : undefined;
+            if (errorId !== undefined && errorId !== "SYNCHRONIZATION_INTERRUPTED") throw error;
+            await accountRepository.retrySynchronization();
+          }
+          void synchronizationCoordinator.interactiveWake();
+        }
+        await notifyAppStateChanged();
+        return { ok: true, value: await state() };
+      }
       case "ResolveStaleReplica": {
         const context = contexts.snapshot(request.expectedVaultId);
         const records = await vaultRepository.load(context.vaultId);
@@ -1173,7 +2228,9 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           throw Object.assign(new Error("The synchronization server is unavailable."), {
             id: "SERVER_INCOMPATIBLE",
           });
-        const workspaceState = await workspace.state({ unlockedVaultId: context.vaultId });
+        const workspaceState = await workspace.state({
+          unlockedVaultId: context.vaultId,
+        });
         const sourceName = workspaceState.vaults.find(
           (candidate) => candidate.vaultId === context.vaultId,
         )?.name;
@@ -1200,12 +2257,14 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           ),
           new RemoteReplicaDownloader(transport, artifactStore),
           artifactStore,
+          runtimeFaultCheckpoint,
         ).execute();
         await contexts.reloadFromAuthority();
         await notifyAppStateChanged();
         return { ok: true, value: result };
       }
       case "LoginAccount":
+        await assertNoApplyingServerSwitch();
         {
           const access = await (await accountService()).login({
             email: request.email,
@@ -1218,6 +2277,7 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       case "SignupAccount": {
+        await assertNoApplyingServerSwitch();
         {
           const access = await (await accountService()).signup({
             email: request.email,
@@ -1230,10 +2290,12 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         return { ok: true, value: await state() };
       }
       case "CompleteAccountVault":
+        await assertNoApplyingServerSwitch();
         await completeAccountVault(request);
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       case "LogoutAccount":
+        await assertNoApplyingServerSwitch();
         activeCable?.disconnect();
         activeCable = undefined;
         activeCableContext = undefined;
@@ -1245,9 +2307,11 @@ async function handle(request: AppRequest): Promise<AppResponse> {
       case "SuggestVaultName":
         return { ok: true, value: { name: await workspace.suggestName() } };
       case "CreateVault":
+        await assertNoApplyingServerSwitch();
         await contexts.create(request);
         return { ok: true, value: await state() };
       case "SelectActiveVault":
+        await assertNoApplyingServerSwitch();
         await cancelArtifactSessions();
         await contexts.select(request);
         return { ok: true, value: await state() };
@@ -1258,13 +2322,31 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         return { ok: true, value: await state() };
       case "UnlockDevice": {
         await contexts.unlockWithDevice(request.expectedVaultId);
+        const switchJob = await serverSwitchRepository.loadJob();
+        if (
+          switchJob !== undefined &&
+          switchJob.vaultId === request.expectedVaultId &&
+          (switchJob.state === "Running" || switchJob.state === "WaitingForUnlock")
+        )
+          await compareServerSwitchSafely(
+            await serverSwitchSession(switchJob.candidateOrigin).accessToken(),
+          );
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       }
       case "LockVault": {
         await cancelArtifactSessions();
         const context = contexts.snapshot(request.expectedVaultId);
+        serverSwitchController?.abort();
+        serverSwitchController = undefined;
         await context.vault.lock();
+        const switchJob = await serverSwitchRepository.loadJob();
+        if (switchJob?.state === "Running" && switchJob.vaultId === context.vaultId)
+          await liveServerSwitchRepository.saveJob({
+            ...switchJob,
+            state: "WaitingForUnlock",
+            updatedAt: new Date().toISOString(),
+          });
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       }
@@ -1317,109 +2399,139 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         const service = await library(request.expectedVaultId);
         const accountVault = await accountRepository.loadAccountVault();
         const synchronized = accountVault?.vaultId === context.vaultId;
-        if (synchronized) {
-          if (!(await accountRepository.hasAuthenticatedSecrets()))
-            throw Object.assign(new Error("Synchronized Vacuum requires authentication"), {
-              id: "SYNCHRONIZATION_AUTHENTICATION_REQUIRED",
-            });
-          await runEnrollment();
-          const [reconciledJob, reconciledAccount] = await Promise.all([
-            accountRepository.latestSynchronizationJob(),
-            accountRepository.loadAccountVault(),
-          ]);
-          if (
-            reconciledJob?.state !== "Succeeded" ||
-            reconciledAccount?.vaultId !== context.vaultId ||
-            reconciledAccount.remoteGenerationId !== records.head.generationId ||
-            reconciledAccount.remoteGenerationNumber !== records.head.generationNumber
-          )
-            throw Object.assign(
-              new Error("Synchronized Vacuum requires an online current Replica"),
-              {
-                id: "SYNCHRONIZATION_INTERRUPTED",
-              },
-            );
-        }
-        const repository: VacuumRepository = {
-          listStoredObjects: () => context.driver.listStoredObjects(),
-          listStoredEvents: () => context.driver.listStoredEvents(),
-          getVaultNameProjection: () => context.driver.getVaultNameProjection(),
-          acquireVacuum: async (jobId, createdAt) => {
-            const head = await context.driver.acquireVacuum(jobId, createdAt);
-            await notifyAppStateChanged();
-            return head;
-          },
-          updateVacuumStage: async (jobId, stage) => {
-            await context.driver.updateVacuumStage(jobId, stage);
-            await notifyAppStateChanged();
-          },
-          getVaultGeneration: (generationId) => context.driver.getVaultGeneration(generationId),
-          releaseVacuum: async (jobId) => {
-            await context.driver.releaseVacuum(jobId);
-            await notifyAppStateChanged();
-          },
-          commitVacuum: async (input) => {
-            await context.driver.commitVacuum(input);
-            await notifyAppStateChanged();
-          },
-        };
-        const activateCandidate = synchronized
-          ? async (candidate: VacuumCandidate): Promise<void> => {
-              const current = await accountRepository.loadAccountVault();
-              if (current === undefined || current.vaultId !== context.vaultId)
-                throw Object.assign(new Error("Account Vault context changed"), {
-                  id: "VAULT_CONTEXT_CHANGED",
-                });
-              const configuration = await accountRepository.loadConfiguration();
-              if (configuration.mode !== "Configured")
-                throw Object.assign(new Error("Synchronization server changed"), {
-                  id: "VAULT_CONTEXT_CHANGED",
-                });
-              const transport = new SynchronizationHttp(
-                configuration.serverOrigin,
-                await sessionManager(),
-              );
-              await new SynchronizedVacuumActivator(
-                context.vaultId,
-                current.remoteGenerationNumber,
-                current.deliveryCursor,
-                context.driver,
-                transport,
-                async (approved, activatedHeadCursor) => {
-                  await context.driver.commitVacuum(approved);
-                  await accountRepository.recordActivatedGeneration({
-                    vaultId: context.vaultId,
-                    expectedGenerationId: current.remoteGenerationId,
-                    generationId: approved.generation.generationId,
-                    generationNumber: approved.generation.generationNumber,
-                    deliveryCursor: activatedHeadCursor,
-                  });
-                  await Promise.all(
-                    approved.deletedArtifactObjectIds.map((objectId) =>
-                      artifactStore.remove(context.vaultId, objectId),
-                    ),
-                  );
-                  await notifyAppStateChanged();
-                },
-                {
-                  persistCandidate: (approved) =>
-                    context.driver.persistSynchronizedVacuumCandidate(approved.jobId, approved),
-                  markRemoteActivated: (jobId, headCursor) =>
-                    context.driver.markSynchronizedVacuumActivated(jobId, headCursor),
-                },
-              ).activate(candidate);
-            }
+        const resumeSynchronization = synchronized
+          ? await synchronizationCoordinator.suspend()
           : undefined;
-        const result = await new VaultVacuumService(
-          repository,
-          service,
-          context.vault.requireRootKey(),
-          records.metadata.vaultId,
-          records.metadata.deviceId,
-          artifactStore,
-          activateCandidate,
-        ).execute();
-        return { ok: true, value: result };
+        try {
+          if (synchronized) {
+            if (!(await accountRepository.hasAuthenticatedSecrets()))
+              throw Object.assign(new Error("Synchronized Vacuum requires authentication"), {
+                id: "SYNCHRONIZATION_AUTHENTICATION_REQUIRED",
+              });
+            await executeSynchronization();
+            const [reconciledJob, reconciledAccount] = await Promise.all([
+              accountRepository.latestSynchronizationJob(),
+              accountRepository.loadAccountVault(),
+            ]);
+            if (
+              reconciledJob?.state !== "Succeeded" ||
+              reconciledAccount?.vaultId !== context.vaultId ||
+              reconciledAccount.remoteGenerationId !== records.head.generationId ||
+              reconciledAccount.remoteGenerationNumber !== records.head.generationNumber
+            )
+              throw Object.assign(
+                new Error("Synchronized Vacuum requires an online current Replica"),
+                {
+                  id: "SYNCHRONIZATION_INTERRUPTED",
+                },
+              );
+          }
+          const repository: VacuumRepository = {
+            listStoredObjects: () => context.driver.listStoredObjects(),
+            listStoredEvents: () => context.driver.listStoredEvents(),
+            getVaultNameProjection: () => context.driver.getVaultNameProjection(),
+            acquireVacuum: async (jobId, createdAt) => {
+              const head = await context.driver.acquireVacuum(jobId, createdAt);
+              await notifyAppStateChanged();
+              return head;
+            },
+            updateVacuumStage: async (jobId, stage) => {
+              await context.driver.updateVacuumStage(jobId, stage);
+              await notifyAppStateChanged();
+            },
+            getVaultGeneration: (generationId) => context.driver.getVaultGeneration(generationId),
+            releaseVacuum: async (jobId) => {
+              await context.driver.releaseVacuum(jobId);
+              await notifyAppStateChanged();
+            },
+            commitVacuum: async (input) => {
+              await context.driver.commitVacuum(input);
+              await notifyAppStateChanged();
+            },
+          };
+          const activateCandidate = synchronized
+            ? async (candidate: VacuumCandidate): Promise<void> => {
+                const current = await accountRepository.loadAccountVault();
+                if (current === undefined || current.vaultId !== context.vaultId)
+                  throw Object.assign(new Error("Account Vault context changed"), {
+                    id: "VAULT_CONTEXT_CHANGED",
+                  });
+                const configuration = await accountRepository.loadConfiguration();
+                if (configuration.mode !== "Configured")
+                  throw Object.assign(new Error("Synchronization server changed"), {
+                    id: "VAULT_CONTEXT_CHANGED",
+                  });
+                const transport = new SynchronizationHttp(
+                  configuration.serverOrigin,
+                  await sessionManager(),
+                );
+                await new SynchronizedVacuumActivator(
+                  context.vaultId,
+                  current.remoteGenerationNumber,
+                  current.deliveryCursor,
+                  context.driver,
+                  transport,
+                  async (approved, activatedHeadCursor) => {
+                    await context.driver.commitVacuum(approved);
+                    await accountRepository.recordActivatedGeneration({
+                      vaultId: context.vaultId,
+                      expectedGenerationId: current.remoteGenerationId,
+                      generationId: approved.generation.generationId,
+                      generationNumber: approved.generation.generationNumber,
+                      deliveryCursor: activatedHeadCursor,
+                    });
+                    await Promise.all(
+                      approved.deletedArtifactObjectIds.map((objectId) =>
+                        artifactStore.remove(context.vaultId, objectId),
+                      ),
+                    );
+                    await notifyAppStateChanged();
+                  },
+                  {
+                    persistCandidate: (approved) =>
+                      context.driver.persistSynchronizedVacuumCandidate(approved.jobId, approved),
+                    markRemoteActivated: (jobId, headCursor) =>
+                      context.driver.markSynchronizedVacuumActivated(jobId, headCursor),
+                  },
+                  runtimeFaultCheckpoint,
+                ).activate(candidate);
+              }
+            : undefined;
+          const result = await new VaultVacuumService(
+            repository,
+            service,
+            context.vault.requireRootKey(),
+            records.metadata.vaultId,
+            records.metadata.deviceId,
+            artifactStore,
+            activateCandidate,
+          ).execute();
+          return { ok: true, value: result };
+        } catch (error) {
+          const errorId = error instanceof Error && "id" in error ? String(error.id) : undefined;
+          if (
+            synchronized &&
+            (errorId === "SYNCHRONIZATION_AUTHENTICATION_REQUIRED" ||
+              errorId === "AUTHENTICATION_FAILED")
+          ) {
+            const job = await accountRepository.latestSynchronizationJob();
+            await accountRepository.logout();
+            activeSessionManager = undefined;
+            activeSessionOrigin = undefined;
+            if (job !== undefined)
+              await accountRepository.saveSynchronizationJob({
+                ...job,
+                state: "AuthenticationRequired",
+                updatedAt: new Date().toISOString(),
+                errorId: "SYNCHRONIZATION_AUTHENTICATION_REQUIRED",
+              });
+            await notifyAppStateChanged();
+          }
+          throw error;
+        } finally {
+          resumeSynchronization?.();
+          if (synchronized) void synchronizationCoordinator.passivePoll();
+        }
       }
       case "GetVacuumEstimate":
         return {
@@ -1427,6 +2539,7 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           value: await vacuumEstimate(request.expectedVaultId),
         };
       case "ExportVault":
+        await assertNoApplyingServerSwitch();
         return {
           ok: true,
           value: await exportVault(request.expectedVaultId, request.passphrase),
@@ -1439,6 +2552,7 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         return { ok: true, value: null };
       }
       case "BeginVaultImport": {
+        await assertNoApplyingServerSwitch();
         const job = await importRepository.begin({
           jobId: crypto.randomUUID(),
           sourceByteLength: request.sourceByteLength,
@@ -1572,12 +2686,15 @@ async function handle(request: AppRequest): Promise<AppResponse> {
       }
     }
   } catch (error) {
+    testingFaultCheckpoint?.recordFailure(error);
     return safeError(error);
   }
 }
 
 export function startBackground(): void {
   browser.runtime.onMessage.addListener((request: unknown) => {
+    const testingResponse = testingFaultCheckpoint?.handle(request);
+    if (testingResponse !== undefined) return Promise.resolve(testingResponse);
     if (!isAppRequest(request)) return undefined;
     return startup.then(() => handle(request));
   });

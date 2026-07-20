@@ -190,7 +190,7 @@ paths:
               $ref: "#/components/schemas/AttachVaultRequest"
       responses:
         "201":
-          description: Provisional Vault and Generation-zero upload
+          description: Provisional Vault and current active Generation upload
           content:
             application/json:
               schema:
@@ -389,7 +389,7 @@ paths:
               $ref: "#/components/schemas/CommitRequest"
       responses:
         "200":
-          description: Durable Event closure acknowledgement
+          description: Durable Event closure publication or already-active closure acknowledgement
           content:
             application/json:
               schema:
@@ -807,7 +807,8 @@ components:
         capabilities:
           type: object
           additionalProperties: false
-          required: [accountPassword, accountVaultLimit, completeReplicaSynchronization]
+          required:
+            [accountPassword, accountVaultLimit, completeReplicaSynchronization]
           properties:
             accountPassword:
               type: boolean
@@ -892,7 +893,8 @@ components:
     AuthenticationParameters:
       type: object
       additionalProperties: false
-      required: [accountKeyId, kdfAlgorithm, kdfSalt, kdfOperations, kdfMemoryBytes]
+      required:
+        [accountKeyId, kdfAlgorithm, kdfSalt, kdfOperations, kdfMemoryBytes]
       properties:
         accountKeyId:
           $ref: "#/components/schemas/Uuid"
@@ -1023,15 +1025,15 @@ components:
     AttachVaultRequest:
       type: object
       additionalProperties: false
-      required: [vaultId, generationId, generationNumber, accountSlot, generationObject]
+      required:
+        [vaultId, generationId, generationNumber, accountSlot, generationObject]
       properties:
         vaultId:
           $ref: "#/components/schemas/Uuid"
         generationId:
           $ref: "#/components/schemas/Uuid"
         generationNumber:
-          type: integer
-          enum: [0]
+          $ref: "#/components/schemas/Counter"
         accountSlot:
           $ref: "#/components/schemas/AccountSlot"
         generationObject:
@@ -1057,7 +1059,15 @@ components:
     Vault:
       type: object
       additionalProperties: false
-      required: [vaultId, state, generationId, generationNumber, headCursor, accountSlot]
+      required:
+        [
+          vaultId,
+          state,
+          generationId,
+          generationNumber,
+          headCursor,
+          accountSlot,
+        ]
       properties:
         vaultId:
           $ref: "#/components/schemas/Uuid"
@@ -1087,7 +1097,8 @@ components:
     AccountSlot:
       type: object
       additionalProperties: false
-      required: [version, slotId, vaultId, accountKeyId, algorithm, nonce, ciphertext]
+      required:
+        [version, slotId, vaultId, accountKeyId, algorithm, nonce, ciphertext]
       properties:
         version:
           type: integer

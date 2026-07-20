@@ -13,6 +13,23 @@ numbered plan and reconciliation with the owning specifications.
 
 ---
 
+## Automated Chrome Extension Builds
+
+**Status:** Candidate
+
+Add a GitHub Actions workflow that runs on pushes to `main` only when the browser extension or its
+workspace build inputs change. The workflow must install the pinned dependencies, run the extension
+quality gates and release verifier, create the Chrome ZIP with `corepack pnpm zip`, and publish it
+with a checksum and source commit identifier.
+
+Publish the ZIP as an asset on a clearly labeled rolling pre-release so the README can use one
+stable public download link without committing generated output. Replacing that rolling asset must
+happen only after all required checks pass. Document that the artifact is a pre-release,
+developer-mode installation with manual updates; Chrome Web Store signing, review, and automatic
+updates remain separate future distribution work.
+
+---
+
 ## Redis-Backed Ephemeral Coordination
 
 **Status:** Candidate
@@ -23,6 +40,46 @@ deployment as the Action Cable adapter so multi-process hint delivery and epheme
 share one operational dependency. The implementation plan must preserve 60-second expiry,
 Account binding, atomic one-use consumption, digest-only storage, and polling as the sufficient
 synchronization path when hints are lost.
+
+---
+
+## Recovered Local-Only Vault Journey Proof
+
+**Status:** Candidate
+
+Extend the packaged two-browser stale-Replica recovery journey beyond proving that the recovered
+local-only Vault exists in the Vault switcher. Switch into that Vault and verify its stale Captures
+and Collection topology, then switch back to the synchronized Vault and verify the
+server-authoritative post-Vacuum state remains active, current, and UpToDate without a reload. The
+proof must also confirm that switching does not resynchronize or overwrite the recovered local-only
+Vault.
+
+---
+
+## Native Download Boundary Journey Proof
+
+**Status:** Candidate
+
+Add a test-only Download Host that replaces only the native save-file interaction which packaged
+headless browsers cannot reliably automate. Use it to complete the successful Export branch of
+stale-Replica recovery and prove that the emitted encrypted Vault Package imports into a fresh
+local-only Vault. The test Host must exercise the production Runtime encryption, package creation,
+validation, and recovery sequencing without granting the shipped extension broader permissions or
+bypassing the real Host in release builds.
+
+---
+
+## Firefox Extension Host
+
+**Status:** Discovery
+
+Define and implement Firefox as a supported extension Host rather than treating Chrome-specific
+behavior as portable by assumption. Resolve manifest and background lifecycle differences, storage
+and download Drivers, permissions, native-dialog behavior, packaging, signing, and update delivery.
+Run the shared Runtime conformance suites and the first-use, capture, synchronization, stale-Replica
+recovery, Export, Import, lock, and live-Projection journeys against a packaged Firefox build. Any
+Firefox-specific accommodation must remain behind Host or Driver boundaries and must not fork the
+canonical Vault, Account, synchronization, or cryptographic contracts.
 
 ---
 

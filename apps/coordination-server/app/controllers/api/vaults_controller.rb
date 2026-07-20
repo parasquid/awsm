@@ -25,7 +25,7 @@ module Api
           state: "Provisional", head_cursor: 0, **slot,
           provisional_expires_at: Coordination::ServicePolicy.current.upload_staging_expiry_hours.hours.from_now)
         generation = vault.vault_generations.create!(generation_id: body.fetch("generationId"),
-          generation_number: 0, state: "Candidate")
+          generation_number: body.fetch("generationNumber"), state: "Candidate")
         record = vault.opaque_records.create!(object_id: object.fetch("objectId"),
           object_type: "VaultGeneration", byte_length: object.fetch("byteLength"),
           sha256: Coordination::ProtocolEncoding.decode_sha256(object.fetch("sha256")),
@@ -65,7 +65,7 @@ module Api
         vault.lock!
         generation = vault.vault_generations.find_by!(generation_id:)
         record = generation.generation_record
-        unless vault.state == "Provisional" && generation.generation_number.zero? &&
+        unless vault.state == "Provisional" && generation.state == "Candidate" &&
             record&.state == "DurableUncommitted"
           raise Coordination::OutcomeError.new("VAULT_NOT_READY", status: :conflict)
         end
@@ -73,7 +73,8 @@ module Api
         generation.generation_memberships.create!(opaque_record: record)
         generation.update!(state: "Active", activated_at: Time.current)
         vault.update!(state: "Active", active_generation: generation,
-          active_generation_number: 0, head_cursor: 1, provisional_expires_at: nil)
+          active_generation_number: generation.generation_number, head_cursor: 1,
+          provisional_expires_at: nil)
         DeliveryChange.create!(vault_replica: vault, vault_generation: generation, cursor: 1,
           kind: "GenerationActivated", accepted_at: Time.current)
         idempotency.persist!(resource_type: "VaultReplica", resource_id: vault.id)
@@ -94,13 +95,16 @@ module Api
     end
 
     def validate_attachment!(body, object)
-      valid = body.fetch("generationNumber") == 0 && body.fetch("generationId") == object.fetch("objectId") &&
+      generation_number = body.fetch("generationNumber")
+      valid = generation_number.is_a?(Integer) && generation_number.between?(0, 9_007_199_254_740_991) &&
+        body.fetch("generationId") == object.fetch("objectId") &&
         object.fetch("objectType") == "VaultGeneration" && object.fetch("byteLength").is_a?(Integer)
       raise KeyError unless valid
     end
 
     def render_attachment(vault, status:)
-      upload = vault.vault_generations.find_by!(generation_number: 0).generation_record.upload
+      generation = vault.active_generation || vault.vault_generations.find_by!(state: "Candidate")
+      upload = generation.generation_record.upload
       render json: { vault: Coordination::Serializers.vault(vault),
                     upload: Coordination::Serializers.upload(upload),
                     ticket: Coordination::TransferTicketIssuer.upload(account: current_account,

@@ -10,6 +10,21 @@ html,body{margin:0} body{font:20px sans-serif} header{position:fixed;inset:0 0 a
 <script>document.body.dataset.liveFixture = "executed-only-on-live-page";</script></body></html>`;
 
 createServer((request, response) => {
+  if (request.url === "/api/server-information") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        service: "AWSM Coordination Server",
+        protocolVersion: "1",
+        capabilities: {
+          accountPassword: true,
+          accountVaultLimit: 1,
+          completeReplicaSynchronization: true,
+        },
+      }),
+    );
+    return;
+  }
   if (request.url === "/fixture") {
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(fixture);

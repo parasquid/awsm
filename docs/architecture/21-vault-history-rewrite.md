@@ -36,7 +36,13 @@ Between generation creation and Vacuum, new immutable Objects and Events form an
 
 The Library exposes Active Collections first and a collapsed Deleted accordion beneath them. Delete is reversible until Vacuum. Vacuum is manual, lives inside Deleted, processes all currently Deleted Captures, and is suggested only under meaningful storage pressure. Individual and Collection deletion share one Bundle-ID-based domain operation: the Command resolves the current effective Collection to explicit Bundle IDs.
 
-A Collection is a stable Event-backed logical identity, not an authoritative Object or mutable container. `CollectionsMerged`, `CapturesMoved`, and `CollectionMergeReverted` preserve user-directed topology. Vacuum retains or rewrites the minimum management history needed to reproduce each retained Capture's effective Collection, including filtering mixed move Events under new Event IDs. It aborts on unknown topology dependencies before activation.
+A Collection is a stable Event-backed logical identity, not an authoritative Object or mutable
+container. `CollectionsMerged`, `CapturesMoved`, and `CollectionMergeReverted` preserve
+user-directed topology. Vacuum retains or rewrites the minimum management history needed to
+reproduce each retained Capture's effective Collection, including filtering mixed move Events under
+new Event IDs. A management Event anchored to a reclaimed Capture descriptor is rewritten against a
+retained descriptor; merge reversals remap a rewritten merge Event ID. It aborts on unknown topology
+dependencies before activation.
 
 ## Rewrite policy
 

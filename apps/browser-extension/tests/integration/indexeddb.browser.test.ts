@@ -44,6 +44,86 @@ test("restores encrypted Account credentials and erases only Account state on lo
   });
 });
 
+test("isolates active and candidate Account credentials across logout and restart", async ({
+  page,
+}) => {
+  await expect(scenario(page, "account-scope-isolation")).resolves.toEqual({
+    activeEmail: "active@example.test",
+    candidateEmail: "candidate@example.test",
+    activePresentBeforeLogout: true,
+    candidatePresentBeforeLogout: true,
+    activePresentAfterLogout: false,
+    candidatePresentAfterLogout: true,
+    candidateKeyRestored: true,
+    candidateRefreshRestored: true,
+    candidateVaultId: "00000000-0000-4000-8000-000000000834",
+    candidatePresentAfterErase: false,
+  });
+});
+
+test("persists strict restart-safe Server Switch Jobs and scoped checkpoints", async ({ page }) => {
+  await expect(scenario(page, "server-switch-persistence")).resolves.toEqual({
+    direction: "FastForwardCandidate",
+    checkpointState: "Durable",
+    staleDeleteRejected: true,
+    matchingDeleteSucceeded: true,
+    jobRemoved: true,
+    checkpointRemoved: true,
+    corruptJobRejected: true,
+    repeatedStagesStable: true,
+    startupDecisions: [
+      "PresentAuthentication",
+      "Compare",
+      "ApplyRemote",
+      "CompleteRemoteActivation",
+      "ApplyLocal",
+      "ApplyLocal",
+      "PromoteUnchangedLocal",
+      "RevokePriorSession",
+      "CleanupSuccess",
+    ],
+    reopenedStages: [
+      "AuthenticationRequired:AuthenticateCandidate",
+      "Running:Compare",
+      "Running:PrepareRemote",
+      "Running:ActivateRemote",
+      "Running:PrepareLocal",
+      "WaitingForUnlock:ActivateLocal",
+      "Running:PromoteContext",
+      "Running:RevokePriorSession",
+      "Succeeded:Terminal",
+    ],
+  });
+});
+
+test("atomically promotes candidate Account authority and retains prior revocation credentials", async ({
+  page,
+}) => {
+  await expect(scenario(page, "server-switch-promotion")).resolves.toEqual({
+    serverOrigin: "https://candidate.example",
+    activeEmail: "candidate@example.test",
+    activeRefresh: "refresh-candidate@example.test",
+    priorEmail: "source@example.test",
+    priorRefresh: "refresh-source@example.test",
+    candidateRemoved: true,
+    registrationAccountId: "00000000-0000-4000-8000-000000000850",
+    synchronizationStage: "FetchChanges",
+    synchronizationCursor: 21,
+    switchStage: "RevokePriorSession",
+  });
+});
+
+test("rolls back every authoritative store write during Replica promotion", async ({ page }) => {
+  const result = (await scenario(page, "server-switch-replica-promotion-atomicity")) as {
+    successAtomic: boolean;
+    failurePoints: number;
+    allAtomic: boolean;
+  };
+  expect(result.successAtomic).toBe(true);
+  expect(result.failurePoints).toBeGreaterThan(20);
+  expect(result.allAtomic).toBe(true);
+});
+
 test("isolates Vault metadata, key slots, device keys, generations, and heads", async ({
   page,
 }) => {
@@ -357,6 +437,32 @@ test("atomically replaces a stale Replica and activates an independent local rec
   });
 });
 
+test("rejects remote reconciliation that races or omits local authority", async ({ page }) => {
+  await expect(scenario(page, "remote-reconciliation-fence")).resolves.toEqual({
+    omissionErrorId: "VAULT_CONTEXT_CHANGED",
+    changedHeadErrorId: "VAULT_CONTEXT_CHANGED",
+    localMutationPreserved: true,
+    jobStillRunning: true,
+  });
+});
+
+test("reconciles every interrupted stale-recovery stage after an IndexedDB restart", async ({
+  page,
+}) => {
+  const recovered = {
+    reconciled: true,
+    state: "Conflict",
+    stage: "Checkpoint",
+    forkRemoved: true,
+    artifactsRemoved: true,
+  };
+  await expect(scenario(page, "stale-recovery-restart")).resolves.toEqual({
+    PrepareRecoveryFork: recovered,
+    PrepareServerReplacement: recovered,
+    ActivateRecovery: recovered,
+  });
+});
+
 test("streams encrypted Artifact wrappers through scoped OPFS storage", async ({ page }) => {
   await expect(scenario(page, "artifact-store")).resolves.toEqual({
     objectType: "Artifact",
@@ -366,6 +472,7 @@ test("streams encrypted Artifact wrappers through scoped OPFS storage", async ({
     collisionRejected: true,
     orphanRemoved: true,
     encryptedImportCopiedExactly: true,
+    encryptedImportReplaySucceeded: true,
     corruptEncryptedImportRejected: true,
     quotaErrorId: "STORAGE_QUOTA_EXCEEDED",
     quotaArtifactRemoved: true,

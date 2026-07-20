@@ -3,7 +3,7 @@
 **Document:** `docs/plans/09-account-authentication-and-full-vault-synchronization-tdd-evidence.md`
 **Status:** Implementation evidence
 **Owner:** Engineering
-**Last Updated:** 2026-07-19
+**Last Updated:** 2026-07-20
 **Plan:** `docs/plans/09-account-authentication-and-full-vault-synchronization.md`
 
 ---
@@ -82,6 +82,57 @@ injection proves all 23 compact activation writes roll back together. The curren
 contains active and deleted Captures, warnings, multiple Artifact roles/plaintexts, and Collection
 topology.
 
+**Packaged-journey RED:** the cold first-use proof exposed a pull that could replace newer local
+Projection state with an older server snapshot while a mutation wake was coalesced into an active
+synchronization run.
+
+**Packaged-journey GREEN:** same-Generation reconciliation now fences both the local Vault Head
+observed by the pull and the requirement that the remote Head contains every locally appended Event
+and Object. A mutation wake that arrives during an active run schedules one final upload pass. The
+packaged journey then exercises signup, two captures, Collection extraction and cross-profile
+merge, disconnected divergence, synchronized deletion and Vacuum, export-first stale resolution,
+and preservation as a fresh local-only Vault before server replacement. Complete Export-to-Import
+portability remains in the dedicated package suite because packaged headless Chrome cannot complete
+the native save-as dialog boundary.
+
+**Packaged-journey follow-up RED:** repeated state reads created pull Jobs, direct Retry left a
+server-superseded Generation behind a generic retry loop, Cable hints could race synchronized
+Vacuum, and the first post-Vacuum pull reconstructed the active Generation without its predecessor
+metadata. These defects appeared as status churn, a stale Replica that required an unnecessary
+sign-out/sign-in cycle, an indefinitely busy Vacuum, and a false synchronization-integrity failure.
+
+**Packaged-journey follow-up GREEN:** state reads are now pure and visible surfaces send an explicit
+wake on entry, focus, visibility restoration, or connectivity restoration. A single coordinator
+serializes and coalesces passive polls, interactive retries, mutation wakes, and Cable hints;
+synchronized Vacuum fences that coordinator before its current-Replica check and remote activation.
+Superseded-Generation Retry performs Account/Vault discovery directly, and same-Generation pulls
+preserve the locally verified predecessor metadata. Focused unit and browser integration tests cover
+the coordinator fence, retry protocol, local-Head reconciliation fence, retained local authority,
+and post-Vacuum Generation reconstruction.
+
+**Resilience-gap RED:** the packaged proof could not deterministically stop the Worker between
+stale-recovery checkpoints, authentication expiry during synchronized Vacuum was not exercised,
+and changing servers did not wait for an active old-context pull to stop. A late response could
+therefore outlive its configured server context, while restart behavior was inferred only from the
+atomic activation test.
+
+**Resilience-gap GREEN:** release-excluded fault checkpoints now pause every recovery boundary and
+inject Vacuum authentication expiry. Startup reconciliation is independently exercised through a
+real IndexedDB close/reopen at `PrepareRecoveryFork`, `PrepareServerReplacement`, and
+`ActivateRecovery`. Server replacement aborts and awaits the coordinator, discards old wakes, signs
+out, and then installs the new origin; pull reconciliation retains its local-Head and remote-coverage
+fences. Unit tests cover cancellation/coalescing and every Vacuum authentication checkpoint, while
+the release verifier rejects the test-control namespace from emitted JavaScript.
+
+## Coordination Server switching follow-up
+
+Plan 10 replaces Plan 09's immediate sign-out server-change flow. Candidate origin validation,
+authentication, comparison, and failure now preserve the active source context. Promotion occurs
+only after trusted Runtime reconciliation classifies and completes `PublishLocal`,
+`FastForwardCandidate`, `FastForwardLocal`, or `Union`; divergent authenticated Generations produce
+an explicit conflict without overwriting either authority. The decision record and current evidence
+are owned by `docs/plans/10-git-like-synchronization-server-switching.md` and its TDD evidence.
+
 ## Server security and operations
 
 **RED:** the credential-sentinel request spec initially exposed Account-key/ciphertext parameter
@@ -143,6 +194,9 @@ corepack pnpm --filter @awsm/browser-extension exec playwright test tests/integr
 
 corepack pnpm exec playwright test -c playwright.e2e.config.ts --grep 'converges two packaged'
   1 test passed
+
+corepack pnpm exec playwright test -c playwright.e2e.config.ts --grep 'first-time self-hosted'
+  1 packaged two-profile journey passed
 
 corepack pnpm exec playwright test -c playwright.e2e.config.ts --grep 'renders Account onboarding'
   1 test passed; all generated screenshots inspected

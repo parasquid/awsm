@@ -1,0 +1,360 @@
+import { describe, expect, it, vi } from "vitest";
+import type {
+  ServerSwitchCheckpointV1,
+  ServerSwitchJobV1,
+  StoredAccountVaultV1,
+} from "../../src/drivers/indexeddb/schema";
+import { ServerSwitchRemoteApplicator } from "../../src/runtime/synchronization/server-switch-remote";
+import type { VaultRecordsV1 } from "../../src/runtime/vault/contracts";
+
+const vaultId = "01900000-0000-7000-8000-000000000001";
+const generationId = "01900000-0000-7000-8000-000000000002";
+const jobId = "01900000-0000-7000-8000-000000000003";
+const accountId = "01900000-0000-7000-8000-000000000004";
+
+describe("Server Switch remote application", () => {
+  it("publishes the original Generation only after every closure record is durable", async () => {
+    let job: ServerSwitchJobV1 = {
+      version: 1,
+      jobId,
+      sourceOrigin: "https://source.example",
+      candidateOrigin: "https://candidate.example",
+      vaultId,
+      state: "Running",
+      stage: "PrepareRemote",
+      direction: "PublishLocal",
+      expectedLocalHead: {
+        version: 1,
+        vaultId,
+        generationId,
+        generationNumber: 7,
+        appendedObjectIds: [],
+        appendedEventIds: [],
+      },
+      createdAt: "2026-07-20T00:00:00.000Z",
+      updatedAt: "2026-07-20T00:00:00.000Z",
+      completedItems: 0,
+      totalItems: 1,
+      processedBytes: 0,
+      totalBytes: 3,
+      retryCount: 0,
+      candidateAuthorityChanged: false,
+      attachIdempotencyKey: "01900000-0000-7000-8000-000000000005",
+      candidateIdempotencyKey: "01900000-0000-7000-8000-000000000006",
+    };
+    const checkpoints = new Map<string, ServerSwitchCheckpointV1>();
+    const calls: string[] = [];
+    const state = {
+      loadJob: async () => job,
+      saveJob: async (next: ServerSwitchJobV1) => {
+        job = next;
+      },
+      loadCheckpoint: async (_jobId: string, kind: string, entityId: string) =>
+        checkpoints.get(`${kind}:${entityId}`),
+      saveCheckpoint: async (checkpoint: ServerSwitchCheckpointV1) => {
+        checkpoints.set(`${checkpoint.kind}:${checkpoint.entityId}`, checkpoint);
+      },
+    };
+    const transport = {
+      request: vi.fn(async (method: string, path: string) => {
+        calls.push(`${method} ${path}`);
+        if (method === "POST" && path === "/api/vaults")
+          return {
+            status: 201,
+            body: {
+              upload: {
+                uploadId: "01900000-0000-7000-8000-000000000007",
+                partSizeBytes: 1024,
+                receivedParts: [],
+              },
+              ticket: { url: "/transfer/{partNumber}" },
+            },
+          };
+        return { status: 200, body: {} };
+      }),
+      putTransfer: vi.fn(async () => undefined),
+    };
+    const records = {
+      metadata: { vaultId },
+      generation: {
+        version: 1,
+        generationId,
+        generationNumber: 7,
+        envelopeBytes: new Uint8Array([1, 2, 3]),
+      },
+      head: job.expectedLocalHead,
+    } as unknown as VaultRecordsV1;
+    await new ServerSwitchRemoteApplicator(
+      state,
+      {
+        loadAccountVault: async () => ({
+          version: 1,
+          accountId,
+          vaultId,
+          accountKeyId: "01900000-0000-7000-8000-000000000008",
+          accountSlot: { encrypted: true },
+          remoteGenerationId: generationId,
+          remoteGenerationNumber: 7,
+          deliveryCursor: 0,
+        }),
+        saveAccountVault: async () => undefined,
+      },
+      { listStoredObjects: async () => [], listStoredEvents: async () => [] },
+      { openEncrypted: vi.fn() },
+      transport,
+    ).publishLocal(records, "2026-07-20T00:01:00.000Z");
+
+    expect(calls).toEqual([
+      "POST /api/vaults",
+      `POST /api/vaults/${vaultId}/uploads/01900000-0000-7000-8000-000000000007/complete`,
+      `POST /api/vaults/${vaultId}/complete`,
+    ]);
+    expect(checkpoints.get(`Generation:${generationId}`)?.state).toBe("Durable");
+    expect(job).toMatchObject({
+      stage: "PromoteContext",
+      candidateAuthorityChanged: true,
+      direction: "PublishLocal",
+    });
+  });
+
+  it("CAS-activates the original direct successor without committing Events early", async () => {
+    const predecessorId = "01900000-0000-7000-8000-000000000020";
+    let job: ServerSwitchJobV1 = {
+      version: 1,
+      jobId,
+      sourceOrigin: "https://source.example",
+      candidateOrigin: "https://candidate.example",
+      vaultId,
+      state: "Running",
+      stage: "PrepareRemote",
+      direction: "FastForwardCandidate",
+      expectedLocalHead: {
+        version: 1,
+        vaultId,
+        generationId,
+        generationNumber: 8,
+        appendedObjectIds: [],
+        appendedEventIds: [],
+      },
+      candidateGenerationId: predecessorId,
+      candidateGenerationNumber: 7,
+      candidateHeadCursor: 17,
+      createdAt: "2026-07-20T00:00:00.000Z",
+      updatedAt: "2026-07-20T00:00:00.000Z",
+      completedItems: 0,
+      totalItems: 1,
+      processedBytes: 0,
+      totalBytes: 3,
+      retryCount: 0,
+      candidateAuthorityChanged: false,
+      attachIdempotencyKey: "01900000-0000-7000-8000-000000000005",
+      candidateIdempotencyKey: "01900000-0000-7000-8000-000000000006",
+    };
+    const checkpoints = new Map<string, ServerSwitchCheckpointV1>();
+    const calls: string[] = [];
+    let registration: StoredAccountVaultV1 = {
+      version: 1 as const,
+      accountId,
+      vaultId,
+      accountKeyId: "01900000-0000-7000-8000-000000000008",
+      accountSlot: { encrypted: true },
+      remoteGenerationId: predecessorId,
+      remoteGenerationNumber: 7,
+      deliveryCursor: 17,
+    };
+    const transport = {
+      request: vi.fn(async (method: string, path: string) => {
+        calls.push(`${method} ${path}`);
+        if (path.endsWith("/generation-candidates"))
+          return {
+            status: 201,
+            body: {
+              upload: {
+                uploadId: "01900000-0000-7000-8000-000000000021",
+                partSizeBytes: 1024,
+                receivedParts: [],
+              },
+              ticket: { url: "/transfer/{partNumber}" },
+            },
+          };
+        if (path.endsWith("/activate"))
+          return {
+            status: 200,
+            body: { generationId, generationNumber: 8, headCursor: 18 },
+          };
+        return { status: 200, body: {} };
+      }),
+      putTransfer: vi.fn(async () => undefined),
+    };
+    await new ServerSwitchRemoteApplicator(
+      {
+        loadJob: async () => job,
+        saveJob: async (next) => {
+          job = next;
+        },
+        loadCheckpoint: async (_jobId, kind, entityId) => checkpoints.get(`${kind}:${entityId}`),
+        saveCheckpoint: async (checkpoint) => {
+          checkpoints.set(`${checkpoint.kind}:${checkpoint.entityId}`, checkpoint);
+        },
+      },
+      {
+        loadAccountVault: async () => registration,
+        saveAccountVault: async (next) => {
+          registration = next;
+        },
+      },
+      { listStoredObjects: async () => [], listStoredEvents: async () => [] },
+      { openEncrypted: vi.fn() },
+      transport,
+    ).fastForwardCandidate({
+      metadata: { vaultId },
+      generation: {
+        version: 1,
+        generationId,
+        generationNumber: 8,
+        predecessorGenerationId: predecessorId,
+        envelopeBytes: new Uint8Array([1, 2, 3]),
+      },
+      head: job.expectedLocalHead,
+    } as unknown as VaultRecordsV1);
+
+    expect(calls.some((call) => call.endsWith("/commits"))).toBe(false);
+    expect(calls.at(-1)).toMatch(/\/activate$/u);
+    expect(registration).toMatchObject({
+      remoteGenerationId: generationId,
+      remoteGenerationNumber: 8,
+      deliveryCursor: 18,
+    });
+    expect(job).toMatchObject({
+      stage: "PromoteContext",
+      candidateAuthorityChanged: true,
+      candidateHeadCursor: 18,
+    });
+  });
+
+  it("journals accepted Union authority before a later candidate-head race", async () => {
+    const descriptorId = "01900000-0000-7000-8000-000000000030";
+    const eventId = "01900000-0000-7000-8000-000000000031";
+    let job: ServerSwitchJobV1 = {
+      version: 1,
+      jobId,
+      sourceOrigin: "https://source.example",
+      candidateOrigin: "https://candidate.example",
+      vaultId,
+      state: "Running",
+      stage: "PrepareRemote",
+      direction: "Union",
+      expectedLocalHead: {
+        version: 1,
+        vaultId,
+        generationId,
+        generationNumber: 7,
+        appendedObjectIds: [descriptorId],
+        appendedEventIds: [eventId],
+      },
+      candidateGenerationId: generationId,
+      candidateGenerationNumber: 7,
+      candidateHeadCursor: 12,
+      createdAt: "2026-07-20T00:00:00.000Z",
+      updatedAt: "2026-07-20T00:00:00.000Z",
+      completedItems: 0,
+      totalItems: 2,
+      processedBytes: 0,
+      totalBytes: 4,
+      retryCount: 0,
+      candidateAuthorityChanged: false,
+      attachIdempotencyKey: "01900000-0000-7000-8000-000000000005",
+      candidateIdempotencyKey: "01900000-0000-7000-8000-000000000006",
+    };
+    const checkpoints = new Map<string, ServerSwitchCheckpointV1>();
+    const transport = {
+      request: vi.fn(async (method: string, path: string) => {
+        if (method === "GET")
+          throw Object.assign(new Error("Candidate head changed"), { id: "VAULT_HEAD_CHANGED" });
+        if (path.endsWith("/uploads"))
+          return {
+            status: 201,
+            body: {
+              upload: {
+                uploadId: "01900000-0000-7000-8000-000000000032",
+                state: "Open",
+                partSizeBytes: 1024,
+                receivedParts: [],
+              },
+              ticket: { url: "/transfer/{partNumber}" },
+            },
+          };
+        if (path.endsWith("/commits")) return { status: 200, body: { cursor: 13 } };
+        return { status: 200, body: {} };
+      }),
+      putTransfer: vi.fn(async () => undefined),
+    };
+    const registration: StoredAccountVaultV1 = {
+      version: 1,
+      accountId,
+      vaultId,
+      accountKeyId: "01900000-0000-7000-8000-000000000008",
+      accountSlot: { encrypted: true },
+      remoteGenerationId: generationId,
+      remoteGenerationNumber: 7,
+      deliveryCursor: 12,
+    };
+    const applicator = new ServerSwitchRemoteApplicator(
+      {
+        loadJob: async () => job,
+        saveJob: async (next) => {
+          job = next;
+        },
+        loadCheckpoint: async (_jobId, kind, entityId) => checkpoints.get(`${kind}:${entityId}`),
+        saveCheckpoint: async (checkpoint) => {
+          checkpoints.set(`${checkpoint.kind}:${checkpoint.entityId}`, checkpoint);
+        },
+      },
+      {
+        loadAccountVault: async () => registration,
+        saveAccountVault: async () => undefined,
+      },
+      {
+        listStoredObjects: async () => [
+          {
+            version: 1,
+            objectId: descriptorId,
+            objectType: "BundleDescriptor",
+            envelopeBytes: new Uint8Array([1, 2]),
+          },
+        ],
+        listStoredEvents: async () => [
+          {
+            version: 1,
+            vaultId,
+            eventId,
+            referencedObjectIds: [descriptorId],
+            orderingTimestamp: "2026-07-20T00:00:00.000Z",
+            envelopeBytes: new Uint8Array([3, 4]),
+          },
+        ],
+      },
+      { openEncrypted: vi.fn() },
+      transport,
+    );
+
+    await expect(
+      applicator.union({
+        metadata: { vaultId },
+        generation: {
+          version: 1,
+          generationId,
+          generationNumber: 7,
+          envelopeBytes: new Uint8Array([5]),
+        },
+        head: job.expectedLocalHead,
+      } as unknown as VaultRecordsV1),
+    ).rejects.toMatchObject({ id: "VAULT_HEAD_CHANGED" });
+
+    expect(checkpoints.get(`Event:${eventId}`)?.state).toBe("Committed");
+    expect(job).toMatchObject({
+      stage: "PrepareRemote",
+      candidateAuthorityChanged: true,
+    });
+  });
+});

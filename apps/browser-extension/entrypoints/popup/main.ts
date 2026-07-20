@@ -46,8 +46,10 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function request(type: "GetState" | "UnlockDevice" | "LockVault"): Promise<AppState> {
-  return type === "GetState"
+function request(
+  type: "GetState" | "WakeSynchronization" | "UnlockDevice" | "LockVault",
+): Promise<AppState> {
+  return type === "GetState" || type === "WakeSynchronization"
     ? sendRequest<AppState>({ type })
     : sendRequest<AppState>({ type, expectedVaultId: expectedVaultId() });
 }
@@ -559,6 +561,10 @@ function reconcile(): void {
   });
 }
 
+function wakeSynchronization(): void {
+  void request("WakeSynchronization").catch(() => undefined);
+}
+
 browser.runtime.onMessage.addListener((message: unknown) => {
   if (
     typeof message === "object" &&
@@ -573,8 +579,16 @@ browser.runtime.onMessage.addListener((message: unknown) => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") reconcile();
+  if (document.visibilityState === "visible") {
+    wakeSynchronization();
+    reconcile();
+  }
 });
-window.addEventListener("focus", reconcile);
+window.addEventListener("focus", () => {
+  wakeSynchronization();
+  reconcile();
+});
+window.addEventListener("online", wakeSynchronization);
 
+wakeSynchronization();
 reconcile();

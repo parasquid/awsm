@@ -22,10 +22,12 @@ belongs to `protocol.md`.
 # 2. Control Resources
 
 - Service policy reports effective retention, upload, paging, ticket, and notification limits.
-- Vault attachment creates a provisional Vault and Generation-zero upload; completion publishes the
-  first active Generation.
+- Vault attachment creates a provisional Vault and uploads the client's current active Generation
+  under its existing nonnegative Generation number; completion publishes that Generation as the
+  server's first known active Generation without inventing unavailable predecessors.
 - Upload resources expose resumable part state and renew scoped tickets.
-- Event closure commits publish exactly one Event and its declared dependencies.
+- Event closure commits publish exactly one Event and its declared dependencies, or idempotently
+  acknowledge that the exact immutable closure is already an active-Generation member.
 - Active records provide full-replica enumeration and ticketed download.
 - Changes provide snapshot-bounded incremental delivery by per-Vault Delivery Cursor.
 - Generation candidates accept successor metadata, retained pages, sealing, activation, and discard.

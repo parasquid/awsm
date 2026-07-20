@@ -22,6 +22,48 @@ interface EnrollmentVaultStore {
   load(vaultId: string): Promise<VaultRecordsV1 | undefined>;
 }
 
+export async function createAccountVaultRegistration(input: {
+  readonly metadata: StoredAccountMetadataV1;
+  readonly records: VaultRecordsV1;
+  readonly accountEncryptionKey: Uint8Array;
+  readonly deliveryCursor?: number;
+}): Promise<StoredAccountVaultV1> {
+  let rawRootKey: Uint8Array | undefined;
+  try {
+    rawRootKey = await unwrapDeviceSlot(input.records.deviceSlot, input.records.deviceKey);
+    const rootKey = await crypto.subtle.importKey(
+      "raw",
+      Uint8Array.from(rawRootKey),
+      "HKDF",
+      false,
+      ["deriveBits"],
+    );
+    await verifyRootKey(rootKey, input.records.deviceSlot, input.records.metadata.verifier);
+    const slot = await createAccountVaultSlot({
+      vaultId: input.records.metadata.vaultId,
+      accountKeyId: input.metadata.accountKeyId,
+      accountEncryptionKey: input.accountEncryptionKey,
+      vaultRootKey: rawRootKey,
+    });
+    return {
+      version: 1,
+      accountId: input.metadata.accountId,
+      vaultId: input.records.metadata.vaultId,
+      accountKeyId: input.metadata.accountKeyId,
+      accountSlot: {
+        ...slot,
+        nonce: bytesToBase64Url(slot.nonce),
+        ciphertext: bytesToBase64Url(slot.ciphertext),
+      },
+      remoteGenerationId: input.records.head.generationId,
+      remoteGenerationNumber: input.records.head.generationNumber,
+      deliveryCursor: input.deliveryCursor ?? 0,
+    };
+  } finally {
+    if (rawRootKey !== undefined) await wipe(rawRootKey);
+  }
+}
+
 export class EnrollmentService {
   constructor(
     private readonly accounts: EnrollmentAccountStore,
@@ -38,37 +80,12 @@ export class EnrollmentService {
       throw Object.assign(new Error("Enrollment context is incomplete"), {
         id: "SYNCHRONIZATION_INTEGRITY_FAILED",
       });
-    let rawRootKey: Uint8Array | undefined;
     try {
-      rawRootKey = await unwrapDeviceSlot(records.deviceSlot, records.deviceKey);
-      const rootKey = await crypto.subtle.importKey(
-        "raw",
-        Uint8Array.from(rawRootKey),
-        "HKDF",
-        false,
-        ["deriveBits"],
-      );
-      await verifyRootKey(rootKey, records.deviceSlot, records.metadata.verifier);
-      const slot = await createAccountVaultSlot({
-        vaultId,
-        accountKeyId: metadata.accountKeyId,
+      const registration = await createAccountVaultRegistration({
+        metadata,
+        records,
         accountEncryptionKey,
-        vaultRootKey: rawRootKey,
       });
-      const registration: StoredAccountVaultV1 = {
-        version: 1,
-        accountId: metadata.accountId,
-        vaultId,
-        accountKeyId: metadata.accountKeyId,
-        accountSlot: {
-          ...slot,
-          nonce: bytesToBase64Url(slot.nonce),
-          ciphertext: bytesToBase64Url(slot.ciphertext),
-        },
-        remoteGenerationId: records.head.generationId,
-        remoteGenerationNumber: records.head.generationNumber,
-        deliveryCursor: 0,
-      };
       const job: SynchronizationJobV1 = {
         version: 1,
         jobId: crypto.randomUUID(),
@@ -93,7 +110,6 @@ export class EnrollmentService {
       return job;
     } finally {
       await wipe(accountEncryptionKey);
-      if (rawRootKey !== undefined) await wipe(rawRootKey);
     }
   }
 }

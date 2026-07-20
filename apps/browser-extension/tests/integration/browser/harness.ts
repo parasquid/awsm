@@ -3,8 +3,11 @@ import {
   IndexedDbAccountRepository,
   IndexedDbDriver,
   IndexedDbImportRepository,
+  IndexedDbServerSwitchRepository,
   IndexedDbVaultRepository,
   IndexedDbWorkspaceRepository,
+  type ServerSwitchJobV1,
+  type ServerSwitchReplicaPromotion,
   type StoredBundleDescriptorObjectV1,
   type StoredObjectV1,
   vaultKey,
@@ -12,6 +15,8 @@ import {
 } from "../../../src/drivers/indexeddb";
 import { ChromeArtifactStore } from "../../../src/hosts/chrome/artifact-store";
 import { ChromeVaultImportHost } from "../../../src/hosts/chrome/import";
+import { InterruptedStaleRecoveryReconciler } from "../../../src/runtime/synchronization/recovery-reconciliation";
+import { serverSwitchStartupDecision } from "../../../src/runtime/synchronization/server-switch-startup";
 import {
   encryptWorkspaceVaultName,
   prepareVaultNameChange,
@@ -91,6 +96,602 @@ async function accountPersistenceScenario(): Promise<unknown> {
     signedOut: afterLogout === undefined,
     retainedEmail: retainedMetadata?.email,
     localObjectCount,
+  };
+}
+
+async function accountScopeIsolationScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const repository = new IndexedDbAccountRepository(databaseName);
+  const credentials = (
+    seed: string,
+    email: string,
+    byte: number,
+  ): Parameters<IndexedDbAccountRepository["saveAuthenticated"]>[0] => ({
+    metadata: {
+      version: 1,
+      accountId: id(`${seed}0`),
+      sessionId: id(`${seed}1`),
+      email,
+      accountKeyId: id(`${seed}2`),
+      accountKeyEnvelope: { version: 1 },
+    },
+    accountEncryptionKey: new Uint8Array(32).fill(byte),
+    refreshToken: `refresh-${email}`,
+  });
+  await repository.saveAuthenticated(credentials("82", "active@example.test", 0x41), "active");
+  await repository.saveAuthenticated(
+    credentials("83", "candidate@example.test", 0x43),
+    "server-switch-candidate",
+  );
+  await repository.saveAccountVault(
+    {
+      version: 1,
+      accountId: id("830"),
+      vaultId: id("834"),
+      accountKeyId: id("832"),
+      accountSlot: { opaque: "candidate-slot" },
+      remoteGenerationId: id("835"),
+      remoteGenerationNumber: 4,
+      deliveryCursor: 7,
+    },
+    "server-switch-candidate",
+  );
+  const [active, candidate, activePresentBeforeLogout, candidatePresentBeforeLogout] =
+    await Promise.all([
+      repository.loadAuthenticated("active"),
+      repository.loadAuthenticated("server-switch-candidate"),
+      repository.hasAuthenticatedSecrets("active"),
+      repository.hasAuthenticatedSecrets("server-switch-candidate"),
+    ]);
+  await repository.logout();
+  const reopened = new IndexedDbAccountRepository(databaseName);
+  const [activePresentAfterLogout, candidatePresentAfterLogout, restoredCandidate, candidateVault] =
+    await Promise.all([
+      reopened.hasAuthenticatedSecrets("active"),
+      reopened.hasAuthenticatedSecrets("server-switch-candidate"),
+      reopened.loadAuthenticated("server-switch-candidate"),
+      reopened.loadAccountVault("server-switch-candidate"),
+    ]);
+  await reopened.eraseAuthenticated("server-switch-candidate");
+  return {
+    activeEmail: active?.metadata.email,
+    candidateEmail: candidate?.metadata.email,
+    activePresentBeforeLogout,
+    candidatePresentBeforeLogout,
+    activePresentAfterLogout,
+    candidatePresentAfterLogout,
+    candidateKeyRestored: restoredCandidate?.accountEncryptionKey.every((byte) => byte === 0x43),
+    candidateRefreshRestored: restoredCandidate?.refreshToken === "refresh-candidate@example.test",
+    candidateVaultId: candidateVault?.vaultId,
+    candidatePresentAfterErase: await reopened.hasAuthenticatedSecrets("server-switch-candidate"),
+  };
+}
+
+async function serverSwitchPromotionScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const accounts = new IndexedDbAccountRepository(databaseName);
+  const switches = new IndexedDbServerSwitchRepository(databaseName);
+  const credentials = (account: string, email: string, byte: number) => ({
+    metadata: {
+      version: 1 as const,
+      accountId: id(`${account}0`),
+      sessionId: id(`${account}1`),
+      email,
+      accountKeyId: id(`${account}2`),
+      accountKeyEnvelope: { version: 1 },
+    },
+    accountEncryptionKey: new Uint8Array(32).fill(byte),
+    refreshToken: `refresh-${email}`,
+  });
+  await accounts.saveConfiguration({
+    version: 1,
+    mode: "Configured",
+    serverOrigin: "https://source.example",
+  });
+  await accounts.saveAuthenticated(credentials("84", "source@example.test", 0x44), "active");
+  const candidate = credentials("85", "candidate@example.test", 0x45);
+  await accounts.saveAuthenticated(candidate, "server-switch-candidate");
+  const vaultId = id("854");
+  const generationId = id("855");
+  await accounts.saveAccountVault(
+    {
+      version: 1,
+      accountId: candidate.metadata.accountId,
+      vaultId,
+      accountKeyId: candidate.metadata.accountKeyId,
+      accountSlot: { encrypted: true },
+      remoteGenerationId: generationId,
+      remoteGenerationNumber: 9,
+      deliveryCursor: 21,
+    },
+    "server-switch-candidate",
+  );
+  const job = {
+    version: 1 as const,
+    jobId: id("856"),
+    sourceOrigin: "https://source.example",
+    candidateOrigin: "https://candidate.example",
+    vaultId,
+    state: "Running" as const,
+    stage: "PromoteContext" as const,
+    direction: "PublishLocal" as const,
+    expectedLocalHead: {
+      version: 1 as const,
+      vaultId,
+      generationId,
+      generationNumber: 9,
+      appendedObjectIds: [],
+      appendedEventIds: [],
+    },
+    createdAt: "2026-07-20T00:00:00.000Z",
+    updatedAt: "2026-07-20T00:00:00.000Z",
+    completedItems: 0,
+    totalItems: 0,
+    processedBytes: 0,
+    totalBytes: 0,
+    retryCount: 0,
+    candidateAuthorityChanged: true,
+    attachIdempotencyKey: id("857"),
+    candidateIdempotencyKey: id("858"),
+  };
+  await switches.saveJob(job);
+  await accounts.promoteServerSwitch({
+    job,
+    candidateOrigin: "https://candidate.example",
+    now: "2026-07-20T00:01:00.000Z",
+  });
+  const reopened = new IndexedDbAccountRepository(databaseName);
+  const [configuration, active, prior, candidateAfter, registration, synchronizationJob, nextJob] =
+    await Promise.all([
+      reopened.loadConfiguration(),
+      reopened.loadAuthenticated("active"),
+      reopened.loadAuthenticated("server-switch-prior"),
+      reopened.loadAuthenticated("server-switch-candidate"),
+      reopened.loadAccountVault("active"),
+      reopened.latestSynchronizationJob(),
+      new IndexedDbServerSwitchRepository(databaseName).loadJob(),
+    ]);
+  return {
+    serverOrigin: configuration.mode === "Configured" ? configuration.serverOrigin : undefined,
+    activeEmail: active?.metadata.email,
+    activeRefresh: active?.refreshToken,
+    priorEmail: prior?.metadata.email,
+    priorRefresh: prior?.refreshToken,
+    candidateRemoved: candidateAfter === undefined,
+    registrationAccountId: registration?.accountId,
+    synchronizationStage: synchronizationJob?.stage,
+    synchronizationCursor: synchronizationJob?.snapshotCursor,
+    switchStage: nextJob?.stage,
+  };
+}
+
+async function serverSwitchReplicaPromotionAttempt(failAt?: number): Promise<{
+  readonly writes: number;
+  readonly atomic: boolean;
+}> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const accounts = new IndexedDbAccountRepository(databaseName);
+  const switches = new IndexedDbServerSwitchRepository(databaseName);
+  const vaultId = id("860");
+  const oldGenerationId = id("861");
+  const newGenerationId = id("862");
+  const oldEventId = id("863");
+  const newEventId = id("864");
+  const oldObjectId = id("865");
+  const newObjectId = id("866");
+  const credentials = (seed: string, email: string, byte: number) => ({
+    metadata: {
+      version: 1 as const,
+      accountId: id(`${seed}0`),
+      sessionId: id(`${seed}1`),
+      email,
+      accountKeyId: id(`${seed}2`),
+      accountKeyEnvelope: { version: 1 },
+    },
+    accountEncryptionKey: new Uint8Array(32).fill(byte),
+    refreshToken: `refresh-${email}`,
+  });
+  const source = credentials("87", "source@example.test", 0x47);
+  const candidate = credentials("88", "candidate@example.test", 0x48);
+  await accounts.saveConfiguration({
+    version: 1,
+    mode: "Configured",
+    serverOrigin: "https://source.example",
+  });
+  await accounts.saveAuthenticated(source, "active");
+  await accounts.saveAuthenticated(candidate, "server-switch-candidate");
+  await accounts.saveAccountVault(
+    {
+      version: 1,
+      accountId: candidate.metadata.accountId,
+      vaultId,
+      accountKeyId: candidate.metadata.accountKeyId,
+      accountSlot: { encrypted: true },
+      remoteGenerationId: newGenerationId,
+      remoteGenerationNumber: 1,
+      deliveryCursor: 31,
+    },
+    "server-switch-candidate",
+  );
+  const oldHead = {
+    version: 1 as const,
+    vaultId,
+    generationId: oldGenerationId,
+    generationNumber: 0,
+    appendedObjectIds: [oldObjectId],
+    appendedEventIds: [oldEventId],
+  };
+  const job: ServerSwitchJobV1 = {
+    version: 1,
+    jobId: id("869"),
+    sourceOrigin: "https://source.example",
+    candidateOrigin: "https://candidate.example",
+    vaultId,
+    state: "Running",
+    stage: "PromoteContext",
+    direction: "FastForwardLocal",
+    expectedLocalHead: oldHead,
+    candidateGenerationId: newGenerationId,
+    candidateGenerationNumber: 1,
+    candidatePredecessorGenerationId: oldGenerationId,
+    candidateHeadCursor: 31,
+    createdAt: "2026-07-20T00:00:00.000Z",
+    updatedAt: "2026-07-20T00:00:00.000Z",
+    completedItems: 0,
+    totalItems: 0,
+    processedBytes: 0,
+    totalBytes: 0,
+    retryCount: 0,
+    candidateAuthorityChanged: false,
+    attachIdempotencyKey: id("870"),
+    candidateIdempotencyKey: id("871"),
+  };
+  await switches.saveJob(job);
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const seed = database.transaction(
+    [
+      "vault_generations",
+      "vault_head",
+      "events",
+      "objects",
+      "library_projection",
+      "collection_projection",
+      "vault_name_projection",
+      "vault_name_cache",
+    ],
+    "readwrite",
+  );
+  seed.objectStore("vault_generations").put(
+    {
+      version: 1,
+      generationId: oldGenerationId,
+      generationNumber: 0,
+      envelopeBytes: new Uint8Array([1]),
+    },
+    vaultKey(vaultId, oldGenerationId),
+  );
+  seed.objectStore("vault_head").put(oldHead, vaultSingletonKey(vaultId, "active"));
+  seed.objectStore("events").put(
+    {
+      version: 1,
+      vaultId,
+      eventId: oldEventId,
+      referencedObjectIds: [oldObjectId],
+      orderingTimestamp: "2026-07-20T00:00:00.000Z",
+      envelopeBytes: new Uint8Array([2]),
+    },
+    vaultKey(vaultId, oldEventId),
+  );
+  seed.objectStore("objects").put(object(oldObjectId, 3), vaultKey(vaultId, oldObjectId));
+  seed
+    .objectStore("library_projection")
+    .put(
+      { version: 1, bundleId: id("867"), envelopeBytes: new Uint8Array([4]) },
+      vaultKey(vaultId, id("867")),
+    );
+  seed
+    .objectStore("collection_projection")
+    .put(
+      { version: 1, projectionId: vaultId, envelopeBytes: new Uint8Array([5]) },
+      vaultSingletonKey(vaultId, "active"),
+    );
+  seed
+    .objectStore("vault_name_projection")
+    .put(
+      { version: 1, vaultId, sourceEventId: oldEventId, envelopeBytes: new Uint8Array([6]) },
+      vaultSingletonKey(vaultId, "active"),
+    );
+  seed.objectStore("vault_name_cache").put(
+    {
+      version: 1,
+      vaultId,
+      sourceEventId: oldEventId,
+      nonce: new Uint8Array(12),
+      ciphertext: new Uint8Array([7]),
+    },
+    vaultId,
+  );
+  await new Promise<void>((resolve, reject) => {
+    seed.addEventListener("complete", () => resolve(), { once: true });
+    seed.addEventListener("error", () => reject(seed.error), { once: true });
+  });
+  database.close();
+  const replica: ServerSwitchReplicaPromotion = {
+    generation: {
+      version: 1,
+      generationId: newGenerationId,
+      generationNumber: 1,
+      predecessorGenerationId: oldGenerationId,
+      envelopeBytes: new Uint8Array([11]),
+    },
+    head: {
+      version: 1,
+      vaultId,
+      generationId: newGenerationId,
+      generationNumber: 1,
+      appendedObjectIds: [newObjectId],
+      appendedEventIds: [newEventId],
+    },
+    events: [
+      {
+        version: 1,
+        vaultId,
+        eventId: newEventId,
+        referencedObjectIds: [newObjectId],
+        orderingTimestamp: "2026-07-20T00:01:00.000Z",
+        envelopeBytes: new Uint8Array([12]),
+      },
+    ],
+    objects: [object(newObjectId, 13)],
+    libraryProjections: [{ version: 1, bundleId: id("868"), envelopeBytes: new Uint8Array([14]) }],
+    collectionProjection: {
+      version: 1,
+      projectionId: vaultId,
+      envelopeBytes: new Uint8Array([15]),
+    },
+    vaultNameProjection: {
+      version: 1,
+      vaultId,
+      sourceEventId: newEventId,
+      envelopeBytes: new Uint8Array([16]),
+    },
+    nameCache: {
+      version: 1,
+      vaultId,
+      sourceEventId: newEventId,
+      nonce: new Uint8Array(12).fill(1),
+      ciphertext: new Uint8Array([17]),
+    },
+  };
+  const originalPut = IDBObjectStore.prototype.put;
+  const originalDelete = IDBObjectStore.prototype.delete;
+  const originalClear = IDBObjectStore.prototype.clear;
+  let writes = 0;
+  const beforeWrite = (): void => {
+    writes += 1;
+    if (writes === failAt) throw new DOMException("Injected promotion failure", "AbortError");
+  };
+  IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+    beforeWrite();
+    return originalPut.call(this, value, key);
+  };
+  IDBObjectStore.prototype.delete = function (query: IDBValidKey | IDBKeyRange) {
+    beforeWrite();
+    return originalDelete.call(this, query);
+  };
+  IDBObjectStore.prototype.clear = function () {
+    beforeWrite();
+    return originalClear.call(this);
+  };
+  let rejected = false;
+  try {
+    await accounts.promoteServerSwitchWithReplica({
+      job,
+      candidateOrigin: "https://candidate.example",
+      now: "2026-07-20T00:02:00.000Z",
+      replica,
+    });
+  } catch {
+    rejected = true;
+  } finally {
+    IDBObjectStore.prototype.put = originalPut;
+    IDBObjectStore.prototype.delete = originalDelete;
+    IDBObjectStore.prototype.clear = originalClear;
+  }
+  const driver = new IndexedDbDriver(databaseName, vaultId);
+  const reopened = new IndexedDbAccountRepository(databaseName);
+  const [
+    configuration,
+    active,
+    candidateAfter,
+    head,
+    events,
+    objects,
+    projections,
+    collection,
+    name,
+    storedJob,
+  ] = await Promise.all([
+    reopened.loadConfiguration(),
+    reopened.loadAuthenticated("active"),
+    reopened.loadAuthenticated("server-switch-candidate"),
+    driver.getVaultHead(),
+    driver.listStoredEvents(),
+    driver.listStoredObjects(),
+    driver.listEncryptedProjections(),
+    driver.getCollectionProjection(),
+    driver.getVaultNameProjection(),
+    new IndexedDbServerSwitchRepository(databaseName).loadJob(),
+  ]);
+  const failed = failAt !== undefined;
+  const atomic = failed
+    ? rejected &&
+      configuration.mode === "Configured" &&
+      configuration.serverOrigin === "https://source.example" &&
+      active?.metadata.email === "source@example.test" &&
+      candidateAfter?.metadata.email === "candidate@example.test" &&
+      head?.generationId === oldGenerationId &&
+      events[0]?.eventId === oldEventId &&
+      objects[0]?.objectId === oldObjectId &&
+      projections[0]?.bundleId === id("867") &&
+      collection?.envelopeBytes[0] === 5 &&
+      name?.sourceEventId === oldEventId &&
+      storedJob?.stage === "PromoteContext"
+    : !rejected &&
+      configuration.mode === "Configured" &&
+      configuration.serverOrigin === "https://candidate.example" &&
+      active?.metadata.email === "candidate@example.test" &&
+      candidateAfter === undefined &&
+      head?.generationId === newGenerationId &&
+      events[0]?.eventId === newEventId &&
+      objects[0]?.objectId === newObjectId &&
+      projections[0]?.bundleId === id("868") &&
+      collection?.envelopeBytes[0] === 15 &&
+      name?.sourceEventId === newEventId &&
+      storedJob?.stage === "RevokePriorSession";
+  await driver.close();
+  await reopened.close();
+  await accounts.close();
+  return { writes, atomic };
+}
+
+async function serverSwitchReplicaPromotionAtomicityScenario(): Promise<unknown> {
+  const baseline = await serverSwitchReplicaPromotionAttempt();
+  const results: boolean[] = [];
+  for (let failAt = 1; failAt <= baseline.writes; failAt += 1)
+    results.push((await serverSwitchReplicaPromotionAttempt(failAt)).atomic);
+  return {
+    successAtomic: baseline.atomic,
+    failurePoints: results.length,
+    allAtomic: results.every(Boolean),
+  };
+}
+
+async function serverSwitchPersistenceScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const jobId = id("840");
+  const entityId = id("841");
+  const baseJob: ServerSwitchJobV1 = {
+    version: 1,
+    jobId,
+    sourceOrigin: "https://source.example.test",
+    candidateOrigin: "https://candidate.example.test",
+    vaultId: id("842"),
+    state: "Running",
+    stage: "PrepareRemote",
+    direction: "FastForwardCandidate",
+    expectedLocalHead: {
+      version: 1,
+      vaultId: id("842"),
+      generationId: id("843"),
+      generationNumber: 2,
+      appendedObjectIds: [id("844")],
+      appendedEventIds: [id("845")],
+    },
+    candidateGenerationId: id("846"),
+    candidateGenerationNumber: 1,
+    candidateHeadCursor: 7,
+    createdAt: "2026-07-20T00:00:00.000Z",
+    updatedAt: "2026-07-20T00:00:01.000Z",
+    completedItems: 1,
+    totalItems: 4,
+    processedBytes: 10,
+    totalBytes: 40,
+    retryCount: 0,
+    candidateAuthorityChanged: false,
+    attachIdempotencyKey: id("847"),
+    candidateIdempotencyKey: id("848"),
+  };
+  const restartStages: readonly {
+    stage: ServerSwitchJobV1["stage"];
+    state: ServerSwitchJobV1["state"];
+  }[] = [
+    { stage: "AuthenticateCandidate", state: "AuthenticationRequired" },
+    { stage: "Compare", state: "Running" },
+    { stage: "PrepareRemote", state: "Running" },
+    { stage: "ActivateRemote", state: "Running" },
+    { stage: "PrepareLocal", state: "Running" },
+    { stage: "ActivateLocal", state: "WaitingForUnlock" },
+    { stage: "PromoteContext", state: "Running" },
+    { stage: "RevokePriorSession", state: "Running" },
+    { stage: "Terminal", state: "Succeeded" },
+  ];
+  const reopenedStages: string[] = [];
+  const startupDecisions: string[] = [];
+  let repeatedStagesStable = true;
+  for (const restart of restartStages) {
+    const writer = new IndexedDbServerSwitchRepository(databaseName);
+    await writer.saveJob({ ...baseJob, ...restart });
+    await writer.close();
+    for (let restartCount = 0; restartCount < 2; restartCount += 1) {
+      const reader = new IndexedDbServerSwitchRepository(databaseName);
+      const loaded = await reader.loadJob();
+      const observed = `${loaded?.state}:${loaded?.stage}`;
+      if (restartCount === 0) {
+        reopenedStages.push(observed);
+        if (loaded !== undefined) startupDecisions.push(serverSwitchStartupDecision(loaded, true));
+      } else repeatedStagesStable &&= observed === `${restart.state}:${restart.stage}`;
+      await reader.close();
+    }
+  }
+  const repository = new IndexedDbServerSwitchRepository(databaseName);
+  await repository.saveJob(baseJob);
+  await repository.saveCheckpoint({
+    version: 1,
+    jobId,
+    kind: "Generation",
+    entityId,
+    state: "Durable",
+    createIdempotencyKey: id("849"),
+    completeIdempotencyKey: id("850"),
+    uploadId: id("851"),
+    receivedParts: [0, 1],
+  });
+  const reopened = new IndexedDbServerSwitchRepository(databaseName);
+  const [job, checkpoint] = await Promise.all([
+    reopened.loadJob(),
+    reopened.loadCheckpoint(jobId, "Generation", entityId),
+  ]);
+  const staleDeleteRejected = !(await reopened.deleteJob(id("899")));
+  const matchingDeleteSucceeded = await reopened.deleteJob(jobId);
+  const [removedJob, removedCheckpoint] = await Promise.all([
+    reopened.loadJob(),
+    reopened.loadCheckpoint(jobId, "Generation", entityId),
+  ]);
+
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const corrupt = database.transaction("server_switch_jobs", "readwrite");
+  corrupt.objectStore("server_switch_jobs").put({ version: 2 }, "active");
+  await new Promise<void>((resolve, reject) => {
+    corrupt.addEventListener("complete", () => resolve(), { once: true });
+    corrupt.addEventListener("error", () => reject(corrupt.error), { once: true });
+  });
+  database.close();
+  let corruptJobRejected = false;
+  try {
+    await reopened.loadJob();
+  } catch {
+    corruptJobRejected = true;
+  }
+  return {
+    direction: job?.direction,
+    checkpointState: checkpoint?.state,
+    staleDeleteRejected,
+    matchingDeleteSucceeded,
+    jobRemoved: removedJob === undefined,
+    checkpointRemoved: removedCheckpoint === undefined,
+    corruptJobRejected,
+    reopenedStages,
+    repeatedStagesStable,
+    startupDecisions,
   };
 }
 
@@ -2254,6 +2855,188 @@ async function atomicStaleRecoveryScenario(): Promise<unknown> {
   return result;
 }
 
+async function remoteReconciliationFenceScenario(): Promise<unknown> {
+  const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+  const workspaceRepository = new IndexedDbWorkspaceRepository(databaseName);
+  const workspace = await workspaceRepository.bootstrap("2026-07-20T08:00:00.000Z");
+  const vaultId = await prepareAndCommitVault(
+    databaseName,
+    workspaceRepository,
+    "Reconciliation fence",
+    "2026-07-20T08:01:00.000Z",
+  );
+  const driver = new IndexedDbDriver(databaseName, vaultId);
+  const [head, events, objects, vaultNameProjection] = await Promise.all([
+    driver.getVaultHead(),
+    driver.listStoredEvents(),
+    driver.listStoredObjects(),
+    driver.getVaultNameProjection(),
+  ]);
+  if (head === undefined || vaultNameProjection === undefined)
+    throw new Error("Reconciliation authority is unavailable");
+  const registration = {
+    version: 1 as const,
+    accountId: id("910"),
+    vaultId,
+    accountKeyId: id("911"),
+    accountSlot: { ciphertext: "opaque" },
+    remoteGenerationId: head.generationId,
+    remoteGenerationNumber: head.generationNumber,
+    deliveryCursor: 4,
+  };
+  const job = {
+    version: 1 as const,
+    jobId: id("912"),
+    accountId: registration.accountId,
+    vaultId,
+    generationId: head.generationId,
+    generationNumber: head.generationNumber,
+    state: "Running" as const,
+    stage: "FetchChanges" as const,
+    createdAt: "2026-07-20T08:02:00.000Z",
+    updatedAt: "2026-07-20T08:02:00.000Z",
+    snapshotCursor: 4,
+    completedItems: 0,
+    totalItems: 0,
+    processedBytes: 0,
+    totalBytes: 0,
+    retryCount: 0,
+    attachIdempotencyKey: id("913"),
+  };
+  const nameCache = await encryptWorkspaceVaultName({
+    key: workspace.nameCacheKey,
+    workspaceId: workspace.metadata.workspaceId,
+    vaultId,
+    sourceEventId: vaultNameProjection.sourceEventId,
+    name: "Reconciliation fence",
+  });
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.addEventListener("success", () => resolve(request.result), { once: true });
+    request.addEventListener("error", () => reject(request.error), { once: true });
+  });
+  const seed = database.transaction(["account_vault", "synchronization_jobs"], "readwrite");
+  seed.objectStore("account_vault").put(registration, "active");
+  seed.objectStore("synchronization_jobs").put(job, "active");
+  await new Promise<void>((resolve, reject) => {
+    seed.addEventListener("complete", () => resolve(), { once: true });
+    seed.addEventListener("error", () => reject(seed.error), { once: true });
+  });
+  const baseInput = {
+    expectedGenerationId: head.generationId,
+    expectedDeliveryCursor: registration.deliveryCursor,
+    expectedLocalHead: head,
+    registration: { ...registration, deliveryCursor: 5 },
+    job: { ...job, snapshotCursor: 5 },
+    events,
+    objects,
+    libraryProjections: [],
+    collectionProjection: {
+      version: 1 as const,
+      projectionId: vaultId,
+      envelopeBytes: new Uint8Array([9, 1, 4]),
+    },
+    vaultNameProjection,
+    nameCache,
+  };
+  let omissionErrorId = "";
+  try {
+    await workspaceRepository.commitRemoteReconciliation({
+      ...baseInput,
+      head: { ...head, appendedEventIds: [] },
+    });
+  } catch (error) {
+    omissionErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  }
+  const appendedEventId = id("914");
+  const changedHead = {
+    ...head,
+    appendedEventIds: [...head.appendedEventIds, appendedEventId].toSorted(),
+  };
+  const mutate = database.transaction("vault_head", "readwrite");
+  mutate.objectStore("vault_head").put(changedHead, vaultSingletonKey(vaultId, "active"));
+  await new Promise<void>((resolve, reject) => {
+    mutate.addEventListener("complete", () => resolve(), { once: true });
+    mutate.addEventListener("error", () => reject(mutate.error), { once: true });
+  });
+  database.close();
+  let changedHeadErrorId = "";
+  try {
+    await workspaceRepository.commitRemoteReconciliation({ ...baseInput, head });
+  } catch (error) {
+    changedHeadErrorId = error instanceof Error && "id" in error ? String(error.id) : "";
+  }
+  const accountRepository = new IndexedDbAccountRepository(databaseName);
+  const [storedHead, storedJob] = await Promise.all([
+    driver.getVaultHead(),
+    accountRepository.latestSynchronizationJob(),
+  ]);
+  const result = {
+    omissionErrorId,
+    changedHeadErrorId,
+    localMutationPreserved: storedHead?.appendedEventIds.includes(appendedEventId),
+    jobStillRunning: storedJob?.state === "Running" && storedJob.snapshotCursor === 4,
+  };
+  await accountRepository.close();
+  await workspaceRepository.close();
+  await driver.deleteDatabase();
+  return result;
+}
+
+async function staleRecoveryRestartScenario(): Promise<unknown> {
+  const stages = ["PrepareRecoveryFork", "PrepareServerReplacement", "ActivateRecovery"] as const;
+  const results: Record<string, unknown> = {};
+  for (const [index, stage] of stages.entries()) {
+    const databaseName = `awsm-integration-${crypto.randomUUID()}`;
+    const repository = new IndexedDbAccountRepository(databaseName);
+    const forkVaultId = id(String(930 + index));
+    await repository.saveSynchronizationJob({
+      version: 1,
+      jobId: id(String(920 + index)),
+      accountId: id("925"),
+      vaultId: id("926"),
+      generationId: id("927"),
+      generationNumber: 1,
+      state: "Running",
+      stage,
+      createdAt: "2026-07-20T09:00:00.000Z",
+      updatedAt: "2026-07-20T09:00:00.000Z",
+      snapshotCursor: 7,
+      completedItems: 0,
+      totalItems: 0,
+      processedBytes: 0,
+      totalBytes: 0,
+      retryCount: 0,
+      attachIdempotencyKey: id("928"),
+      recoveryForkVaultId: forkVaultId,
+    });
+    await repository.close();
+    const reopened = new IndexedDbAccountRepository(databaseName);
+    const reconciledArtifacts: string[] = [];
+    const reconciler = new InterruptedStaleRecoveryReconciler(reopened, {
+      reconcile: async (vaultId) => {
+        reconciledArtifacts.push(vaultId);
+      },
+    });
+    const reconciled = await reconciler.execute("2026-07-20T09:01:00.000Z");
+    const job = await reopened.latestSynchronizationJob();
+    results[stage] = {
+      reconciled,
+      state: job?.state,
+      stage: job?.stage,
+      forkRemoved: job?.recoveryForkVaultId === undefined,
+      artifactsRemoved: reconciledArtifacts.includes(forkVaultId),
+    };
+    await reopened.close();
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(databaseName);
+      request.addEventListener("success", () => resolve(), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+  }
+  return results;
+}
+
 async function artifactStoreScenario(): Promise<unknown> {
   const store = new ChromeArtifactStore();
   const vaultId = crypto.randomUUID();
@@ -2289,6 +3072,11 @@ async function artifactStoreScenario(): Promise<unknown> {
   );
   const encryptedBytes = Uint8Array.from(encryptedParts.flatMap((value) => [...value]));
   const importedVaultId = crypto.randomUUID();
+  await store.prepareEncrypted({
+    vaultId: importedVaultId,
+    object: prepared.object,
+    encrypted: new Blob([encryptedBytes.buffer]).stream(),
+  });
   await store.prepareEncrypted({
     vaultId: importedVaultId,
     object: prepared.object,
@@ -2378,6 +3166,7 @@ async function artifactStoreScenario(): Promise<unknown> {
     collisionRejected,
     orphanRemoved,
     encryptedImportCopiedExactly,
+    encryptedImportReplaySucceeded: true,
     corruptEncryptedImportRejected,
     quotaErrorId,
     quotaArtifactRemoved,
@@ -2446,76 +3235,93 @@ async function run(): Promise<void> {
   const result =
     scenario === "account-persistence"
       ? await accountPersistenceScenario()
-      : scenario === "vault"
-        ? await vaultScenario()
-        : scenario === "workspace"
-          ? await workspaceScenario()
-          : scenario === "atomic-vault-create"
-            ? await atomicVaultCreateScenario()
-            : scenario === "atomic-vault-create-failures"
-              ? await atomicVaultCreateFailureScenario()
-              : scenario === "atomic-vault-select"
-                ? await atomicVaultSelectScenario()
-                : scenario === "atomic-vault-select-failures"
-                  ? await atomicVaultSelectFailureScenario()
-                  : scenario === "atomic-vault-rename"
-                    ? await atomicVaultRenameScenario()
-                    : scenario === "atomic-vault-rename-failures"
-                      ? await atomicVaultRenameFailureScenario()
-                      : scenario === "vault-record-isolation"
-                        ? await vaultRecordIsolationScenario()
-                        : scenario === "immutable"
-                          ? await immutableScenario()
-                          : scenario === "vault-isolation"
-                            ? await vaultIsolationScenario()
-                            : scenario === "capture-job-vault-isolation"
-                              ? await captureJobVaultIsolationScenario()
-                              : scenario === "event-vault-mismatch"
-                                ? await eventVaultMismatchScenario()
-                                : scenario === "atomic"
-                                  ? await atomicScenario()
-                                  : scenario === "rollback"
-                                    ? await rollbackScenario()
-                                    : scenario === "projection"
-                                      ? await projectionScenario()
-                                      : scenario === "interruption"
-                                        ? await interruptionScenario()
-                                        : scenario === "dismissal"
-                                          ? await dismissalScenario()
-                                          : scenario === "library-state"
-                                            ? await libraryStateScenario()
-                                            : scenario === "vacuum-rollback"
-                                              ? await vacuumRollbackScenario()
-                                              : scenario === "vacuum-cas-conflict"
-                                                ? await vacuumCasConflictScenario()
-                                                : scenario === "vacuum-lease"
-                                                  ? await vacuumLeaseScenario()
-                                                  : scenario === "synchronized-vacuum-journal"
-                                                    ? await synchronizedVacuumJournalScenario()
-                                                    : scenario === "collection-operation"
-                                                      ? await collectionOperationScenario()
-                                                      : scenario === "management-busy"
-                                                        ? await managementBusyScenario()
-                                                        : scenario === "export-lease"
-                                                          ? await exportLeaseScenario()
-                                                          : scenario === "import-lease"
-                                                            ? await importLeaseScenario()
-                                                            : scenario === "artifact-store"
-                                                              ? await artifactStoreScenario()
-                                                              : scenario === "import-source-staging"
-                                                                ? await importSourceStagingScenario()
-                                                                : scenario ===
-                                                                    "import-job-lifecycle"
-                                                                  ? await importJobLifecycleScenario()
-                                                                  : scenario ===
-                                                                      "atomic-vault-import"
-                                                                    ? await atomicVaultImportScenario()
-                                                                    : scenario ===
-                                                                        "atomic-stale-recovery"
-                                                                      ? await atomicStaleRecoveryScenario()
-                                                                      : {
-                                                                          error: "unknown scenario",
-                                                                        };
+      : scenario === "account-scope-isolation"
+        ? await accountScopeIsolationScenario()
+        : scenario === "server-switch-promotion"
+          ? await serverSwitchPromotionScenario()
+          : scenario === "server-switch-replica-promotion-atomicity"
+            ? await serverSwitchReplicaPromotionAtomicityScenario()
+            : scenario === "server-switch-persistence"
+              ? await serverSwitchPersistenceScenario()
+              : scenario === "vault"
+                ? await vaultScenario()
+                : scenario === "workspace"
+                  ? await workspaceScenario()
+                  : scenario === "atomic-vault-create"
+                    ? await atomicVaultCreateScenario()
+                    : scenario === "atomic-vault-create-failures"
+                      ? await atomicVaultCreateFailureScenario()
+                      : scenario === "atomic-vault-select"
+                        ? await atomicVaultSelectScenario()
+                        : scenario === "atomic-vault-select-failures"
+                          ? await atomicVaultSelectFailureScenario()
+                          : scenario === "atomic-vault-rename"
+                            ? await atomicVaultRenameScenario()
+                            : scenario === "atomic-vault-rename-failures"
+                              ? await atomicVaultRenameFailureScenario()
+                              : scenario === "vault-record-isolation"
+                                ? await vaultRecordIsolationScenario()
+                                : scenario === "immutable"
+                                  ? await immutableScenario()
+                                  : scenario === "vault-isolation"
+                                    ? await vaultIsolationScenario()
+                                    : scenario === "capture-job-vault-isolation"
+                                      ? await captureJobVaultIsolationScenario()
+                                      : scenario === "event-vault-mismatch"
+                                        ? await eventVaultMismatchScenario()
+                                        : scenario === "atomic"
+                                          ? await atomicScenario()
+                                          : scenario === "rollback"
+                                            ? await rollbackScenario()
+                                            : scenario === "projection"
+                                              ? await projectionScenario()
+                                              : scenario === "interruption"
+                                                ? await interruptionScenario()
+                                                : scenario === "dismissal"
+                                                  ? await dismissalScenario()
+                                                  : scenario === "library-state"
+                                                    ? await libraryStateScenario()
+                                                    : scenario === "vacuum-rollback"
+                                                      ? await vacuumRollbackScenario()
+                                                      : scenario === "vacuum-cas-conflict"
+                                                        ? await vacuumCasConflictScenario()
+                                                        : scenario === "vacuum-lease"
+                                                          ? await vacuumLeaseScenario()
+                                                          : scenario ===
+                                                              "synchronized-vacuum-journal"
+                                                            ? await synchronizedVacuumJournalScenario()
+                                                            : scenario === "collection-operation"
+                                                              ? await collectionOperationScenario()
+                                                              : scenario === "management-busy"
+                                                                ? await managementBusyScenario()
+                                                                : scenario === "export-lease"
+                                                                  ? await exportLeaseScenario()
+                                                                  : scenario === "import-lease"
+                                                                    ? await importLeaseScenario()
+                                                                    : scenario === "artifact-store"
+                                                                      ? await artifactStoreScenario()
+                                                                      : scenario ===
+                                                                          "import-source-staging"
+                                                                        ? await importSourceStagingScenario()
+                                                                        : scenario ===
+                                                                            "import-job-lifecycle"
+                                                                          ? await importJobLifecycleScenario()
+                                                                          : scenario ===
+                                                                              "atomic-vault-import"
+                                                                            ? await atomicVaultImportScenario()
+                                                                            : scenario ===
+                                                                                "atomic-stale-recovery"
+                                                                              ? await atomicStaleRecoveryScenario()
+                                                                              : scenario ===
+                                                                                  "remote-reconciliation-fence"
+                                                                                ? await remoteReconciliationFenceScenario()
+                                                                                : scenario ===
+                                                                                    "stale-recovery-restart"
+                                                                                  ? await staleRecoveryRestartScenario()
+                                                                                  : {
+                                                                                      error:
+                                                                                        "unknown scenario",
+                                                                                    };
   const output = document.querySelector("#result");
   if (output !== null) {
     output.textContent = JSON.stringify(result);

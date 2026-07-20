@@ -85,6 +85,9 @@ export class UploadRunner {
     private readonly source: UploadSource,
     private readonly artifacts: Pick<ArtifactStore, "openEncrypted">,
     private readonly transport: UploadTransport,
+    private readonly beforeEventCommits?: () => Promise<void>,
+    private readonly commitEvents = true,
+    private readonly afterEventCommit?: (body: unknown) => Promise<void>,
   ) {}
 
   async run(now = new Date().toISOString()): Promise<void> {
@@ -124,10 +127,12 @@ export class UploadRunner {
           : left.orderingTimestamp.localeCompare(right.orderingTimestamp),
       );
       for (const event of events) {
-        await this.uploadEvent(job, event);
+        await this.uploadEventDurable(job, event);
         job = { ...job, state: "Running", completedItems: job.completedItems + 1, updatedAt: now };
         await this.state.saveSynchronizationJob(job);
       }
+      await this.beforeEventCommits?.();
+      if (this.commitEvents) for (const event of events) await this.commitEvent(job, event);
       await this.state.saveSynchronizationJob({
         ...job,
         state: "Running",
@@ -164,11 +169,11 @@ export class UploadRunner {
     );
   }
 
-  private async uploadEvent(
+  private async uploadEventDurable(
     job: SynchronizationJobV1 & { vaultId: string; generationId: string; generationNumber: number },
     event: StoredEvent,
   ): Promise<void> {
-    const checkpoint = await this.upload(
+    await this.upload(
       job,
       "Event",
       event.eventId,
@@ -181,8 +186,23 @@ export class UploadRunner {
         dependencyObjectIds: [...event.referencedObjectIds].toSorted(),
       },
     );
+  }
+
+  private async commitEvent(
+    job: SynchronizationJobV1 & { vaultId: string; generationId: string; generationNumber: number },
+    event: StoredEvent,
+  ): Promise<void> {
+    const checkpoint = await this.state.synchronizationCheckpoint(
+      job.vaultId,
+      "Event",
+      event.eventId,
+    );
+    if (checkpoint === undefined || checkpoint.commitIdempotencyKey === undefined)
+      throw Object.assign(new Error("Event upload checkpoint is unavailable"), {
+        id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+      });
     if (checkpoint.state !== "Committed") {
-      await this.transport.request(
+      const response = await this.transport.request(
         "POST",
         `/api/vaults/${job.vaultId}/commits`,
         {
@@ -193,6 +213,7 @@ export class UploadRunner {
         },
         checkpoint.commitIdempotencyKey,
       );
+      await this.afterEventCommit?.(response.body);
       await this.state.saveSynchronizationCheckpoint({ ...checkpoint, state: "Committed" });
     }
   }

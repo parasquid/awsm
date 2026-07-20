@@ -1,23 +1,81 @@
 import { encodeCanonicalCbor } from "../../domain/cbor";
 import { DomainValidationError } from "../../domain/errors";
 import { canonicalRecord, literal, uuid } from "../../domain/validation";
+import type { WorkspaceVaultNameCacheV1 } from "../../runtime/vault/workspace-name-cache";
 import { openDatabase, requestValue, transactionDone } from "./database";
 import { storageError } from "./errors";
+import { vaultKey, vaultKeyRange, vaultSingletonKey } from "./keys";
 import {
   type AccountConfigurationV1,
+  type ServerSwitchJobV1,
   STORES,
   type StoredAccountMetadataV1,
   type StoredAccountSecretsV1,
   type StoredAccountVaultV1,
+  type StoredCollectionProjectionV1,
+  type StoredEvent,
+  type StoredObjectV1,
+  type StoredProjectionV1,
+  type StoredVaultGenerationV1,
+  type StoredVaultHeadV1,
+  type StoredVaultNameProjectionV1,
   type SynchronizationCheckpointV1,
   type SynchronizationJobV1,
 } from "./schema";
 
+export interface ServerSwitchReplicaPromotion {
+  readonly generation: StoredVaultGenerationV1;
+  readonly head: StoredVaultHeadV1;
+  readonly events: readonly StoredEvent[];
+  readonly objects: readonly StoredObjectV1[];
+  readonly libraryProjections: readonly StoredProjectionV1[];
+  readonly collectionProjection: StoredCollectionProjectionV1;
+  readonly vaultNameProjection: StoredVaultNameProjectionV1;
+  readonly nameCache: WorkspaceVaultNameCacheV1;
+}
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
-function accountAad(accountId: string, sessionId: string): Uint8Array {
-  return encodeCanonicalCbor(["account:session-storage:v1", accountId, sessionId]);
+export type AccountCredentialScope = "active" | "server-switch-candidate" | "server-switch-prior";
+
+function credentialKeys(scope: AccountCredentialScope): {
+  readonly metadata: string;
+  readonly secrets: string;
+  readonly wrapping: string;
+  readonly session: string;
+} {
+  switch (scope) {
+    case "active":
+      return {
+        metadata: "active",
+        secrets: "active",
+        wrapping: "account-wrapping",
+        session: "session-storage",
+      };
+    case "server-switch-candidate":
+      return {
+        metadata: "server-switch-candidate",
+        secrets: "server-switch-candidate",
+        wrapping: "server-switch-candidate-wrapping",
+        session: "server-switch-candidate-session",
+      };
+    case "server-switch-prior":
+      return {
+        metadata: "server-switch-prior",
+        secrets: "server-switch-prior",
+        wrapping: "server-switch-prior-wrapping",
+        session: "server-switch-prior-session",
+      };
+  }
+}
+
+function accountAad(
+  scope: AccountCredentialScope,
+  accountId: string,
+  sessionId: string,
+): Uint8Array {
+  return encodeCanonicalCbor(["account:session-storage:v1", scope, accountId, sessionId]);
 }
 
 function accountWrappingKey(value: unknown): CryptoKey {
@@ -99,6 +157,84 @@ function secrets(value: unknown): StoredAccountSecretsV1 {
   };
 }
 
+interface AuthenticatedInput {
+  readonly metadata: StoredAccountMetadataV1;
+  readonly accountEncryptionKey: Uint8Array;
+  readonly refreshToken: string;
+}
+
+interface PreparedAuthenticated {
+  readonly metadata: StoredAccountMetadataV1;
+  readonly wrappingKey: CryptoKey;
+  readonly sessionKey: CryptoKey;
+  readonly secrets: StoredAccountSecretsV1;
+}
+
+async function prepareAuthenticated(
+  input: AuthenticatedInput,
+  scope: AccountCredentialScope,
+): Promise<PreparedAuthenticated> {
+  if (input.accountEncryptionKey.byteLength !== 32)
+    throw new DomainValidationError("accountEncryptionKey", "must contain 32 bytes");
+  const wrappingKey = await crypto.subtle.generateKey({ name: "AES-KW", length: 256 }, false, [
+    "wrapKey",
+    "unwrapKey",
+  ]);
+  const sessionKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
+    "encrypt",
+    "decrypt",
+  ]);
+  const carrier = await crypto.subtle.importKey(
+    "raw",
+    Uint8Array.from(input.accountEncryptionKey),
+    { name: "HMAC", hash: "SHA-256" },
+    true,
+    ["sign"],
+  );
+  const wrappedAccountEncryptionKey = new Uint8Array(
+    await crypto.subtle.wrapKey("raw", carrier, wrappingKey, "AES-KW"),
+  );
+  const refreshNonce = crypto.getRandomValues(new Uint8Array(12));
+  const refreshCiphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      {
+        name: "AES-GCM",
+        iv: refreshNonce,
+        additionalData: Uint8Array.from(
+          accountAad(scope, input.metadata.accountId, input.metadata.sessionId),
+        ),
+      },
+      sessionKey,
+      encoder.encode(input.refreshToken),
+    ),
+  );
+  return {
+    metadata: input.metadata,
+    wrappingKey,
+    sessionKey,
+    secrets: {
+      version: 1,
+      accountId: input.metadata.accountId,
+      sessionId: input.metadata.sessionId,
+      wrappedAccountEncryptionKey,
+      refreshNonce,
+      refreshCiphertext,
+    },
+  };
+}
+
+function putPrepared(
+  transaction: IDBTransaction,
+  scope: AccountCredentialScope,
+  prepared: PreparedAuthenticated,
+): void {
+  const keys = credentialKeys(scope);
+  transaction.objectStore(STORES.accountMetadata).put(prepared.metadata, keys.metadata);
+  transaction.objectStore(STORES.accountKeys).put(prepared.wrappingKey, keys.wrapping);
+  transaction.objectStore(STORES.accountKeys).put(prepared.sessionKey, keys.session);
+  transaction.objectStore(STORES.accountSecrets).put(prepared.secrets, keys.secrets);
+}
+
 export class IndexedDbAccountRepository {
   private readonly databasePromise: Promise<IDBDatabase>;
 
@@ -106,63 +242,18 @@ export class IndexedDbAccountRepository {
     this.databasePromise = openDatabase(databaseName);
   }
 
-  async saveAuthenticated(input: {
-    readonly metadata: StoredAccountMetadataV1;
-    readonly accountEncryptionKey: Uint8Array;
-    readonly refreshToken: string;
-  }): Promise<void> {
-    if (input.accountEncryptionKey.byteLength !== 32)
-      throw new DomainValidationError("accountEncryptionKey", "must contain 32 bytes");
-    const wrappingKey = await crypto.subtle.generateKey({ name: "AES-KW", length: 256 }, false, [
-      "wrapKey",
-      "unwrapKey",
-    ]);
-    const sessionKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
-      "encrypt",
-      "decrypt",
-    ]);
-    const carrier = await crypto.subtle.importKey(
-      "raw",
-      Uint8Array.from(input.accountEncryptionKey),
-      { name: "HMAC", hash: "SHA-256" },
-      true,
-      ["sign"],
-    );
-    const wrappedAccountEncryptionKey = new Uint8Array(
-      await crypto.subtle.wrapKey("raw", carrier, wrappingKey, "AES-KW"),
-    );
-    const refreshNonce = crypto.getRandomValues(new Uint8Array(12));
-    const refreshCiphertext = new Uint8Array(
-      await crypto.subtle.encrypt(
-        {
-          name: "AES-GCM",
-          iv: refreshNonce,
-          additionalData: Uint8Array.from(
-            accountAad(input.metadata.accountId, input.metadata.sessionId),
-          ),
-        },
-        sessionKey,
-        encoder.encode(input.refreshToken),
-      ),
-    );
-    const storedSecrets: StoredAccountSecretsV1 = {
-      version: 1,
-      accountId: input.metadata.accountId,
-      sessionId: input.metadata.sessionId,
-      wrappedAccountEncryptionKey,
-      refreshNonce,
-      refreshCiphertext,
-    };
+  async saveAuthenticated(
+    input: AuthenticatedInput,
+    scope: AccountCredentialScope = "active",
+  ): Promise<void> {
+    const prepared = await prepareAuthenticated(input, scope);
     const database = await this.databasePromise;
     const transaction = database.transaction(
       [STORES.accountMetadata, STORES.accountKeys, STORES.accountSecrets],
       "readwrite",
     );
     try {
-      transaction.objectStore(STORES.accountMetadata).put(input.metadata, "active");
-      transaction.objectStore(STORES.accountKeys).put(wrappingKey, "account-wrapping");
-      transaction.objectStore(STORES.accountKeys).put(sessionKey, "session-storage");
-      transaction.objectStore(STORES.accountSecrets).put(storedSecrets, "active");
+      putPrepared(transaction, scope, prepared);
       await transactionDone(transaction);
     } catch (error) {
       transaction.abort();
@@ -170,7 +261,7 @@ export class IndexedDbAccountRepository {
     }
   }
 
-  async loadAuthenticated(): Promise<
+  async loadAuthenticated(scope: AccountCredentialScope = "active"): Promise<
     | {
         readonly metadata: StoredAccountMetadataV1;
         readonly accountEncryptionKey: Uint8Array;
@@ -181,16 +272,17 @@ export class IndexedDbAccountRepository {
     | undefined
   > {
     const database = await this.databasePromise;
+    const keys = credentialKeys(scope);
     const transaction = database.transaction(
       [STORES.accountMetadata, STORES.accountKeys, STORES.accountSecrets],
       "readonly",
     );
     try {
       const [metadataValue, wrappingValue, sessionValue, secretsValue] = await Promise.all([
-        requestValue(transaction.objectStore(STORES.accountMetadata).get("active")),
-        requestValue(transaction.objectStore(STORES.accountKeys).get("account-wrapping")),
-        requestValue(transaction.objectStore(STORES.accountKeys).get("session-storage")),
-        requestValue(transaction.objectStore(STORES.accountSecrets).get("active")),
+        requestValue(transaction.objectStore(STORES.accountMetadata).get(keys.metadata)),
+        requestValue(transaction.objectStore(STORES.accountKeys).get(keys.wrapping)),
+        requestValue(transaction.objectStore(STORES.accountKeys).get(keys.session)),
+        requestValue(transaction.objectStore(STORES.accountSecrets).get(keys.secrets)),
       ]);
       await transactionDone(transaction);
       if ([wrappingValue, sessionValue, secretsValue].every((value) => value === undefined))
@@ -225,7 +317,7 @@ export class IndexedDbAccountRepository {
           name: "AES-GCM",
           iv: Uint8Array.from(decodedSecrets.refreshNonce),
           additionalData: Uint8Array.from(
-            accountAad(decodedMetadata.accountId, decodedMetadata.sessionId),
+            accountAad(scope, decodedMetadata.accountId, decodedMetadata.sessionId),
           ),
         },
         sessionKey,
@@ -243,41 +335,59 @@ export class IndexedDbAccountRepository {
     }
   }
 
-  async loadMetadata(): Promise<StoredAccountMetadataV1 | undefined> {
+  async loadMetadata(
+    scope: AccountCredentialScope = "active",
+  ): Promise<StoredAccountMetadataV1 | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.accountMetadata, "readonly");
-    const value = await requestValue(transaction.objectStore(STORES.accountMetadata).get("active"));
+    const value = await requestValue(
+      transaction.objectStore(STORES.accountMetadata).get(credentialKeys(scope).metadata),
+    );
     await transactionDone(transaction);
     return value === undefined ? undefined : metadata(value);
   }
 
-  async hasAuthenticatedSecrets(): Promise<boolean> {
+  async hasAuthenticatedSecrets(scope: AccountCredentialScope = "active"): Promise<boolean> {
     const database = await this.databasePromise;
+    const keys = credentialKeys(scope);
     const transaction = database.transaction(
-      [STORES.accountKeys, STORES.accountSecrets],
+      [STORES.accountMetadata, STORES.accountKeys, STORES.accountSecrets],
       "readonly",
     );
-    const [keys, secretsCount] = await Promise.all([
-      requestValue(transaction.objectStore(STORES.accountKeys).count()),
-      requestValue(transaction.objectStore(STORES.accountSecrets).count()),
+    const [metadataValue, wrappingValue, sessionValue, secretsValue] = await Promise.all([
+      requestValue(transaction.objectStore(STORES.accountMetadata).get(keys.metadata)),
+      requestValue(transaction.objectStore(STORES.accountKeys).get(keys.wrapping)),
+      requestValue(transaction.objectStore(STORES.accountKeys).get(keys.session)),
+      requestValue(transaction.objectStore(STORES.accountSecrets).get(keys.secrets)),
     ]);
     await transactionDone(transaction);
-    if (keys === 0 && secretsCount === 0) return false;
-    if (keys !== 2 || secretsCount !== 1)
+    const secretValues = [wrappingValue, sessionValue, secretsValue];
+    if (secretValues.every((value) => value === undefined)) return false;
+    if (metadataValue === undefined || secretValues.some((value) => value === undefined))
       throw new DomainValidationError("account", "has partial credential state");
+    const decodedMetadata = metadata(metadataValue);
+    const decodedSecrets = secrets(secretsValue);
+    if (
+      decodedMetadata.accountId !== decodedSecrets.accountId ||
+      decodedMetadata.sessionId !== decodedSecrets.sessionId
+    )
+      throw new DomainValidationError("account", "has mismatched session identity");
+    accountWrappingKey(wrappingValue);
+    sessionStorageKey(sessionValue);
     return true;
   }
 
-  async loadAccountEncryptionKey(): Promise<Uint8Array> {
+  async loadAccountEncryptionKey(scope: AccountCredentialScope = "active"): Promise<Uint8Array> {
     const database = await this.databasePromise;
+    const keys = credentialKeys(scope);
     const transaction = database.transaction(
       [STORES.accountMetadata, STORES.accountKeys, STORES.accountSecrets],
       "readonly",
     );
     const [metadataValue, wrappingValue, secretsValue] = await Promise.all([
-      requestValue(transaction.objectStore(STORES.accountMetadata).get("active")),
-      requestValue(transaction.objectStore(STORES.accountKeys).get("account-wrapping")),
-      requestValue(transaction.objectStore(STORES.accountSecrets).get("active")),
+      requestValue(transaction.objectStore(STORES.accountMetadata).get(keys.metadata)),
+      requestValue(transaction.objectStore(STORES.accountKeys).get(keys.wrapping)),
+      requestValue(transaction.objectStore(STORES.accountSecrets).get(keys.secrets)),
     ]);
     await transactionDone(transaction);
     if (metadataValue === undefined || wrappingValue === undefined || secretsValue === undefined)
@@ -298,8 +408,36 @@ export class IndexedDbAccountRepository {
     return new Uint8Array(await crypto.subtle.exportKey("raw", carrier));
   }
 
+  async eraseAuthenticated(scope: AccountCredentialScope): Promise<void> {
+    const database = await this.databasePromise;
+    const keys = credentialKeys(scope);
+    const transaction = database.transaction(
+      [STORES.accountMetadata, STORES.accountKeys, STORES.accountSecrets],
+      "readwrite",
+    );
+    transaction.objectStore(STORES.accountMetadata).delete(keys.metadata);
+    transaction.objectStore(STORES.accountKeys).delete(keys.wrapping);
+    transaction.objectStore(STORES.accountKeys).delete(keys.session);
+    transaction.objectStore(STORES.accountSecrets).delete(keys.secrets);
+    await transactionDone(transaction);
+  }
+
+  async eraseAuthenticationSecrets(scope: AccountCredentialScope): Promise<void> {
+    const database = await this.databasePromise;
+    const keys = credentialKeys(scope);
+    const transaction = database.transaction(
+      [STORES.accountKeys, STORES.accountSecrets],
+      "readwrite",
+    );
+    transaction.objectStore(STORES.accountKeys).delete(keys.wrapping);
+    transaction.objectStore(STORES.accountKeys).delete(keys.session);
+    transaction.objectStore(STORES.accountSecrets).delete(keys.secrets);
+    await transactionDone(transaction);
+  }
+
   async logout(): Promise<void> {
     const database = await this.databasePromise;
+    const keys = credentialKeys("active");
     const transaction = database.transaction(
       [
         STORES.accountKeys,
@@ -309,13 +447,11 @@ export class IndexedDbAccountRepository {
       ],
       "readwrite",
     );
-    for (const store of [
-      STORES.accountKeys,
-      STORES.accountSecrets,
-      STORES.synchronizationJobs,
-      STORES.synchronizationCheckpoints,
-    ])
-      transaction.objectStore(store).clear();
+    transaction.objectStore(STORES.accountKeys).delete(keys.wrapping);
+    transaction.objectStore(STORES.accountKeys).delete(keys.session);
+    transaction.objectStore(STORES.accountSecrets).delete(keys.secrets);
+    transaction.objectStore(STORES.synchronizationJobs).clear();
+    transaction.objectStore(STORES.synchronizationCheckpoints).clear();
     await transactionDone(transaction);
   }
 
@@ -358,12 +494,219 @@ export class IndexedDbAccountRepository {
     return value as SynchronizationJobV1 | undefined;
   }
 
-  async loadAccountVault(): Promise<StoredAccountVaultV1 | undefined> {
+  async saveAccountVault(
+    registration: StoredAccountVaultV1,
+    scope: "active" | "server-switch-candidate" = "active",
+  ): Promise<void> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.accountVault, "readwrite");
+    transaction.objectStore(STORES.accountVault).put(registration, scope);
+    await transactionDone(transaction);
+  }
+
+  async eraseAccountVault(scope: "active" | "server-switch-candidate"): Promise<void> {
+    const database = await this.databasePromise;
+    const transaction = database.transaction(STORES.accountVault, "readwrite");
+    transaction.objectStore(STORES.accountVault).delete(scope);
+    await transactionDone(transaction);
+  }
+
+  async loadAccountVault(
+    scope: "active" | "server-switch-candidate" = "active",
+  ): Promise<StoredAccountVaultV1 | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(STORES.accountVault, "readonly");
-    const value = await requestValue(transaction.objectStore(STORES.accountVault).get("active"));
+    const value = await requestValue(transaction.objectStore(STORES.accountVault).get(scope));
     await transactionDone(transaction);
     return value as StoredAccountVaultV1 | undefined;
+  }
+
+  async promoteServerSwitch(input: {
+    readonly job: ServerSwitchJobV1;
+    readonly candidateOrigin: string;
+    readonly now: string;
+  }): Promise<void> {
+    await this.promoteServerSwitchAuthority(input);
+  }
+
+  async promoteServerSwitchWithReplica(input: {
+    readonly job: ServerSwitchJobV1;
+    readonly candidateOrigin: string;
+    readonly now: string;
+    readonly replica: ServerSwitchReplicaPromotion;
+  }): Promise<void> {
+    await this.promoteServerSwitchAuthority(input, input.replica);
+  }
+
+  private async promoteServerSwitchAuthority(
+    input: {
+      readonly job: ServerSwitchJobV1;
+      readonly candidateOrigin: string;
+      readonly now: string;
+    },
+    replica?: ServerSwitchReplicaPromotion,
+  ): Promise<void> {
+    if (input.job.stage !== "PromoteContext" || input.job.state !== "Running")
+      throw new DomainValidationError("serverSwitchJob", "is not ready for promotion");
+    const [source, candidate, registration] = await Promise.all([
+      this.loadAuthenticated("active"),
+      this.loadAuthenticated("server-switch-candidate"),
+      this.loadAccountVault("server-switch-candidate"),
+    ]);
+    if (
+      source === undefined ||
+      candidate === undefined ||
+      registration === undefined ||
+      registration.accountId !== candidate.metadata.accountId ||
+      registration.vaultId !== input.job.vaultId
+    )
+      throw new DomainValidationError("serverSwitchJob", "has incomplete Account authority");
+    try {
+      const [preparedActive, preparedPrior] = await Promise.all([
+        prepareAuthenticated(candidate, "active"),
+        prepareAuthenticated(source, "server-switch-prior"),
+      ]);
+      const database = await this.databasePromise;
+      const transaction = database.transaction(
+        [
+          STORES.accountConfiguration,
+          STORES.accountMetadata,
+          STORES.accountKeys,
+          STORES.accountSecrets,
+          STORES.accountVault,
+          STORES.synchronizationJobs,
+          STORES.synchronizationCheckpoints,
+          STORES.serverSwitchJobs,
+          ...(replica === undefined
+            ? []
+            : [
+                STORES.vaultGenerations,
+                STORES.vaultHead,
+                STORES.objects,
+                STORES.events,
+                STORES.libraryProjection,
+                STORES.collectionProjection,
+                STORES.vaultNameProjection,
+                STORES.vaultNameCache,
+              ]),
+        ],
+        "readwrite",
+      );
+      try {
+        const storedJob = (await requestValue(
+          transaction.objectStore(STORES.serverSwitchJobs).get("active"),
+        )) as ServerSwitchJobV1 | undefined;
+        if (storedJob?.jobId !== input.job.jobId || storedJob.stage !== "PromoteContext") {
+          transaction.abort();
+          throw new DomainValidationError("serverSwitchJob", "changed before promotion");
+        }
+        if (replica !== undefined) {
+          const storedHead = (await requestValue(
+            transaction
+              .objectStore(STORES.vaultHead)
+              .get(vaultSingletonKey(input.job.vaultId, "active")),
+          )) as StoredVaultHeadV1 | undefined;
+          if (
+            storedHead === undefined ||
+            storedHead.generationId !== input.job.expectedLocalHead.generationId ||
+            storedHead.generationNumber !== input.job.expectedLocalHead.generationNumber ||
+            storedHead.appendedObjectIds.join("\n") !==
+              input.job.expectedLocalHead.appendedObjectIds.join("\n") ||
+            storedHead.appendedEventIds.join("\n") !==
+              input.job.expectedLocalHead.appendedEventIds.join("\n") ||
+            replica.head.vaultId !== input.job.vaultId ||
+            replica.head.generationId !== replica.generation.generationId ||
+            replica.events.some((event) => event.vaultId !== input.job.vaultId) ||
+            replica.collectionProjection.projectionId !== input.job.vaultId ||
+            replica.vaultNameProjection.vaultId !== input.job.vaultId ||
+            replica.nameCache.vaultId !== input.job.vaultId
+          ) {
+            transaction.abort();
+            throw new DomainValidationError("serverSwitchJob", "local authority changed");
+          }
+          transaction.objectStore(STORES.vaultGenerations).delete(vaultKeyRange(input.job.vaultId));
+          transaction.objectStore(STORES.events).delete(vaultKeyRange(input.job.vaultId));
+          transaction.objectStore(STORES.objects).delete(vaultKeyRange(input.job.vaultId));
+          transaction
+            .objectStore(STORES.vaultGenerations)
+            .put(replica.generation, vaultKey(input.job.vaultId, replica.generation.generationId));
+          for (const event of replica.events)
+            transaction
+              .objectStore(STORES.events)
+              .put(event, vaultKey(input.job.vaultId, event.eventId));
+          for (const object of replica.objects)
+            transaction
+              .objectStore(STORES.objects)
+              .put(object, vaultKey(input.job.vaultId, object.objectId));
+          transaction
+            .objectStore(STORES.libraryProjection)
+            .delete(vaultKeyRange(input.job.vaultId));
+          for (const projection of replica.libraryProjections)
+            transaction
+              .objectStore(STORES.libraryProjection)
+              .put(projection, vaultKey(input.job.vaultId, projection.bundleId));
+          transaction
+            .objectStore(STORES.collectionProjection)
+            .put(replica.collectionProjection, vaultSingletonKey(input.job.vaultId, "active"));
+          transaction
+            .objectStore(STORES.vaultNameProjection)
+            .put(replica.vaultNameProjection, vaultSingletonKey(input.job.vaultId, "active"));
+          transaction.objectStore(STORES.vaultNameCache).put(replica.nameCache, input.job.vaultId);
+          transaction
+            .objectStore(STORES.vaultHead)
+            .put(replica.head, vaultSingletonKey(input.job.vaultId, "active"));
+        }
+        putPrepared(transaction, "active", preparedActive);
+        putPrepared(transaction, "server-switch-prior", preparedPrior);
+        const candidateKeys = credentialKeys("server-switch-candidate");
+        transaction.objectStore(STORES.accountMetadata).delete(candidateKeys.metadata);
+        transaction.objectStore(STORES.accountKeys).delete(candidateKeys.wrapping);
+        transaction.objectStore(STORES.accountKeys).delete(candidateKeys.session);
+        transaction.objectStore(STORES.accountSecrets).delete(candidateKeys.secrets);
+        transaction
+          .objectStore(STORES.accountConfiguration)
+          .put({ version: 1, mode: "Configured", serverOrigin: input.candidateOrigin }, "active");
+        transaction.objectStore(STORES.accountVault).put(registration, "active");
+        transaction.objectStore(STORES.accountVault).delete("server-switch-candidate");
+        transaction.objectStore(STORES.synchronizationCheckpoints).clear();
+        transaction.objectStore(STORES.synchronizationJobs).put(
+          {
+            version: 1,
+            jobId: crypto.randomUUID(),
+            accountId: candidate.metadata.accountId,
+            vaultId: registration.vaultId,
+            generationId: registration.remoteGenerationId,
+            generationNumber: registration.remoteGenerationNumber,
+            state: "Running",
+            stage: "FetchChanges",
+            createdAt: input.now,
+            updatedAt: input.now,
+            snapshotCursor: registration.deliveryCursor,
+            completedItems: 0,
+            totalItems: 0,
+            processedBytes: 0,
+            totalBytes: 0,
+            retryCount: 0,
+            attachIdempotencyKey: crypto.randomUUID(),
+          } satisfies SynchronizationJobV1,
+          "active",
+        );
+        transaction
+          .objectStore(STORES.serverSwitchJobs)
+          .put({ ...input.job, stage: "RevokePriorSession", updatedAt: input.now }, "active");
+        await transactionDone(transaction);
+      } catch (error) {
+        try {
+          transaction.abort();
+        } catch {
+          // A request failure may already have aborted the transaction.
+        }
+        throw error;
+      }
+    } finally {
+      source.accountEncryptionKey.fill(0);
+      candidate.accountEncryptionKey.fill(0);
+    }
   }
 
   async saveSynchronizationJob(job: SynchronizationJobV1): Promise<void> {

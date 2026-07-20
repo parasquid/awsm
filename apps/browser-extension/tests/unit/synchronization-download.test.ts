@@ -10,7 +10,7 @@ import { prepareVaultNameChange } from "../../src/runtime/vault/name-crypto";
 const vaultId = "01900000-0000-7000-8000-000000000101";
 const generationId = "01900000-0000-7000-8000-000000000102";
 
-async function fixture() {
+async function fixture(predecessorGenerationId?: string) {
   const raw = new Uint8Array(32).fill(4);
   const rootKey = await crypto.subtle.importKey("raw", raw, "HKDF", false, ["deriveBits"]);
   const prepared = await prepareVaultGeneration({
@@ -18,9 +18,10 @@ async function fixture() {
     vaultId,
     deviceId: "01900000-0000-7000-8000-000000000103",
     generationId,
-    generationNumber: 0,
+    generationNumber: predecessorGenerationId === undefined ? 0 : 1,
+    ...(predecessorGenerationId === undefined ? {} : { predecessorGenerationId }),
     createdAt: "2026-07-19T12:00:00.000Z",
-    reason: "Initial",
+    reason: predecessorGenerationId === undefined ? "Initial" : "Vacuum",
     retainedObjectIds: [],
     retainedEventIds: [],
   });
@@ -139,6 +140,58 @@ describe("remote Complete Replica download", () => {
       appendedObjectIds: [],
       appendedEventIds: [],
     });
+  });
+
+  it("preserves the local predecessor when polling an already active Generation", async () => {
+    const predecessorGenerationId = "01900000-0000-7000-8000-000000000100";
+    const value = await fixture(predecessorGenerationId);
+    const transport = {
+      request: async () => ({
+        status: 200,
+        body: {
+          generationId,
+          generationNumber: 1,
+          records: [value.record],
+          hasMore: false,
+        },
+      }),
+      getTransfer: async () => stream(value.prepared.generation.envelopeBytes),
+    };
+    const downloader = new RemoteReplicaDownloader(transport, {
+      prepareEncrypted: async () => undefined,
+    });
+
+    const replica = await downloader.prepare(
+      {
+        version: 1,
+        jobId: crypto.randomUUID(),
+        accountId: crypto.randomUUID(),
+        vaultId,
+        generationId,
+        generationNumber: 1,
+        state: "Running",
+        stage: "DownloadRecords",
+        createdAt: "2026-07-19T12:00:00.000Z",
+        updatedAt: "2026-07-19T12:00:00.000Z",
+        snapshotCursor: 1,
+        completedItems: 0,
+        totalItems: 1,
+        processedBytes: 0,
+        totalBytes: value.prepared.generation.envelopeBytes.byteLength,
+        retryCount: 0,
+        attachIdempotencyKey: crypto.randomUUID(),
+      },
+      value.rootKey,
+      {
+        generation: {
+          ...value.prepared.generation,
+        },
+        events: [],
+        objects: [],
+      },
+    );
+
+    expect(replica.generation.predecessorGenerationId).toBe(predecessorGenerationId);
   });
 
   it("rejects bytes that differ from the advertised checksum", async () => {

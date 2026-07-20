@@ -9,7 +9,15 @@ export class SynchronizationHttp {
     private readonly origin: string,
     private readonly tokens: AccessTokens,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly operationSignal?: AbortSignal,
   ) {}
+
+  private signal(): AbortSignal {
+    const timeout = AbortSignal.timeout(15_000);
+    return this.operationSignal === undefined
+      ? timeout
+      : AbortSignal.any([this.operationSignal, timeout]);
+  }
 
   private fetch(input: string, init: RequestInit): Promise<Response> {
     return this.fetcher.call(globalThis, input, init);
@@ -24,7 +32,7 @@ export class SynchronizationHttp {
     const token = await this.tokens.accessToken();
     const response = await this.fetch(`${this.origin}${path}`, {
       method,
-      signal: AbortSignal.timeout(15_000),
+      signal: this.signal(),
       redirect: "manual",
       credentials: "omit",
       headers: {
@@ -36,6 +44,7 @@ export class SynchronizationHttp {
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+    this.operationSignal?.throwIfAborted();
     const payload =
       response.status === 204 ? undefined : await response.json().catch(() => undefined);
     if (!response.ok || response.redirected) {
@@ -51,6 +60,8 @@ export class SynchronizationHttp {
       throw Object.assign(new Error(String(outcome)), {
         id: String(outcome),
         status: response.status,
+        method,
+        path,
       });
     }
     return { status: response.status, body: payload };
@@ -61,7 +72,7 @@ export class SynchronizationHttp {
     const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes)));
     const response = await this.fetch(`${this.origin}${partUrl}`, {
       method: "PUT",
-      signal: AbortSignal.timeout(15_000),
+      signal: this.signal(),
       redirect: "manual",
       credentials: "omit",
       headers: {
@@ -73,14 +84,17 @@ export class SynchronizationHttp {
       },
       body: Uint8Array.from(bytes),
     });
+    this.operationSignal?.throwIfAborted();
     if (response.status !== 204)
-      throw Object.assign(new Error("Transfer failed"), { id: "SYNCHRONIZATION_INTERRUPTED" });
+      throw Object.assign(new Error("Transfer failed"), {
+        id: "SYNCHRONIZATION_INTERRUPTED",
+      });
   }
 
   async getTransfer(url: string, expectedByteLength: number): Promise<ReadableStream<Uint8Array>> {
     const response = await this.fetch(`${this.origin}${url}`, {
       method: "GET",
-      signal: AbortSignal.timeout(15_000),
+      signal: this.signal(),
       redirect: "manual",
       credentials: "omit",
       headers: {
@@ -88,6 +102,7 @@ export class SynchronizationHttp {
         "Awsm-Request-ID": crypto.randomUUID(),
       },
     });
+    this.operationSignal?.throwIfAborted();
     if (
       !response.ok ||
       response.redirected ||

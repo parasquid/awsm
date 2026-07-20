@@ -10,8 +10,8 @@
     "postinstall": "wxt prepare",
     "test": "vitest run",
     "test:integration": "tsc -p tests/integration/tsconfig.json && LD_LIBRARY_PATH=.output/browser-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} playwright test tests/integration/indexeddb.browser.test.ts --project=chromium",
-    "test:e2e": "wxt build && LD_LIBRARY_PATH=.output/browser-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} playwright test -c playwright.e2e.config.ts",
-    "test:e2e:chrome": "wxt build && LD_LIBRARY_PATH=.output/browser-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} playwright test -c playwright.e2e.config.ts",
+    "test:e2e": "wxt build --mode e2e && AWSM_EXTENSION_BUILD=.output/chrome-mv3-e2e LD_LIBRARY_PATH=.output/browser-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} playwright test -c playwright.e2e.config.ts",
+    "test:e2e:chrome": "wxt build --mode e2e && AWSM_EXTENSION_BUILD=.output/chrome-mv3-e2e LD_LIBRARY_PATH=.output/browser-libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} playwright test -c playwright.e2e.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "zip": "wxt zip"

@@ -13,9 +13,22 @@ type ExpectedVault = { readonly expectedVaultId: string };
 
 export type AppRequest =
   | { readonly type: "GetState" }
+  | { readonly type: "WakeSynchronization" }
   | { readonly type: "ChooseLocalOnly" }
   | { readonly type: "ConfigureSyncServer"; readonly serverOrigin: string }
-  | { readonly type: "ChangeSyncServer"; readonly serverOrigin: string }
+  | ({ readonly type: "BeginServerSwitch"; readonly candidateOrigin: string } & ExpectedVault)
+  | {
+      readonly type: "LoginServerSwitchCandidate";
+      readonly email: string;
+      readonly password: string;
+    }
+  | {
+      readonly type: "SignupServerSwitchCandidate";
+      readonly email: string;
+      readonly password: string;
+    }
+  | { readonly type: "CancelServerSwitch"; readonly jobId: string }
+  | { readonly type: "RetryServerSwitch"; readonly jobId: string }
   | { readonly type: "RetrySynchronization" }
   | ({
       readonly type: "ResolveStaleReplica";
@@ -97,9 +110,14 @@ export type AppRequest =
 
 const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "GetState",
+  "WakeSynchronization",
   "ChooseLocalOnly",
   "ConfigureSyncServer",
-  "ChangeSyncServer",
+  "BeginServerSwitch",
+  "LoginServerSwitchCandidate",
+  "SignupServerSwitchCandidate",
+  "CancelServerSwitch",
+  "RetryServerSwitch",
   "RetrySynchronization",
   "ResolveStaleReplica",
   "LoginAccount",
@@ -185,13 +203,42 @@ export function isAppRequest(value: unknown): value is AppRequest {
   if (value.type === "LogoutAccount" && Object.keys(value).some((key) => key !== "type"))
     return false;
   if (
-    (value.type === "ConfigureSyncServer" || value.type === "ChangeSyncServer") &&
+    value.type === "ConfigureSyncServer" &&
     (Object.keys(value).some((key) => key !== "type" && key !== "serverOrigin") ||
       !("serverOrigin" in value) ||
       typeof value.serverOrigin !== "string")
   )
     return false;
+  if (
+    value.type === "BeginServerSwitch" &&
+    (Object.keys(value).some(
+      (key) => key !== "type" && key !== "candidateOrigin" && key !== "expectedVaultId",
+    ) ||
+      !("candidateOrigin" in value) ||
+      typeof value.candidateOrigin !== "string" ||
+      !("expectedVaultId" in value) ||
+      typeof value.expectedVaultId !== "string")
+  )
+    return false;
+  if (
+    (value.type === "LoginServerSwitchCandidate" || value.type === "SignupServerSwitchCandidate") &&
+    (Object.keys(value).some((key) => key !== "type" && key !== "email" && key !== "password") ||
+      !("email" in value) ||
+      typeof value.email !== "string" ||
+      !("password" in value) ||
+      typeof value.password !== "string")
+  )
+    return false;
+  if (
+    (value.type === "CancelServerSwitch" || value.type === "RetryServerSwitch") &&
+    (Object.keys(value).some((key) => key !== "type" && key !== "jobId") ||
+      !("jobId" in value) ||
+      typeof value.jobId !== "string")
+  )
+    return false;
   if (value.type === "ChooseLocalOnly" && Object.keys(value).some((key) => key !== "type"))
+    return false;
+  if (value.type === "WakeSynchronization" && Object.keys(value).some((key) => key !== "type"))
     return false;
   if (value.type === "RetrySynchronization" && Object.keys(value).some((key) => key !== "type"))
     return false;
@@ -293,11 +340,32 @@ export function isAppRequest(value: unknown): value is AppRequest {
 export interface AppState {
   readonly account: AccountView;
   readonly workspace: WorkspaceState;
+  readonly serverSwitch?: ServerSwitchView;
   readonly latestJob?: CaptureJob;
   readonly latestWarnings?: readonly CaptureWarningId[];
   readonly recentCapture?: RecentCapture;
   readonly latestExportJob?: ExportJobV1;
   readonly latestImportJob?: ImportJobV1;
+}
+
+export interface ServerSwitchView {
+  readonly jobId: string;
+  readonly candidateOrigin: string;
+  readonly state:
+    | "AuthenticationRequired"
+    | "VaultLocked"
+    | "Comparing"
+    | "Applying"
+    | "Conflict"
+    | "Failed";
+  readonly direction?: "PublishLocal" | "FastForwardCandidate" | "FastForwardLocal" | "Union";
+  readonly completedItems: number;
+  readonly totalItems: number;
+  readonly processedBytes: number;
+  readonly totalBytes: number;
+  readonly errorId?: string;
+  readonly reason?: "AncestryUnavailable" | "DivergedGeneration";
+  readonly candidateAuthorityChanged?: boolean;
 }
 
 export interface AccountView {

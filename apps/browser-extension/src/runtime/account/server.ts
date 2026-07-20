@@ -86,15 +86,34 @@ export async function configureSyncServer(
   input: string,
   host: ServerConfigurationHost,
 ): Promise<AccountConfigurationV1> {
-  const serverOrigin = validateServerOrigin(input);
-  if (!(await host.requestPermission(serverPermissionPattern(serverOrigin)))) {
-    throw new ServerSelectionError("SERVER_PERMISSION_DENIED");
-  }
-  const response = await host.probe(`${serverOrigin}/api/server-information`);
-  if (response.redirected || response.status !== 200 || !compatibleInformation(response.body)) {
-    throw new ServerSelectionError("SERVER_INCOMPATIBLE");
-  }
+  const serverOrigin = await validateSyncServer(input, host);
   const configuration = { version: 1, mode: "Configured", serverOrigin } as const;
   await host.commit(configuration);
   return configuration;
+}
+
+export async function validateSyncServer(
+  input: string,
+  host: Pick<ServerConfigurationHost, "requestPermission" | "probe">,
+): Promise<string> {
+  const serverOrigin = validateServerOrigin(input);
+  let permissionGranted = false;
+  try {
+    permissionGranted = await host.requestPermission(serverPermissionPattern(serverOrigin));
+  } catch {
+    throw new ServerSelectionError("SERVER_PERMISSION_DENIED");
+  }
+  if (!permissionGranted) {
+    throw new ServerSelectionError("SERVER_PERMISSION_DENIED");
+  }
+  let response: ProbeResult;
+  try {
+    response = await host.probe(`${serverOrigin}/api/server-information`);
+  } catch {
+    throw new ServerSelectionError("SERVER_INCOMPATIBLE");
+  }
+  if (response.redirected || response.status !== 200 || !compatibleInformation(response.body)) {
+    throw new ServerSelectionError("SERVER_INCOMPATIBLE");
+  }
+  return serverOrigin;
 }

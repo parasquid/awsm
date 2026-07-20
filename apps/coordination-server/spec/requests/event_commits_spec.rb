@@ -78,6 +78,38 @@ RSpec.describe "One-Event closure commits", type: :request do
     expect(vault.reload.head_cursor).to eq(2)
   end
 
+  it "accepts an already-committed closure retained by the active successor" do
+    artifact = durable_record(artifact_id, "Artifact")
+    event = durable_record(event_id, "Event", dependencies: [ artifact ])
+    predecessor_body = { generationId: generation_id, generationNumber: 0, eventObjectId: event_id,
+                         dependencyObjectIds: [ artifact_id ] }
+    post "/api/vaults/#{vault_id}/commits", params: predecessor_body.to_json, headers: headers
+    expect(response).to have_http_status(:ok)
+
+    predecessor = vault.active_generation
+    predecessor.update!(state: "Superseded", superseded_at: Time.current)
+    successor = vault.vault_generations.create!(
+      generation_id: "01900000-0000-7000-8000-000000000037", generation_number: 1,
+      predecessor_generation: predecessor, state: "Active", activated_at: Time.current
+    )
+    successor.generation_memberships.create!(opaque_record: artifact)
+    successor.generation_memberships.create!(opaque_record: event)
+    vault.update!(active_generation: successor, active_generation_number: 1)
+
+    post "/api/vaults/#{vault_id}/commits", params: {
+      generationId: successor.generation_id, generationNumber: 1, eventObjectId: event_id,
+      dependencyObjectIds: [ artifact_id ]
+    }.to_json, headers: headers.merge("Idempotency-Key" => "01900000-0000-7000-8000-000000000038")
+
+    expect(response).to have_http_status(:ok)
+    expect(response.parsed_body).to include(
+      "generationId" => successor.generation_id, "generationNumber" => 1,
+      "cursor" => 2, "durabilityAcknowledged" => true
+    )
+    expect(vault.reload.head_cursor).to eq(2)
+    expect(DeliveryChange.where(vault_replica: vault).count).to eq(1)
+  end
+
   private
 
   def active_vault

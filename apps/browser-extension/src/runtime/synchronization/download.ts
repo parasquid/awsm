@@ -161,6 +161,7 @@ export class RemoteReplicaDownloader {
       readonly events: readonly StoredEvent[];
       readonly objects: readonly StoredObjectV1[];
     },
+    scope?: { readonly recoveryGenerationId: string },
   ): Promise<PreparedRemoteReplica> {
     if (
       job.vaultId === undefined ||
@@ -169,12 +170,14 @@ export class RemoteReplicaDownloader {
       job.stage !== "DownloadRecords"
     )
       throw integrity("Download Job context is incomplete");
+    if (scope !== undefined && scope.recoveryGenerationId !== job.generationId)
+      throw integrity("Recovery download scope differs from the requested Generation");
     const scopedJob: SynchronizationJobV1 & { vaultId: string; generationId: string } = {
       ...job,
       vaultId: job.vaultId,
       generationId: job.generationId,
     };
-    const records = await this.list(scopedJob);
+    const records = await this.list(scopedJob, scope);
     const generationMetadata = records.filter((record) => record.objectType === "VaultGeneration");
     if (generationMetadata.length !== 1 || generationMetadata[0]?.objectId !== job.generationId)
       throw integrity("Active Generation record is missing");
@@ -203,7 +206,9 @@ export class RemoteReplicaDownloader {
           (
             await this.transport.request(
               "POST",
-              `/api/vaults/${job.vaultId}/records/${advertised.objectId}/downloads`,
+              scope === undefined
+                ? `/api/vaults/${job.vaultId}/records/${advertised.objectId}/downloads`
+                : `/api/vaults/${job.vaultId}/recoveries/${scope.recoveryGenerationId}/records/${advertised.objectId}/downloads`,
               undefined,
               crypto.randomUUID(),
             )
@@ -258,13 +263,16 @@ export class RemoteReplicaDownloader {
         }
       }
       if (generationBytes === undefined) throw integrity("Generation bytes are unavailable");
+      const predecessorGenerationId =
+        job.predecessorGenerationId ??
+        (existing?.generation.generationId === job.generationId
+          ? existing.generation.predecessorGenerationId
+          : undefined);
       const generation: StoredVaultGenerationV1 = {
         version: 1,
         generationId: job.generationId,
         generationNumber: job.generationNumber,
-        ...(job.predecessorGenerationId === undefined
-          ? {}
-          : { predecessorGenerationId: job.predecessorGenerationId }),
+        ...(predecessorGenerationId === undefined ? {} : { predecessorGenerationId }),
         envelopeBytes: generationBytes,
       };
       const retained = await verifyVaultGeneration(rootKey, job.vaultId, generation);
@@ -347,11 +355,16 @@ export class RemoteReplicaDownloader {
 
   private async list(
     job: SynchronizationJobV1 & { vaultId: string; generationId: string },
+    scope?: { readonly recoveryGenerationId: string },
   ): Promise<readonly RemoteRecord[]> {
     const result: RemoteRecord[] = [];
     let after: string | undefined;
     for (;;) {
-      const path = `/api/vaults/${job.vaultId}/records?limit=100${after === undefined ? "" : `&afterObjectId=${encodeURIComponent(after)}`}`;
+      const base =
+        scope === undefined
+          ? `/api/vaults/${job.vaultId}/records`
+          : `/api/vaults/${job.vaultId}/recoveries/${scope.recoveryGenerationId}/records`;
+      const path = `${base}?limit=100${after === undefined ? "" : `&afterObjectId=${encodeURIComponent(after)}`}`;
       const page = object((await this.transport.request("GET", path)).body, "record page");
       if (page.generationId !== job.generationId || !Array.isArray(page.records))
         throw integrity("Record page Generation differs");
