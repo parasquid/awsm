@@ -112,6 +112,11 @@ Every Object MUST possess integrity metadata.
 
 Integrity verification SHALL occur before the Object is returned to higher layers.
 
+An Artifact Object record may remain authoritative while its wrapper is intentionally absent from
+one device. That absence is valid only when a strict Vault-scoped remote-only availability row exists;
+otherwise it is corruption. The row is operational state and MUST NOT alter the Object, identifier,
+Bundle reference, Event graph, or synchronized inventory.
+
 ---
 
 # 9. Namespaces
@@ -146,6 +151,11 @@ Deletion does not redefine the logical history of the Vault.
 Retention policies are defined elsewhere.
 
 Vault Vacuum is the supported retention policy defined by `docs/specifications/vault/vacuum.md`. It removes only Objects proven unreachable from the verified active successor Vault Generation.
+
+Manual storage relief is not Object deletion. After explicit confirmation, it may remove local
+wrappers only for eligible heavy Artifact roles after proving that each exact Object is a committed
+member of the authenticated server's active Generation. It atomically records intentional absence
+around the file removal and is restart-reconciled. Compact wrappers remain local.
 
 ---
 

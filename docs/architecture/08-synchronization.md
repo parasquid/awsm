@@ -100,22 +100,20 @@ Activation is a compare-and-swap over predecessor Generation ID, predecessor num
 observed head cursor. A concurrent commit forces the client to keep the candidate isolated, refetch,
 and deliberately rebuild or reconcile. The Service never silently resets or merges client state.
 
-# Recovery
+# Stale Replica discard
 
-When discovery proves that a local Complete Replica names a superseded Generation, the Runtime
-makes that Vault read-only while preserving Export and read access. Resolution first offers a
-Complete encrypted Export. It then re-authors the stale Replica's current logical state into a fresh
-local-only Vault with fresh Vault, Generation, Device, Object, Bundle, Artifact, Event, and
-Collection identifiers. Only after both the local fork and server Replica validate does one local
-transaction install the fork and replace the original synchronized Vault with server-authoritative
-data. A failure before that transaction changes neither authority; an interrupted attempt returns
-to the explicit Conflict state.
+When discovery proves that a local Replica names a superseded Generation, the Runtime makes that
+Vault read-only while preserving Export and read access. Resolution offers a Complete encrypted
+Export first and requires explicit acknowledgement before permanently discarding unpublished local
+state. It downloads and verifies the complete active server Replica, rebuilds Projections, and
+atomically replaces the stale Vault in place. It never creates another Vault or silently merges
+history.
 
-The preparation stages persist enough operational state for deterministic startup reconciliation.
-Startup removes provisional fork Artifact wrappers and returns `PrepareRecoveryFork`,
-`PrepareServerReplacement`, or `ActivateRecovery` work to Conflict. The final replacement is one
-IndexedDB transaction, so termination after it observes the complete recovered pair rather than a
-partially replaced Vault.
+Preparation journals each replacement Artifact before writing it. Startup removes only those
+provisional wrappers and returns pre-activation work to Conflict. Activation replaces all
+authoritative and derived Vault state and clears obsolete device-local availability and maintenance
+rows in one IndexedDB transaction. Termination after activation therefore observes only the complete
+server state.
 
 Superseded server membership remains temporarily available only through explicit recovery
 resources. Server recovery retention supports diagnosis and controlled retrieval but never decides
@@ -136,9 +134,10 @@ discards the interrupted candidate from observed server state.
 
 # Current Product Boundary
 
-The Chrome Host implements Account authentication, client-only Account-key enrollment, one Complete
+The Chrome Host implements Account authentication, client-only Account-key enrollment, one
 synchronized Vault per Account, polling and advisory Cable wakes, remote bootstrap, incremental
-reconciliation, Git-like Coordination Server switching, synchronized Vacuum, and stale-Replica
-recovery. Device request signing and
-revocation, shared Vaults, Selective Replicas, quotas, shared immutable-byte storage, password
+reconciliation, manual heavy-Artifact storage relief, integrity-checked on-demand retrieval,
+Git-like Coordination Server switching, synchronized Vacuum, and explicit stale-Replica discard.
+Device request signing and revocation, shared Vaults, automatic retention profiles, pinning,
+production quota policy, shared immutable-byte storage, password
 change, and Account Recovery Keys remain future work.

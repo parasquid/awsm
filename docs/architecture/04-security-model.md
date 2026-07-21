@@ -316,7 +316,7 @@ This is outside the MVP.
 
 ---
 
-# Account and Stale-Replica Recovery
+# Account Recovery and Stale-Replica Discard
 
 Archive Platform deliberately separates:
 
@@ -328,9 +328,9 @@ device slot remains sufficient. No email, administrator, or server-side reset ca
 Encryption Key. If all enrolled local credentials and the password are lost, synchronized content
 is unrecoverable in the current product.
 
-Stale-Replica recovery is different: it offers a Complete Export, creates a fresh local-only recovery
-fork from current logical state, and then atomically replaces the original synchronized Vault with
-verified server data.
+Stale-Replica discard is different: it keeps the stale Vault read-only, offers a Complete Export,
+requires explicit loss acknowledgement, verifies the complete active server Replica, and atomically
+replaces the original synchronized Vault without creating another Vault.
 
 Future Account recovery mechanisms may include:
 

@@ -394,6 +394,12 @@ Decrypt
 Store Locally
 ```
 
+Ordinary synchronization installs newly learned Artifact wrappers locally. A user may later run
+repeatable storage maintenance that proves exact active-Generation membership and ciphertext
+metadata before removing only eligible heavy wrappers. Their immutable Object records remain local,
+and the Runtime retrieves, verifies, and normally restores those wrappers on demand. Complete Export
+streams remote-only wrappers without changing their device-local availability.
+
 ---
 
 ## Search

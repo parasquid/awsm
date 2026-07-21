@@ -58,6 +58,13 @@ Readers SHALL authenticate every frame and verify final plaintext length/checksu
 length/checksum before exposing successful completion. A missing, truncated, corrupt, or
 checksum-mismatched referenced wrapper is corruption, not an optional or unavailable Artifact.
 
+For a synchronized Vault, a device MAY intentionally omit a `PRIMARY` or `SCREENSHOT_FULL` wrapper
+only when its separate local storage contract records the Artifact as remote-only after exact active
+server proof. In that state, the reference and Object record remain present and immutable. Readers
+MUST route through the Runtime resolver, which retrieves and verifies the exact wrapper; unexplained
+absence remains corruption. `THUMBNAIL`, `TEXT_EXTRACTED`, and `CONTENT_STRUCTURED` wrappers are not
+eligible for manual storage relief.
+
 # 5. Structured and Text Artifacts
 
 `CONTENT_STRUCTURED` is a canonical CBOR sequence with one versioned header followed by ordered

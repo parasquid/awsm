@@ -6,15 +6,15 @@ This domain defines the platform-independent client Runtime, its Service boundar
 
 ## WHERE TO LOOK
 
-| Concern | Document | Boundary to preserve |
-|---------|----------|----------------------|
-| Runtime lifecycle and Services | `runtime.md` | Host integrates platforms; Runtime owns behavior |
-| Long-running execution | `jobs.md` | Scheduling, persistence, retry, cancellation, recovery |
-| Persistence access | `storage.md` | Runtime uses Drivers, not OPFS/platform APIs directly |
-| Capture | `capture.md` | Capability preflight precedes immutable Bundle creation |
-| Synchronization | `synchronization.md` | Reconciliation Work Items run within a Synchronization Job |
-| Search | `search.md` | Query rebuildable Search Projection Materializations |
-| AI | `ai.md` | Produce Derived Artifacts and Events; never update search directly |
+| Concern                        | Document             | Boundary to preserve                                               |
+| ------------------------------ | -------------------- | ------------------------------------------------------------------ |
+| Runtime lifecycle and Services | `runtime.md`         | Host integrates platforms; Runtime owns behavior                   |
+| Long-running execution         | `jobs.md`            | Scheduling, persistence, retry, cancellation, recovery             |
+| Persistence access             | `storage.md`         | Runtime uses Drivers, not OPFS/platform APIs directly              |
+| Capture                        | `capture.md`         | Capability preflight precedes immutable Bundle creation            |
+| Synchronization                | `synchronization.md` | Reconciliation Work Items run within a Synchronization Job         |
+| Search                         | `search.md`          | Query rebuildable Search Projection Materializations               |
+| AI                             | `ai.md`              | Produce Derived Artifacts and Events; never update search directly |
 
 ## SERVICE MODEL
 

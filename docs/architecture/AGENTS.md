@@ -6,27 +6,27 @@ This directory explains system intent, trust boundaries, component responsibilit
 
 ## STRUCTURE
 
-| Area | Documents | Purpose |
-|------|-----------|---------|
-| Foundations | `00`-`04`, `glossary.md` | Principles, system/domain model, zero knowledge, security |
-| Client data model | `05`-`10` | Runtime, Bundles, storage, synchronization, Events, Projections |
-| Features | `11`-`14` | Search, processing, capture, device trust |
-| Service boundaries | `15`-`18` | Coordination server, protocol, extensions, cryptography |
-| Assurance | `19`-`20` | Testing and deployment/operations |
-| Reconciliation | `consistency-review.md` | Recorded fixes, dependency graph, unresolved questions |
+| Area               | Documents                | Purpose                                                         |
+| ------------------ | ------------------------ | --------------------------------------------------------------- |
+| Foundations        | `00`-`04`, `glossary.md` | Principles, system/domain model, zero knowledge, security       |
+| Client data model  | `05`-`10`                | Runtime, Bundles, storage, synchronization, Events, Projections |
+| Features           | `11`-`14`                | Search, processing, capture, device trust                       |
+| Service boundaries | `15`-`18`                | Coordination server, protocol, extensions, cryptography         |
+| Assurance          | `19`-`20`                | Testing and deployment/operations                               |
+| Reconciliation     | `consistency-review.md`  | Recorded fixes, dependency graph, unresolved questions          |
 
 ## WHERE TO LOOK
 
-| Task | Location | Notes |
-|------|----------|-------|
-| Make an architectural decision | `00-design-principles.md` | Apply its decision checklist first |
-| Name a concept | `glossary.md` | Canonical spelling and meaning |
-| Place a component | `01-system-overview.md`, `02-domain-model.md` | Domain model yields to glossary/specs on conflict |
-| Check privacy boundaries | `03-zero-knowledge.md`, `04-security-model.md`, `18-cryptography.md` | Client owns plaintext; server coordinates opaque data |
-| Change client behavior | `05-client-runtime.md` | Host integrates; Runtime owns business logic |
-| Change authoritative/derived state | `07-content-storage.md`, `09-event-model.md`, `10-projection-engine.md` | Reconcile with Object Store and Vault specs |
-| Change network behavior | `08-synchronization.md`, `15-coordination-server.md`, `16-archive-protocol.md` | Protocol semantics remain transport-independent |
-| Check known inconsistencies | `consistency-review.md` | Verify record against current normative sources |
+| Task                               | Location                                                                       | Notes                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| Make an architectural decision     | `00-design-principles.md`                                                      | Apply its decision checklist first                    |
+| Name a concept                     | `glossary.md`                                                                  | Canonical spelling and meaning                        |
+| Place a component                  | `01-system-overview.md`, `02-domain-model.md`                                  | Domain model yields to glossary/specs on conflict     |
+| Check privacy boundaries           | `03-zero-knowledge.md`, `04-security-model.md`, `18-cryptography.md`           | Client owns plaintext; server coordinates opaque data |
+| Change client behavior             | `05-client-runtime.md`                                                         | Host integrates; Runtime owns business logic          |
+| Change authoritative/derived state | `07-content-storage.md`, `09-event-model.md`, `10-projection-engine.md`        | Reconcile with Object Store and Vault specs           |
+| Change network behavior            | `08-synchronization.md`, `15-coordination-server.md`, `16-archive-protocol.md` | Protocol semantics remain transport-independent       |
+| Check known inconsistencies        | `consistency-review.md`                                                        | Verify record against current normative sources       |
 
 ## CONVENTIONS
 

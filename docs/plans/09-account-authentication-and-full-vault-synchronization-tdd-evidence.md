@@ -53,7 +53,7 @@ credentials disabled, and commits only a compatible origin.
 large-Artifact tests failed against absent Runtime Services and persisted Job/checkpoint stores.
 
 **GREEN:** dependency-first upload, idempotent checkpoints, fixed change fences, canonical Event
-replay, Complete Replica validation, polling, content-free Cable hints, and bounded streaming beyond
+replay, complete Vault Replica validation, polling, content-free Cable hints, and bounded streaming beyond
 4 GiB were implemented.
 
 **Browser RED discovered during black-box integration:** the first real packaged-client signup
@@ -65,22 +65,20 @@ failed before issuing `POST /api/accounts`; the Worker reported `TypeError: Fail
 the packaged two-profile test signs up, logs in, bootstraps, and converges a rename through actual
 Rails, PostgreSQL, opaque Disk storage, and extension IndexedDB.
 
-## Synchronized Vacuum and stale recovery
+## Synchronized Vacuum and stale discard
 
 **RED:** server-first Vacuum ordering, persisted remote/local activation checkpoints, stale conflict,
-fresh-identity fork, export-first warnings, and atomic replacement tests failed against the prior
-local-only Vacuum and absent recovery path.
+export-first warnings, complete server staging, and atomic replacement tests failed against the prior
+local-only Vacuum and absent stale-discard path.
 
 **GREEN:** synchronized Vacuum journals its candidate before remote compare-and-swap, records the
 remote cursor before local activation, and resumes after restart. Stale resolution recommends exact
-Complete Export, requires explicit overwrite/skip confirmation, preserves the current logical state
-under fresh local-only identities, and atomically installs the verified server Replica.
+Complete Export, requires explicit overwrite/skip confirmation, discards unpublished stale state,
+and atomically installs the verified server Replica without creating another Vault.
 
-**REFACTOR:** the recovery builder reuses canonical Capture, Collection, Projection, Artifact, and
-Generation validators without treating the result as Import or Restore. Browser IndexedDB failure
-injection proves all 23 compact activation writes roll back together. The current-state fixture
-contains active and deleted Captures, warnings, multiple Artifact roles/plaintexts, and Collection
-topology.
+**REFACTOR:** the stale-discard service reuses canonical Projection, Artifact, and Generation
+validators without treating the result as Import or Restore. Browser IndexedDB failure injection
+proves the replacement transaction rolls back as a unit and creates no additional Vault.
 
 **Packaged-journey RED:** the cold first-use proof exposed a pull that could replace newer local
 Projection state with an older server snapshot while a mutation wake was coalesced into an active
@@ -91,7 +89,7 @@ observed by the pull and the requirement that the remote Head contains every loc
 and Object. A mutation wake that arrives during an active run schedules one final upload pass. The
 packaged journey then exercises signup, two captures, Collection extraction and cross-profile
 merge, disconnected divergence, synchronized deletion and Vacuum, export-first stale resolution,
-and preservation as a fresh local-only Vault before server replacement. Complete Export-to-Import
+and explicit stale discard before server replacement. Complete Export-to-Import
 portability remains in the dedicated package suite because packaged headless Chrome cannot complete
 the native save-as dialog boundary.
 
@@ -111,15 +109,15 @@ the coordinator fence, retry protocol, local-Head reconciliation fence, retained
 and post-Vacuum Generation reconstruction.
 
 **Resilience-gap RED:** the packaged proof could not deterministically stop the Worker between
-stale-recovery checkpoints, authentication expiry during synchronized Vacuum was not exercised,
+stale-discard checkpoints, authentication expiry during synchronized Vacuum was not exercised,
 and changing servers did not wait for an active old-context pull to stop. A late response could
 therefore outlive its configured server context, while restart behavior was inferred only from the
 atomic activation test.
 
-**Resilience-gap GREEN:** release-excluded fault checkpoints now pause every recovery boundary and
+**Resilience-gap GREEN:** release-excluded fault checkpoints now pause every discard boundary and
 inject Vacuum authentication expiry. Startup reconciliation is independently exercised through a
-real IndexedDB close/reopen at `PrepareRecoveryFork`, `PrepareServerReplacement`, and
-`ActivateRecovery`. Server replacement aborts and awaits the coordinator, discards old wakes, signs
+real IndexedDB close/reopen at `PrepareServerReplacement` and `ActivateServerReplacement`. Server
+replacement aborts and awaits the coordinator, discards old wakes, signs
 out, and then installs the new origin; pull reconciliation retains its local-Head and remote-coverage
 fences. Unit tests cover cancellation/coalescing and every Vacuum authentication checkpoint, while
 the release verifier rejects the test-control namespace from emitted JavaScript.
@@ -174,7 +172,7 @@ Inspection findings:
   `[hidden]` now removes it and the rerendered success state was inspected;
 - the narrow settings dialog keeps viewport margins, wraps the synthetic email, and keeps checkbox
   and action geometry usable; and
-- stale-recovery confirmation geometry, progress movement, error prominence, and modal margins were
+- stale-discard confirmation geometry, progress movement, error prominence, and modal margins were
   inspected after the viewport-width and checkbox-alignment corrections.
 
 # Focused Green Commands
@@ -183,8 +181,8 @@ Inspection findings:
 corepack pnpm --filter @awsm/browser-extension exec vitest run tests/unit/http-receiver.test.ts
   1 file, 2 tests passed
 
-corepack pnpm --filter @awsm/browser-extension exec vitest run tests/unit/synchronization-recovery-fork.test.ts
-  1 file, 2 tests passed
+corepack pnpm --filter @awsm/browser-extension exec vitest run tests/unit/synchronization-recovery.test.ts tests/unit/synchronization-recovery-reconciliation.test.ts
+  2 files, 4 tests passed
 
 corepack pnpm --filter @awsm/browser-extension exec playwright test tests/integration/indexeddb.browser.test.ts --project=chromium --grep 'stale Replica'
   1 test passed

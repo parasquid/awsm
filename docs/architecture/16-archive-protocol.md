@@ -46,6 +46,12 @@ observed head cursor. Complete retained membership is submitted in sealed pages 
 retention. Superseded membership is available only through explicit recovery until a durable Purge
 Job revokes it and safely deletes newly unreferenced bytes.
 
+The same scoped download contract serves remote-only Artifact retrieval and Complete Export. Active
+access must name the Account's current Generation; stale Complete Export must name the exact retained
+Recovery Snapshot. Transfer metadata and received bytes are verified before trusted use. No protocol
+message exposes local availability, Artifact role, plaintext metadata, or a server-side eviction
+command.
+
 # Deferred Adapters
 
 Device authorization, rate limits, quotas, shared byte storage, alternate transports, and

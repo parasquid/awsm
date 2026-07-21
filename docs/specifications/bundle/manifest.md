@@ -53,6 +53,10 @@ The descriptor SHALL NOT contain Artifact wrapper lengths/checksums, OPFS paths,
 availability, package coverage, or Export omission state. Those belong to their owning storage and
 portability contracts.
 
+Device-local wrapper availability therefore never changes descriptor validity or Artifact reference
+coverage. A remote-only wrapper is still a required Bundle member and MUST be included by Complete
+Export, Backup, synchronization, and server switching according to their owning contracts.
+
 # 4. Validation
 
 Readers SHALL authenticate and decode the descriptor before trusting metadata or Artifact

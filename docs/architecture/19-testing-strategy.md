@@ -115,9 +115,22 @@ The following invariants are fundamental.
 - Trusted Runtime tests cover existing/new Vault enrollment, remote bootstrap, snapshot-bounded
   pull, canonical replay independent of cursor order, malicious metadata rejection, Artifact
   streaming beyond 4 GiB, and polling-only convergence.
-- Synchronized Vacuum tests prove server-first activation and journaled local resume. Stale-Replica
-  tests prove read-only fencing, fresh-identity recovery forks, atomic server replacement, rollback,
-  and export-first confirmation.
+- Storage-relief tests prove exact active-membership/metadata checks, eligible-role selection,
+  device-local availability invariants, cancellation, worker restart at every deletion/restoration
+  boundary, ordinary synchronization preservation, quota fallback, multi-surface invalidation,
+  keyboard cancellation, terminal focus restoration, and polite live-region announcements at
+  desktop and narrow widths.
+- Complete Export tests source remote-only wrappers through active or Recovery Snapshot tickets
+  without local rehydration. Chrome Download Host tests register completion observation before
+  starting a download, reconcile already-terminal downloads, surface interruption as a typed
+  failure, and prove a failed imported-Vault re-export can be retried successfully. Server-switch
+  tests relay source-only wrappers, terminalize source authentication expiry, source corruption,
+  and candidate upload interruption without changing source authority or availability, and clear
+  availability only when a fully local candidate Replica is installed.
+- Synchronized Vacuum tests prove server-first activation, journaled local resume, retention of
+  reachable remote-only Objects, and cleanup of reclaimed availability. Stale-Replica tests prove
+  read-only fencing, atomic server replacement without another Vault, rollback, and export-first
+  explicit discard.
 - Purge fault tests prove restart safety, ticket revocation, active/shared-byte retention, permanent
   tombstones, and verified absence before success.
 

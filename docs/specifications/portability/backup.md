@@ -133,6 +133,10 @@ Backup SHALL NOT require plaintext Vault contents. If a Backup Set is stored out
 
 Backup SHALL verify every Object before adding it to a Backup Set.
 
+A complete Backup implementation SHALL source remote-only Artifact wrappers through the Runtime
+Artifact resolver, using the exact active or retained Recovery Snapshot scope owned by its Snapshot.
+It MUST NOT silently omit them, rehydrate the source device, or serialize device-local availability.
+
 Backup Set manifests SHALL include sufficient integrity metadata to detect:
 
 - missing Objects
@@ -188,6 +192,7 @@ Diagnostics SHALL NOT expose decrypted user content.
 - Backup never stores Projections or Search Projection Materializations.
 - Backup execution is a Runtime Job.
 - Backup does not require plaintext Vault contents.
+- Complete Backup includes every reachable Artifact wrapper regardless of source-device availability.
 
 ---
 

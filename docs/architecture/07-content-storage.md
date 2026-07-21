@@ -216,6 +216,12 @@ The Client Runtime maintains its own Object Store.
 
 The initial Chrome Host uses an IndexedDB Driver behind the platform-independent Storage Service.
 
+Authoritative Artifact Object records and device-local wrapper availability are distinct. A missing
+wrapper is corruption unless a strict device-local remote-only row names that Artifact. Storage
+maintenance may create such a row only after proving the exact local wrapper belongs to the active
+server Generation and matches its committed length, checksum, and type. Compact Artifact roles are
+not eligible.
+
 ```text
 Client
 
@@ -282,6 +288,11 @@ Decrypt
 
 Deserialize
 ```
+
+On-demand retrieval verifies the advertised and received ciphertext before releasing plaintext.
+Normal access restores the wrapper locally and clears remote-only state only after the local file is
+verified. A quota-specific failure removes partial local bytes, obtains a fresh ticket, and serves a
+bounded verified transient stream without clearing remote-only state.
 
 ---
 

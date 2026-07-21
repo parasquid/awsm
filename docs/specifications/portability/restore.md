@@ -136,6 +136,9 @@ Each restored Object SHALL be verified before becoming authoritative.
 
 Objects failing verification SHALL be rejected.
 
+Every successfully restored Artifact wrapper is local. Restore SHALL NOT copy, infer, or retain
+remote-only availability, storage-relief Jobs, or source-device operational state.
+
 ---
 
 # 11. Projection Rebuild
@@ -203,6 +206,9 @@ Verification precedes acceptance.
 Projection and Materialization rebuilding never modifies authoritative Objects.
 
 Restore execution is a Runtime Job.
+
+Restored wrapper absence is corruption unless a later, separately confirmed storage-relief Job
+creates current device-local remote-only state after active-server proof.
 
 ---
 

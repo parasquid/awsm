@@ -77,8 +77,19 @@ Standard Job Types include:
 - Export Job
 - Backup Job
 - Restore Job
+- Storage Relief Job
 
 Future Job Types MAY be introduced.
+
+A Storage Relief Job is Vault-scoped and persisted. Its immutable estimate records candidate count
+and exact safe-integer ciphertext bytes. Per-Artifact checkpoints progress through candidate,
+verified, evicting, and terminal outcomes; proof metadata is durable before file removal. The Job
+checks cancellation only between candidates, retains completed evictions, reports stable skip
+reasons, resumes non-terminal work after restart, and never resumes a cancelled Job automatically.
+
+Only one Capture, Import, Export, Vacuum, applying Server Switch, or Storage Relief operation may own
+the affected Vault maintenance lease. Waiting for unlock or authentication is persisted and resumes
+only after the same Vault context is revalidated.
 
 ---
 

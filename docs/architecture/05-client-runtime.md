@@ -429,6 +429,12 @@ Examples:
 
 Stored in the local Object Store.
 
+For a synchronized Vault, selected heavy Artifact wrappers may be intentionally remote-only after
+user confirmation and exact Coordination Server proof. The Storage Service records this device-local
+availability separately from authoritative Objects. All consumers use the Runtime Artifact resolver:
+it verifies local bytes, retrieves active- or Recovery-scoped opaque bytes when explicitly absent,
+restores locally when quota permits, and uses a verified transient stream when quota does not.
+
 ---
 
 ## Projection Materializations
@@ -452,6 +458,7 @@ The runtime should recover safely after:
 - power loss
 - browser crash
 - interrupted Synchronization Jobs
+- interrupted storage-relief deletion or Artifact restoration
 - interrupted AI Jobs
 - interrupted Capture Jobs
 

@@ -360,7 +360,8 @@ The platform shall synchronize immutable Bundles, Vault Events, wrapped keys, an
 
 Implementation status: the Chrome extension and untrusted Coordination Server implement
 email/password Account authentication, client-only Account-key enrollment, one Complete
-synchronized Vault, background convergence, synchronized Vacuum, and stale-Replica recovery.
+synchronized Vault, background convergence, synchronized Vacuum, manual heavy-Artifact storage
+relief with on-demand retrieval, and export-first stale-Replica discard.
 Device signing/revocation, Selective Replicas, and production deployment hardening remain future.
 
 Synchronization shall:

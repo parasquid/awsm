@@ -144,6 +144,12 @@ Large Objects SHALL support streaming reads and writes when their owning format 
 
 Implementations SHOULD avoid buffering complete Objects in memory.
 
+The Runtime Artifact resolver SHALL be the sole read path for Artifact wrappers. It SHALL verify an
+available local wrapper first. For an intentionally remote-only wrapper it SHALL request an active-
+Generation or exact Recovery Snapshot ticket, compare server metadata with the immutable Object
+record, stream and verify ciphertext, and only then expose authenticated plaintext. Complete Export
+and relay use verified transient streams and MUST NOT change local availability.
+
 ---
 
 # 11. Caching
@@ -168,6 +174,12 @@ Authoritative Objects SHALL NOT be removed except through defined retention poli
 
 Vault Vacuum is such a policy. A Storage Driver MUST make successor activation and local reclamation appear atomic, either in one transaction or through a durable resumable post-activation Job.
 
+Manual storage relief is a separate user-approved maintenance policy. It is limited to eligible heavy
+Artifact wrappers and requires exact active-server durability proof before removal. The Driver SHALL
+persist Job/checkpoint and remote-only transitions atomically, serialize against other Vault
+maintenance, and preserve completed removals when a later candidate is skipped or cancellation is
+requested.
+
 ---
 
 # 13. Recovery
@@ -178,6 +190,8 @@ Following unexpected termination, the Storage Service SHALL:
 - remove temporary artifacts
 - verify persistent state
 - resume normal operation
+- reconcile an interrupted `Evicting` checkpoint from wrapper presence and integrity
+- remove partial restoration files while preserving remote-only state
 
 ---
 
@@ -214,6 +228,16 @@ Its Artifact Store SHALL prepare encrypted wrappers in a Vault-scoped OPFS names
 and writes, validate exact wrapper integrity, remove failed preparations, and reconcile orphan files
 against authoritative records at startup. Platform APIs remain behind the Driver.
 
+IndexedDB SHALL separately store strict Vault-scoped Artifact availability, storage-relief Jobs, and
+per-Artifact checkpoints. These rows are operational and excluded from Export, Backup, and
+synchronization. Vault deletion, stale server replacement, Import activation, and Vacuum reclamation
+SHALL delete only rows invalidated by their atomic authority change.
+
+When a normal restoration hits a quota-specific error, the Artifact Store SHALL abort the writer and
+remove the partial wrapper. The resolver SHALL obtain a fresh ticket and provide a bounded verified
+transient stream without clearing remote-only state. Integrity, authentication, offline, and
+not-found failures are distinct and MUST NOT be treated as quota fallback.
+
 The Runtime MUST NOT depend upon IndexedDB-specific or OPFS-specific APIs outside the selected Driver.
 
 Complete Vault Import SHALL stage its encrypted source through a Host-owned, Job-derived temporary
@@ -239,6 +263,7 @@ The Storage Service SHOULD expose:
 - free capacity (when available)
 - verification failures
 - transaction failures
+- remote-only wrapper count and allowlisted storage-relief progress/outcomes
 
 ---
 
@@ -251,6 +276,9 @@ Drivers are interchangeable.
 Transactions are atomic.
 
 Verification precedes object access.
+
+Every intentional wrapper absence has one valid remote-only row; every unmarked absence is
+corruption.
 
 Persistent state survives Runtime restarts.
 

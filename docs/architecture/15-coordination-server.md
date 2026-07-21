@@ -54,6 +54,10 @@ The server MUST NOT receive plaintext, keys, semantic Event subtype, titles, URL
 filenames, search terms, content-derived metadata, or plaintext checksums. Complete retained
 membership leaks encrypted graph shape and is accepted solely to make remote deletion safe.
 
+The server does not receive storage-relief policy, local availability rows, semantic Artifact roles,
+or eviction commands. Existing active-Generation and Recovery Snapshot download tickets provide
+opaque wrappers for on-demand access, Complete Export, server switching, and stale discard.
+
 # Components
 
 - The HTTP control adapter implements the strict OpenAPI 3.0.3 contract under `/api`.
@@ -90,6 +94,10 @@ currently superseded Generations. Automatic expiry creates the same durable Job.
 Purge detaches only targeted memberships, preserves every record referenced by an active, candidate,
 or other retained Generation, revokes recovery tickets, verifies byte absence, and finally leaves a
 permanent immutable tombstone. Missing committed bytes are integrity incidents, never cleanup hints.
+
+A client may rely on the active server as the sole holder of selected encrypted heavy wrappers only
+after it independently verifies active membership plus exact committed type, length, and checksum.
+This does not make local availability server state and adds no server deletion API.
 
 # Scaling and Remaining Production Gate
 

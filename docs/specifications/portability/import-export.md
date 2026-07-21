@@ -79,6 +79,11 @@ Complete Export includes every referenced Artifact wrapper unchanged. Selective 
 authenticated omissions only as section 3 permits. Deleted Captures remain authoritative until
 Vault Vacuum and therefore remain in reachability.
 
+When a required wrapper is remote-only, Complete Export SHALL stream it through the Runtime Artifact
+resolver using the snapshot's active Generation or, for a stale Replica, its exact retained Recovery
+Snapshot. It SHALL verify the immutable Object metadata and bytes, fail safely on scope drift or
+unavailability, and MUST NOT restore the wrapper locally or clear device-local availability.
+
 Export SHALL exclude Projections, Materializations, caches, Commands, outcomes, Jobs, temporary
 files, diagnostics, local key slots, device keys/metadata, synchronization cursors, and operational
 registries.
@@ -131,18 +136,19 @@ Generation, head, Events, Object records, and encrypted Artifact wrapper bytes. 
 fresh Device ID, non-exportable device key, device slot, verifier, encrypted name cache, and
 rebuildable Projections. Source device credentials and operational records SHALL NOT be imported.
 
+Every imported Artifact wrapper is local. Import SHALL NOT persist or infer remote-only availability,
+storage-relief Jobs, checkpoints, synchronization cursors, or other source-device operational state.
+
 Prepared wrappers become authoritative only with one atomic transaction that creates all compact
 Vault records and marks the Import Job Succeeded. The imported Vault is manually locked. An empty
 Workspace selects it without retaining the recovered Root Key; a populated Workspace leaves its
 active Vault unchanged. Import never appends an Event, creates a Generation, merges, replaces,
 repairs, or synchronizes an existing Vault.
 
-A Local recovery fork created during stale-Replica resolution is not Import or Restore. The Runtime
-re-authors the stale Vault's current logical state under fresh Vault, Generation, Event, Object,
-Bundle, Artifact, Collection, key, and device identities. It does not consume a Vault Package and
-does not claim to preserve operation or Undo history. The separately offered Complete Export is an
-exact preservation option before that re-authoring step and remains importable later as the same
-original stale Vault identity when no local collision exists.
+Stale-Replica resolution is not Import or Restore. It offers Complete Export as the exact
+preservation option, then explicitly discards stale local state and atomically installs verified
+server state in the same synchronized Vault. The exported package remains importable later when no
+local Vault with that identity exists.
 
 # 9. Import Job and Recovery
 
@@ -167,6 +173,7 @@ entry committed. Successful Jobs retain their authoritative wrappers.
 - Import remains distinct from Restore and synchronization.
 - Import validates before destination writes and preserves every authoritative identity and byte.
 - Imported local credentials and Projections are newly created and device-local.
+- Complete Export includes remote-only wrappers without changing their source-device availability.
 
 # 11. Import Failure Contract
 

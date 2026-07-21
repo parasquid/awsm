@@ -85,6 +85,12 @@ If the synchronization service becomes unavailable, users should still be able t
 
 without degradation.
 
+Heavy captured payloads are the deliberate exception a user may choose for a connected Account.
+After exact encrypted-copy proof and explicit confirmation, a device may retain their immutable
+Artifact records while dropping selected local wrappers. Their content then requires Account and
+network access until an integrity-checked retrieval restores it or serves it transiently. Compact
+Library content remains local, and Complete Export remains complete.
+
 ---
 
 ## Principle 2 — Zero Knowledge
@@ -184,6 +190,7 @@ The client performs:
 - archive rendering
 - synchronization
 - conflict resolution
+- local storage relief and integrity-checked remote Artifact retrieval
 
 The client is the trusted execution environment.
 

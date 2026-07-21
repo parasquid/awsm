@@ -26,6 +26,11 @@ maintain independent local Replica state, upload dependencies before Events, ret
 until durable closure acknowledgement, fetch snapshot-bounded changes, download and verify opaque
 bytes, and replay Events in canonical Event order rather than Delivery Cursor order.
 
+Ordinary Pull SHALL preserve a valid remote-only marker when the same Artifact remains in the active
+Generation, while installing newly learned wrappers locally by default. Upload SHALL reuse exact
+already-committed remote-only Objects without opening local storage, but MUST fail safely if neither
+a verified local wrapper nor an exact durable server Object is available.
+
 It SHALL subscribe before initial fetch, treat Action Cable only as a wake-up, generation-guard
 reconciliation, poll after missed lifecycle events, and converge when every hint is lost.
 
@@ -76,28 +81,30 @@ to `WaitingForUnlock`; unlock revalidates both authority fences before resuming.
 prepared Artifact wrappers MAY be reused after validation, while incomplete or mismatched wrappers
 MUST be removed and downloaded again.
 
+Remote application (`PublishLocal`, `FastForwardCandidate`, and `Union`) SHALL source a missing
+remote-only wrapper through the active source server and stream it to the candidate with bounded
+memory. `FastForwardLocal` installs a fully local candidate Replica and atomically clears obsolete
+availability and storage-relief rows. Candidate promotion MUST reject a missing dependency and never
+promote an incomplete Replica.
+
 # Generation Supersession
 
 Every write names the expected active Generation. On supersession or head conflict, the Runtime
 quarantines unpublished local work and performs an explicit reconciliation. It MUST NOT silently
 reset, merge recovery history, or append against a stale Generation.
 
-# Recovery
+# Stale Replica discard
 
 On a stale Generation, the Runtime SHALL make the synchronized Vault read-only except for reads and
 Complete Export. Resolution SHALL require either a successful Export or an explicit two-part skip
-confirmation. It SHALL re-author the stale Replica's current logical state into a fresh local-only
-Vault with fresh identities, verify a complete server download, and atomically install the fork
-while replacing the original synchronized Vault. No server response may cause partial local
-activation. Interrupted preparation SHALL clean uncommitted Artifact wrappers and return to
-Conflict. Import, Restore, and stale-Replica recovery remain distinct operations.
+confirmation that names permanent loss of unpublished local state. It SHALL download and verify the
+complete active server Replica, rebuild Projections, and atomically replace the stale Vault in place.
+It SHALL NOT create another Vault, re-author stale content, silently merge, or partially activate.
 
-Recovery preparation checkpoints are restartable boundaries. If the Runtime restarts while
-preparing the recovery fork, preparing server replacement, or awaiting atomic activation, startup
-SHALL remove uncommitted recovery-fork Artifact wrappers, clear the provisional fork identity, and
-restore the synchronization Job to explicit Conflict. A restart after the atomic activation SHALL
-retain the committed server Replica and recovered local-only Vault and continue from their
-canonical persisted state.
+Preparation journals each replacement Artifact ID before its wrapper write. If the Runtime restarts
+before activation, startup SHALL remove only those provisional wrappers and restore the Job to
+explicit Conflict. Activation atomically replaces authoritative and derived state and clears stale
+availability/maintenance rows. A restart after activation retains the committed server Replica.
 
 # Account Scope
 
@@ -118,6 +125,12 @@ local Vacuum deletion before the remote successor Generation is durably activate
 Upload progress, Delivery Cursors, retry schedules, availability, and notification bookkeeping are
 local operational state, not authoritative Events and not synchronized content. Commands remain
 local requested actions; accepted facts become authoritative Events only through Runtime rules.
+
+Manual storage relief SHALL synchronize first, enumerate only locally present `PRIMARY` and
+`SCREENSHOT_FULL` wrappers referenced by Active or Deleted captures, and prove exact active
+membership/type/length/checksum immediately before each removal. Skipped or mismatched wrappers stay
+local. Sign-out warns when remote-only wrappers depend on Account access but does not delete compact
+local content or availability rows.
 
 # Security
 

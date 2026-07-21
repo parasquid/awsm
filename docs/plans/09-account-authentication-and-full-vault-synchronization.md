@@ -27,14 +27,14 @@ The completed feature SHALL let a user:
 4. create a new synchronized Vault or select one existing local Vault during signup;
 5. use the same password on a new browser to authenticate and recover the Account Encryption Key
    without revealing that key or the raw password to the server;
-6. bootstrap a Complete local Replica of the Account's Vault and continue using it offline;
+6. bootstrap a fully local Replica of the Account's Vault and continue using it offline;
 7. synchronize captures, Vault names, deletion/restoration, Collection operations, and Vault
    Generations automatically in the background;
 8. observe synchronization, offline, authentication, progress, and failure states without
    reloading any open surface;
 9. sign out without losing or locking already available local Vault data; and
-10. resolve a stale offline Replica by preserving its current logical state as a fresh local-only
-    recovery Vault and replacing the original synchronized Vault with verified server state.
+10. resolve a stale offline Replica through export-first explicit discard and atomic verified
+    server replacement.
 
 This plan replaces the following pre-release proof decisions in place:
 
@@ -47,7 +47,8 @@ This plan replaces the following pre-release proof decisions in place:
 This implementation remains a pre-release/self-hosted capability, not an authorization to expose
 open registration as a public hosted service. Quotas, signup abuse controls, a shared opaque-byte
 storage Driver, horizontal deployment, Device authorization/revocation, password change, Account
-Recovery Keys, selective local retention, and independent security review remain production gates.
+Recovery Keys, automatic retention policies, and independent security review remain production
+gates.
 
 ---
 
@@ -68,15 +69,15 @@ Recovery Keys, selective local retention, and independent security review remain
 - one Account owning zero or one synchronized Vault;
 - one extension having at most one active Account while retaining multiple local-only Vaults;
 - signup selection of a new Vault or one existing local Vault;
-- Complete local Replica bootstrap and retention;
+- fully local Replica bootstrap, followed by optional user-approved heavy-wrapper storage relief;
 - resumable bounded-memory upload and download through the existing transfer contract;
 - persistent Runtime Synchronization Jobs, cursors, retry state, and lifecycle recovery;
 - synchronization of all currently implemented authoritative Event/Object behavior;
 - live invalidation of popup and Library surfaces after authoritative or synchronization state
   changes;
 - synchronized Vault Vacuum with remote compare-and-swap preceding local activation;
-- stale-Replica detection, warning, optional exact Complete Export, local recovery fork creation,
-  and verified server replacement;
+- stale-Replica detection, warning, optional exact Complete Export, explicit discard, and verified
+  server replacement;
 - Account and per-Vault synchronization settings;
 - replacement of proof authentication and update of the independent synchronization proof;
 - unit, integration, Rails request/Job/contract, Docker black-box, packaged-Chrome, security, and
@@ -95,10 +96,10 @@ Recovery Keys, selective local retention, and independent security review remain
 - shared Vaults, memberships, invitations, roles, Organizations, or collaboration;
 - public-hosted registration, quotas, billing, rate limiting, CAPTCHA, abuse mitigation, or account
   administration;
-- selective local Replica retention, remote-only Artifacts, eviction, cache budgets, or pinning;
+- automatic local retention profiles, cache budgets, or pinning beyond manual storage relief;
 - automatic semantic merge or selective reapplication of stale unpublished Events;
 - importing a stale recovery package as a new local-only Vault;
-- preserving full historical Event identity in a local recovery fork;
+- preserve-first stale recovery beyond optional Complete Export;
 - server-side plaintext, semantic Event interpretation, Search, AI, or key derivation;
 - alternate transports, protocol negotiation, compatibility routes, or legacy token readers;
 - S3, MinIO, provider-specific object storage, or horizontal Rails deployment; and
@@ -172,7 +173,7 @@ Recovery Keys, selective local retention, and independent security review remain
 ## 3.4 Login and remote bootstrap
 
 - Login accepts exact password input and normalized email input.
-- If the Account owns a Vault and no local Vault has its ID, download a Complete local Replica,
+- If the Account owns a Vault and no local Vault has its ID, download a fully local Replica,
   create a fresh local device slot, rebuild Projections, select the Vault, and leave it unlocked for
   the just-authenticated session.
 - If a local Vault with the remote Vault ID exists, unwrap both the local device slot and remote
@@ -196,7 +197,8 @@ Recovery Keys, selective local retention, and independent security review remain
   device slot, and all local encrypted data.
 - A failed remote logout still clears local secrets. Server expiry/revocation handles the abandoned
   token.
-- Signing out never locks, deletes, or evicts locally available Vault content.
+- Signing out never locks or deletes locally available Vault content. If heavy wrappers are
+  remote-only, warn that access to them requires signing in again.
 
 ## 3.6 Offline behavior
 
@@ -204,8 +206,9 @@ Recovery Keys, selective local retention, and independent security review remain
   Import, and local-only Vault behavior remain local-first.
 - Ordinary local authoritative commits never wait for remote acknowledgement.
 - A synchronized Vault queues new work and shows `Waiting for connection` when offline.
-- Content remains locally available while the server is down or authentication refresh is
-  temporarily unavailable.
+- Compact content and locally present wrappers remain available while the server is down or
+  authentication refresh is temporarily unavailable. Intentionally remote-only wrappers explain
+  their offline/authentication requirement without being misreported as corruption.
 - Do not render a blank or blocking popup while network work is pending.
 - Vault Vacuum is the sole current exception: a synchronized Vault Vacuum requires an online
   reconciliation and remote compare-and-swap because local-first activation could knowingly create
@@ -231,9 +234,9 @@ Add and use these terms consistently:
   credentials. It is not a Device identity.
 - **Synchronization state:** local operational cursor, head, acknowledgement, retry, and status
   records. It is disposable/non-authoritative and never synchronized.
-- **Local recovery fork:** a new local-only Vault re-authored from the current logical state of a
-  stale Replica under fresh identities and keys. It is not Import, Restore, merge, or recovery of
-  original Event identity.
+- **Remote-only Artifact:** a device-local operational state in which the authoritative Artifact
+  Object remains present but its encrypted wrapper was intentionally removed after exact active-
+  server proof.
 - **Stale Replica:** a local synchronized Replica with unpublished work based on a superseded Vault
   Generation that cannot be submitted safely to the current server head.
 
@@ -253,7 +256,8 @@ Preserve these invariants:
 9. The server never interprets Vault names, URLs, titles, Event subtype, Collection topology,
    Artifact Role, plaintext checksum, Search data, or other content semantics.
 10. Local authoritative commits precede synchronization acknowledgement.
-11. No local Artifact is evicted in this Complete Replica slice.
+11. Local Artifact wrappers are removed only by explicit storage relief after exact proof; ordinary
+    synchronization remains full-local for newly learned Artifacts.
 12. The Synchronization Service validates downloaded bytes and semantics before authority changes.
 13. Action Cable remains a wake-up hint; polling alone converges.
 14. Delivery Cursor order never becomes Event replay order.
@@ -261,8 +265,7 @@ Preserve these invariants:
     the new active Generation.
 16. A failed stale-resolution attempt leaves the original stale Vault intact and usable for
     read/export.
-17. A local recovery fork gets fresh cryptographic and authoritative identities; it never reuses an
-    Object ID with different bytes.
+17. Stale resolution never creates another Vault and never reuses an Object ID with different bytes.
 18. The storage transaction, not UI disabled state, enforces every mutation fence.
 19. No plaintext, password, key, token, email beyond explicitly allowed Account fields, or content
     metadata enters diagnostics.
@@ -498,7 +501,7 @@ Add stable outcomes at minimum:
 - `SYNCHRONIZATION_INTERRUPTED`;
 - `SYNCHRONIZATION_AUTHENTICATION_REQUIRED`;
 - `SYNCHRONIZATION_CONFLICT`;
-- `RECOVERY_FORK_FAILED`; and
+- stale-discard failures use existing synchronization integrity/context outcomes; and
 - existing Generation/head outcomes without aliases.
 
 Never branch on diagnostic prose. Map HTTP status and stable outcome independently. Do not return
@@ -592,7 +595,7 @@ validation remains authoritative; add no self-signed-certificate bypass.
 
 After permission grant, call `GET /api/server-information` with protocol/request headers and a
 bounded timeout. Require exact service name, protocol `1`, password capability, Vault limit `1`, and
-Complete Replica synchronization. Any mismatch is `SERVER_INCOMPATIBLE` and commits no selected
+full Vault Replica synchronization. Any mismatch is `SERVER_INCOMPATIBLE` and commits no selected
 server.
 
 Persist initial server configuration only after a successful probe. Authenticated Coordination
@@ -618,7 +621,7 @@ Add sole canonical version-1 stores/records for:
 - persistent enrollment and Synchronization Jobs;
 - upload/download checkpoints and prepared remote wrapper references;
 - synchronization error/status; and
-- stale-resolution/local-recovery-fork Job state.
+- stale-discard preparation and activation Job state.
 
 Do not put these fields into Workspace metadata merely for convenience. Workspace owns local Vault
 enumeration/selection; Account configuration and synchronization are separate operational domains.
@@ -632,7 +635,7 @@ Add bounded Services for:
 - Coordination HTTP/Cable client behavior;
 - Synchronization planning/execution;
 - remote Replica staging/activation; and
-- stale-Replica recovery fork creation.
+- stale-Replica export-first discard and server replacement.
 
 Hosts provide browser permission prompts, fetch/WebSocket primitives, lifecycle signals, file
 downloads, and rendering. Hosts do not decide Account/Vault cardinality, key policy, synchronization
@@ -717,7 +720,8 @@ the prior request failed merely because its response was lost.
 - Upload dependencies before each Event and commit one exact Event closure at a time.
 - Preserve canonical Event replay order independently of upload/Delivery Cursor order.
 - Mark local work remotely durable only after the server acknowledges closure commit.
-- Never evict locally durable bytes after acknowledgement in this Complete Replica slice.
+- Never remove locally durable bytes during ordinary synchronization. Manual storage relief is a
+  separate explicit proof-and-confirmation workflow.
 
 For an existing mature local Vault selected during signup, enumerate and upload its complete active
 Generation membership. Do not invent a new Generation or rewrite its history merely to attach it.
@@ -732,7 +736,7 @@ Generation membership. Do not invent a new Generation or rewrite its history mer
 - Verify advertised object type, ID, encrypted byte length, SHA-256, Event ordering metadata, exact
   dependency lists, Generation membership, and all authenticated envelopes.
 - Decrypt and semantically validate inside the trusted Runtime.
-- Require every Event dependency and Bundle/Artifact graph required by the Complete Replica.
+- Require every Event dependency and Bundle/Artifact graph required by the Vault Replica.
 - Build a fresh local device slot and verifier and rebuild Vault name, Library, Collection, and
   other implemented Projections.
 - Activate directory entry, Vault authority, key material, Projections, head, and sync checkpoint in
@@ -795,7 +799,7 @@ For a synchronized Vault, alter the current local-only Vacuum sequence:
 If the server CAS fails, do not activate the local candidate. Refetch, discard/rebuild deliberately,
 and preserve the predecessor. If the server activation succeeds but the worker stops before local
 activation, the persistent Job resumes by recognizing the exact verified local candidate and
-server head; it does not create a recovery fork for its own already-approved candidate.
+server head; it does not enter stale-discard flow for its own already-approved candidate.
 
 ## 11.2 Detecting a stale Replica
 
@@ -810,7 +814,8 @@ On detection:
 - show the predecessor/server Generation context without exposing technical identifiers as the
   primary explanation;
 - explain that automatic merge could restore content intentionally removed by Vacuum;
-- offer only `Preserve local copy and use server version` plus optional Cancel/return to read-only;
+- offer only `Discard stale local Replica and use server data` plus optional Cancel/return to
+  read-only;
 - do not offer selective Events, local-wins, merge, or silent discard.
 
 ## 11.3 Optional exact Export
@@ -820,54 +825,31 @@ Generation. Preselect/feature it as the safest additional backup, but allow the 
 second explicit warning. Export remains identity-preserving and is not automatically imported or
 associated with the Account.
 
-## 11.4 Local recovery fork semantics
+## 11.4 Explicit stale discard semantics
 
-Resolution always creates a fresh local-only Vault before replacing the original.
-
-The fork SHALL:
-
-- generate a fresh Vault ID, Vault Root Key, Device ID, local device slot, verifier, Generation ID,
-  Object IDs, Bundle IDs, Artifact IDs, Event IDs, and Collection IDs;
-- never create an Account slot or synchronization registration;
-- use a name derived from the source and suffixed `— recovered local copy`, truncating the source
-  safely to the canonical name limit;
-- copy every retained active and Deleted Capture;
-- preserve Artifact plaintext bytes, MIME semantics, capture source metadata, capture timestamps,
-  warnings, current active/deleted state, current Collection membership/redirect topology, and
-  current Vault name semantics;
-- stream decrypt/re-encrypt of large Artifacts without whole-payload buffering;
-- create new canonical Events sufficient to reproduce the current logical state;
-- not copy source Event IDs, source operation/Undo history, source device credentials, sync state,
-  Jobs, Projections, Materializations, or Account metadata; and
-- rebuild all derived Projections from the newly authored authority.
-
-This operation is a **Local recovery fork**, not Complete Import. Do not alter the existing
-identity-preserving Import contract or add an `import as copy` mode.
+Resolution offers the exact Complete Export first. Continuing without it requires two separate
+acknowledgements: declining the recommended Export and permanently overwriting unpublished stale
+state. Resolution never creates another Vault, re-authors local content, selectively reapplies
+Events, or merges histories.
 
 ## 11.5 Server replacement transaction
 
-The recovery Job SHALL:
+The stale-discard Job SHALL:
 
-1. snapshot and validate the stale source membership;
-2. prepare every fork Artifact wrapper and authoritative record under fresh keys/IDs;
-3. download and prepare the complete active server Replica for the original Vault ID;
+1. retain the stale Generation only as the exact scope for optional Complete Export;
+2. download and prepare the complete active server Replica for the original Vault ID, retrieving
+   stale remote-only source wrappers through Recovery Snapshot scope when Export needs them;
+3. journal each prepared server Artifact wrapper before its write;
 4. verify the Account slot yields the same original Vault Root Key;
-5. validate both the fork and server Replica completely;
-6. use one IndexedDB activation transaction to add the fork, replace the original Vault's active
-   authority/Projections/head with server state, retain the original as active selection, and commit
-   sync checkpoints;
-7. finalize cleanup only after transaction commit; and
-8. unlock the restored original for the current authenticated session while leaving the recovery
-   fork locally unlockable through its fresh device slot.
+5. validate the complete server Replica and rebuild its Projections;
+6. use one IndexedDB activation transaction to replace the original Vault's authority, Projections,
+   head, availability rows, and maintenance Jobs with server state; and
+7. unlock the replaced original for the current authenticated session.
 
 Prepared OPFS wrappers may exist before the IndexedDB transaction but are not authoritative. On any
-failure, abort the activation, retain the stale original unchanged, remove prepared fork/server
-wrappers, and keep the conflict actionable. Never expose a half-created fork or half-replaced
-original.
-
-After success, collect old stale-only local wrappers only after proving they are referenced by
-neither the fork nor restored original. If the user downloaded an exact Export, it remains external
-and unaffected.
+pre-activation failure, retain the stale original unchanged, remove journaled prepared wrappers, and
+keep the conflict actionable. A restart after activation retains the complete server Replica. If the
+user downloaded an exact Export, it remains external and unaffected.
 
 ---
 
@@ -926,11 +908,11 @@ Render a dedicated stale-Replica dialog/page with:
 - plain-language cause and consequences;
 - confirmation that local content is still readable;
 - recommended `Export stale Vault` action;
-- `Preserve local copy and use server version` action;
-- a second warning when Export was skipped;
-- fork/download/validation/activation progress;
+- `Discard stale local Replica and use server data` action;
+- two explicit acknowledgements when Export was skipped;
+- server-replacement download, validation, and activation progress;
 - safe retry after failure; and
-- success identifying both the restored synchronized Vault and recovered local-only Vault.
+- success identifying the verified synchronized Vault without creating another Vault.
 
 Mutating controls for the stale original remain visibly disabled with an explanation until
 resolution. Focus moves to the conflict heading/error, returns predictably after dialogs, and all
@@ -953,8 +935,8 @@ layout, including focus, pending, disabled, error, success, offline, and conflic
 - Use bounded timeouts for server probe, control requests, transfer parts, and Cable confirmation.
 - Treat browser suspension like interruption, not cancellation.
 - Persist safe retry checkpoints before announcing visible progress.
-- Cancel prepared stale-recovery downloads/forks on logout without touching authoritative local
-  data. Server Switch preparation follows its persisted restart and terminal-cleanup contract.
+- Cancel prepared stale-discard downloads on logout without touching authoritative local data.
+  Server Switch preparation follows its persisted restart and terminal-cleanup contract.
 - Never cancel a committed local mutation because its upload failed.
 - Never put email in general request logs beyond explicitly secured Account audit records; log
   Account/session IDs instead.
@@ -986,12 +968,12 @@ Documentation is part of implementation, not follow-up. Reconcile at minimum:
 ## Normative and formal contracts
 
 - glossary Account cardinality and new Account Encryption Key, Account slot, Account session,
-  Stale Replica, and Local recovery fork terminology;
+  Stale Replica, remote-only Artifact, and stale-discard terminology;
 - zero-knowledge/server-visible metadata including normalized email and session metadata;
 - Vault/key-slot, cryptography, key derivation, Runtime, Jobs, storage, synchronization, protocol,
   messages, errors, and OpenAPI contracts;
 - synchronization/Vacuum Generation fencing and stale recovery behavior; and
-- Import/Export language clarifying that a Local recovery fork is not Import and an optional stale
+- Import/Export language clarifying that stale discard is not Import/Restore and an optional stale
   Complete Export remains identity-preserving.
 
 ## Architecture and implementation guidance
@@ -1001,18 +983,18 @@ Documentation is part of implementation, not follow-up. Reconcile at minimum:
   consistency review;
 - browser extension design and Coordination Server README/runbook;
 - exact hosted/self-hosted/local-only UI behavior and optional host-permission boundary; and
-- complete local Replica retention and public-hosting limitations.
+- local Replica bootstrap, manual storage relief, and public-hosting limitations.
 
 ## Roadmap
 
-- Remove production email/password Account login and trusted extension Complete Replica
+- Remove production email/password Account login and trusted extension Vault Replica
   synchronization from future work.
 - Remove the open choice about whether the Account login password is distinct from the Account
   Master Password; this plan selects one password with domain-separated authentication/wrapping
   derivatives.
 - Remove the open Account Encryption Key hierarchy question now owned by canonical specs.
 - Retain password change, Account Recovery Key, all-browser-loss recovery, Device trust/revocation,
-  quotas/abuse controls, shared storage, selective retention/eviction, public deployment hardening,
+  quotas/abuse controls, shared storage, automatic retention policies, public deployment hardening,
   and independent review.
 - Rewrite dependencies, evidence gates, and sequence so they do not imply completed Account/client
   synchronization remains unimplemented.
@@ -1133,17 +1115,16 @@ detection.
 **REFACTOR:** keep local-only Vacuum on its existing fully local path while sharing verified
 successor construction.
 
-## Task 11: Stale local recovery fork
+## Task 11: Explicit stale Replica discard
 
-**RED:** cover mutation fencing, read/Export availability, skipped-Export confirmation, fresh IDs,
-all retained Capture/Artifact copying, Deleted/Collection state, large streaming payloads, original
-server restoration, and rollback at every preparation/activation boundary.
+**RED:** cover mutation fencing, read/Export availability, skipped-Export confirmation, complete
+server staging, absence of another Vault, and rollback at every preparation/activation boundary.
 
-**GREEN:** implement the Local recovery fork Service, full server staging, one activation
-transaction, UI, progress, cleanup, and success state.
+**GREEN:** implement the stale-discard Service, full server staging, one activation transaction, UI,
+progress, cleanup, and success state.
 
-**REFACTOR:** keep recovery forking distinct from Import/Restore and prove no source identity is
-reused with changed bytes.
+**REFACTOR:** keep stale discard distinct from Import/Restore and prove no partial or additional
+Vault authority is created.
 
 ## Task 12: Operations, documentation, and complete evidence
 
@@ -1210,7 +1191,8 @@ Required test groups include:
 - offline local commits followed by convergence;
 - logout/relogin with continued local Vault access;
 - synchronized Vacuum race and server-first/local-resume activation;
-- stale fork exact current-state preservation, fresh identity, server replacement, and rollback;
+- stale-discard exact current-state preservation before activation, complete server replacement,
+  and rollback;
 - two open extension surfaces proving live Projection updates without reload; and
 - accessibility and screenshot evidence for every affected visible state.
 
@@ -1247,7 +1229,7 @@ Work is complete only when all statements are true:
 20. A Workspace may retain unrelated local-only Vaults.
 21. Signup can create a new Vault or attach one chosen existing local Vault.
 22. Interrupted post-signup enrollment resumes without duplicate Account/Vault creation.
-23. Login on a new browser creates a Complete local Replica and fresh device slot.
+23. Login on a new browser creates a fully local Replica and fresh device slot.
 24. Same-ID key mismatch fails without writes or replacement.
 25. Ordinary local operations succeed while offline and never await remote acknowledgement.
 26. Every local authoritative mutation wakes persistent synchronization.
@@ -1257,7 +1239,8 @@ Work is complete only when all statements are true:
 29. Event replay order remains canonical and independent of Delivery Cursor order.
 30. Polling alone converges after all Cable hints are lost.
 31. Runtime/service-worker interruption resumes every synchronization stage idempotently.
-32. Locally available content is never evicted by this feature.
+32. Ordinary synchronization never removes local content; explicit storage relief follows the
+    current Runtime storage and synchronization specifications.
 33. Logout removes Account secrets but leaves local Vaults usable and unlocked according to local
     device state.
 34. All open surfaces update Account, lock, active Vault, name, busy, Capture, Collection, and
@@ -1269,13 +1252,13 @@ Work is complete only when all statements are true:
     automatic retry/merge.
 38. The stale original remains readable and exportable while mutations are fenced.
 39. Exact stale Export is recommended but may be skipped only after explicit warning.
-40. Resolution creates a fresh local-only recovery Vault with no Account slot.
-41. The fork preserves all retained Capture/Artifact plaintext and current active/deleted/Collection
-    state under fresh identities.
-42. The fork does not claim to preserve original Event/Undo history.
-43. The original Vault ID is replaced only by a fully verified Complete server Replica.
-44. Any recovery failure leaves the stale original unchanged and no partial fork authoritative.
-45. No selective reapply, local-wins, later fork Import, or same-ID divergent Workspace entry exists.
+40. Resolution creates no additional Vault.
+41. The stale Vault is replaced only by a fully verified complete server Replica.
+42. Every prepared replacement wrapper is journaled for restart cleanup.
+43. Activation replaces authority and clears obsolete operational availability atomically.
+44. Any pre-activation failure leaves the stale original unchanged and no partial replacement
+    authoritative.
+45. No selective reapply, local-wins, implicit merge, or same-ID divergent Workspace entry exists.
 46. No plaintext content, unwrapped key, password, token, or forbidden metadata appears in server
     persistence, logs, Jobs, hints, errors, or diagnostics.
 47. Public-hosted readiness is not claimed; remaining gates are explicit.
@@ -1302,15 +1285,15 @@ Work is complete only when all statements are true:
 - [x] Login popup; signup full extension tab.
 - [x] Continue without sync remains reversible later.
 - [x] Exact optional host permission; no broad permanent network access.
-- [x] Complete local Replica only; no remote-only Artifact state or eviction.
+- [x] Fully local bootstrap plus explicit manual heavy-wrapper storage relief and retrieval.
 - [x] All ordinary mutations local-first and background synchronized.
 - [x] Cable hints advisory; polling sufficient.
 - [x] Server-first compare-and-swap for synchronized Vault Vacuum.
 - [x] No automatic stale merge or selective reapply.
-- [x] Stale resolution creates a fresh local-only current-state fork, then uses server data.
+- [x] Stale resolution offers Export first, then explicitly discards stale local state and uses
+      verified server data without creating another Vault.
 - [x] Optional exact Export recommended but skippable with warning.
-- [x] No later `Import as fork` capability.
-- [x] Recovery fork uses fresh identities and does not preserve full Event operation history.
+- [x] No implicit preserve-as-copy or alternate Import capability.
 - [x] Proof credential removed rather than retained as compatibility.
 - [x] Protocol remains the sole canonical pre-release version `1`.
 - [x] Pre-release databases and development data are recreated, not migrated.

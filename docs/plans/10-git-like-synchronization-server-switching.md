@@ -79,7 +79,7 @@ switch conflicts.
 - compatibility readers, migrations, or preservation of pre-release IndexedDB/proof data;
 - Firefox Host support;
 - a test-only native Download Host; and
-- switching into and inspecting the recovered local-only Vault from stale-Replica recovery.
+- a preserve-first stale-Replica copy workflow beyond the current export-first explicit discard.
 
 The last three items remain Roadmap work and SHALL NOT be pulled into this implementation.
 
@@ -884,7 +884,8 @@ Reconcile all of the following before completion:
 - protocol documentation only where client use or test expectations need clarification—do not add
   a server merge contract; and
 - `ROADMAP.md`: remove or narrow only work fully completed by this implementation and retain the
-  existing Firefox, Download Host, recovered local-only Vault, Redis, build, and web-client items.
+  existing Firefox, Download Host, future preserve-first stale-Replica recovery, Redis, build, and
+  web-client items.
 
 Search all Markdown for `ChangeSyncServer`, `changing servers signs out`, `server change`,
 `replacement context`, and claims that a failed candidate logs out the active Account. Completed

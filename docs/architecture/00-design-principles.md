@@ -113,7 +113,10 @@ Every feature should function without continuous network connectivity whenever p
 
 Synchronization is opportunistic.
 
-The local vault remains authoritative for the user's own data.
+The local Vault remains authoritative for the user's logical data and immutable records. After an
+explicit user action and exact Coordination Server proof, a device may omit selected heavy encrypted
+Artifact wrappers while retaining their authoritative Object records. Compact Library content stays
+local; remote-only payload access requires the configured Account and network.
 
 ---
 

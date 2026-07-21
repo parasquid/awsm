@@ -58,6 +58,12 @@ automatic deletion use the same durable stages and resume from domain checkpoint
 not the user-visible source of truth. Operators MUST monitor failed-retryable Jobs and storage
 integrity without logging membership lists or ciphertext identifiers by default.
 
+Clients own storage-relief and retrieval Jobs. Operators monitor only allowlisted outcome counters
+and transfer failures; diagnostics MUST NOT reveal local availability lists, semantic Artifact roles,
+Object identifiers, filenames, URLs, plaintext, or keys. Quota failure is distinct from integrity
+failure: the client removes partial local files and may continue through a fresh bounded transient
+download.
+
 # Logging and Secrets
 
 Normal logs may contain request ID, internal operational row IDs, operation, stable outcome, broad
@@ -80,5 +86,5 @@ resurrection of purged tombstones or reuse of discarded pre-release formats.
 Production promotion still requires Device/recovery authorization, quotas and abuse controls, a
 shared storage Driver, shared notifications, backup/restore exercises, alerting, incident response,
 metadata/traffic analysis, and independent security review. Email/password Account authentication,
-one-Vault synchronization, recurring Jobs, extension onboarding/settings, and stale-Replica
-recovery are implemented.
+one-Vault synchronization, recurring Jobs, extension onboarding/settings, manual encrypted-wrapper
+storage relief, on-demand retrieval, and stale-Replica discard are implemented.

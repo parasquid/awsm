@@ -151,6 +151,14 @@ without requiring network connectivity.
 
 Synchronization occurs opportunistically.
 
+For a connected Account, users may explicitly free browser storage by removing locally stored
+`PRIMARY` and full-screenshot wrappers only after AWSM proves byte-identical encrypted copies belong
+to the active Coordination Server Generation. Compact Library data remains local. Opening or
+downloading a remote-only Artifact retrieves and verifies it through the trusted Runtime, normally
+restoring it locally; offline or signed-out access explains that Account access is required rather
+than reporting corruption. Complete Export still includes every Artifact without rehydrating these
+wrappers.
+
 ---
 
 ## Cloud as Coordination Layer
@@ -165,6 +173,10 @@ The backend provides:
 Billing, Device coordination, and sharing coordination remain future capabilities.
 
 The backend is intentionally unaware of archive contents.
+
+If a synchronized device is stale after Vault Vacuum, AWSM keeps it read-only, offers Complete
+Export first, and requires explicit acknowledgement before atomically replacing it with verified
+server state. This discard creates no hidden recovery Vault.
 
 ---
 

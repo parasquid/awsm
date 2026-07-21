@@ -43,16 +43,16 @@ synchronization path when hints are lost.
 
 ---
 
-## Recovered Local-Only Vault Journey Proof
+## Preserve-First Stale Replica Recovery
 
 **Status:** Candidate
 
-Extend the packaged two-browser stale-Replica recovery journey beyond proving that the recovered
-local-only Vault exists in the Vault switcher. Switch into that Vault and verify its stale Captures
-and Collection topology, then switch back to the synchronized Vault and verify the
-server-authoritative post-Vacuum state remains active, current, and UpToDate without a reload. The
-proof must also confirm that switching does not resynchronize or overwrite the recovered local-only
-Vault.
+Add an explicit alternative to destructive stale-Replica discard. Retrieve every stale payload from
+the retained Recovery Snapshot, decrypt and re-encrypt the complete stale state under fresh Vault,
+Generation, Event, Object, Bundle, Artifact, Collection, key, and device identities, and activate it
+as a local-only Vault only after complete validation. This future flow must preserve bounded
+streaming, remain distinct from Import/Restore, and never weaken the current export-first discard
+contract.
 
 ---
 
@@ -62,7 +62,7 @@ Vault.
 
 Add a test-only Download Host that replaces only the native save-file interaction which packaged
 headless browsers cannot reliably automate. Use it to complete the successful Export branch of
-stale-Replica recovery and prove that the emitted encrypted Vault Package imports into a fresh
+stale-Replica discard and prove that the emitted encrypted Vault Package imports into a fresh
 local-only Vault. The test Host must exercise the production Runtime encryption, package creation,
 validation, and recovery sequencing without granting the shipped extension broader permissions or
 bypassing the real Host in release builds.
@@ -91,16 +91,17 @@ canonical Vault, Account, synchronization, or cryptographic contracts.
 `awsm.foo`.
 
 The Chrome extension and Coordination Server already own email/password Account authentication,
-client-only Account-key enrollment, one synchronized Complete Replica, background convergence,
-Generation fencing, and stale-Replica recovery. This initiative must reuse those canonical Runtime
+client-only Account-key enrollment, one synchronized Vault Replica, background convergence,
+manual heavy-Artifact storage relief, on-demand retrieval, Generation fencing, and stale-Replica
+discard. This initiative must reuse those canonical Runtime
 and protocol contracts; it must not create a second Account, key, or synchronization model.
 
 Future web scope remains limited to:
 
 - a trusted web Host for Library browsing, organization, local Search, Export, Import, and Account
   management;
-- explicit Full and Selective local retention profiles, on-demand Artifact retrieval, pinning,
-  eviction, and quota UX;
+- persistent Full and Selective retention profiles, automatic policies, pinning, and production
+  quota controls beyond the implemented manual storage-relief and quota-fallback UX;
 - Device enrollment, signed requests, revocation, and Account Recovery Key ceremonies;
 - password change and recovery after every enrolled browser is lost;
 - production quotas, abuse controls, billing, shared immutable-byte storage, backup/restore, and

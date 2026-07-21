@@ -47,11 +47,13 @@ A random client-created key that wraps the Account's single synchronized Vault R
 login password derives independent authentication and wrapping material; the Coordination Server
 stores only the password-wrapped Account Encryption Key envelope and cannot unwrap either key.
 
-## Local recovery fork
+## Remote-only Artifact
 
-A fresh local-only Vault re-authored from the current logical state of a stale Replica before the
-original synchronized Vault is replaced with server-authoritative data. It uses fresh identities and
-is not Backup, Restore, Import, or a continuation of the stale Vault's history.
+An Artifact whose authoritative immutable Object record remains in a local Vault Replica while its
+encrypted wrapper is intentionally absent from one device after exact active-server membership and
+ciphertext metadata were proved. Remote-only availability is device-local operational state, not an
+Object, Event, synchronized fact, or permission for unexplained absence. Access retrieves and
+integrity-checks the wrapper through the trusted Runtime.
 
 ## Replica
 

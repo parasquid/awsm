@@ -66,7 +66,8 @@ warning but SHALL NOT invalidate a valid MHTML Capture.
 
 - Account creation, Account passwords, Account Recovery Keys, and recovery ceremonies;
 - Coordination Server, synchronization, web client, cursors, upload, and remote retrieval;
-- local retention profiles, pinning, eviction, and user-created unavailable Artifact state;
+- automatic retention profiles, pinning, and user-created unavailable Artifact states beyond the
+  canonical manual heavy-wrapper storage-relief workflow;
 - a user control that intentionally excludes locally present Artifacts from Export;
 - `Download all content` from a server;
 - Complete Import or destination-Vault writes, which are owned by Plan 07;
@@ -1185,7 +1186,8 @@ The feature is complete only when every statement is true:
 The implementer SHALL treat these as settled:
 
 - implement the independent-Artifact foundation, not the entire synchronized web-client roadmap;
-- retain complete local Vaults and defer retention/eviction UI;
+- retain full-local capture/bootstrap defaults while allowing the canonical explicit manual
+  heavy-wrapper storage-relief UI;
 - implement authenticated omission format now even though current local Export normally completes;
 - use random Artifact/Object UUIDs, not content addressing;
 - make `BundleRegistered` reference the entire Object closure directly;

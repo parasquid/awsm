@@ -95,6 +95,11 @@ Each Projection has independent lifecycle management.
 
 The Library Collection Projection derives assigned and effective Collection membership, merge redirects, Active/Deleted membership, known URLs, and tail selection from immutable Events. Its item rows and Collection-state Materialization are encrypted and disposable. Rebuilding from the same Event order MUST reproduce equivalent Collection topology.
 
+Artifact wrapper availability is not Projection input or authoritative state. A remote-only marker
+may change which Host supplies bytes, but never changes Bundle membership, Artifact references,
+Library grouping, Active/Deleted state, or replay results. Long-lived Library surfaces refetch after
+availability invalidation so restoration and storage relief appear without reload.
+
 ---
 
 # Projection Lifecycle

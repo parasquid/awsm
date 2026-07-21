@@ -171,8 +171,14 @@ Examples:
 - projection rebuild
 - AI processing
 - garbage collection
+- user-triggered storage relief and remote Artifact restoration
 
 Tasks SHOULD be resumable after interruption.
+
+Every successful availability, progress, cancellation, completion, failure, sign-out, lock, or Vault
+context mutation SHALL publish one canonical invalidation wake-up. Long-lived surfaces subscribe
+before fetching, generation-guard reconciliation, refetch authoritative state, and discard decrypted
+context immediately on a possible lock or Vault change.
 
 ---
 
@@ -188,6 +194,9 @@ Examples:
 - queue depth
 
 Diagnostics MUST NOT expose decrypted user content.
+
+Diagnostics also MUST NOT expose semantic Artifact roles, filenames, URLs, Object identifiers,
+plaintext metadata, remote-only inventories, ciphertext, or keys.
 
 ---
 
