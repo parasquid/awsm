@@ -1,0 +1,153 @@
+name: Chrome Extension Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      archive_name: ${{ steps.metadata.outputs.archive_name }}
+      checksum_name: ${{ steps.metadata.outputs.checksum_name }}
+      prerelease: ${{ steps.metadata.outputs.prerelease }}
+      tag: ${{ steps.metadata.outputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Prepare release output
+        run: mkdir dist
+
+      - name: Derive release metadata
+        id: metadata
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node apps/browser-extension/scripts/chrome-release-metadata.mjs
+
+      - name: Require tagged commit to belong to main
+        if: github.event_name == 'push'
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$(git rev-list -n 1 "$GITHUB_REF_NAME")" origin/main
+
+      - name: Lint
+        run: corepack pnpm lint
+
+      - name: Typecheck
+        run: corepack pnpm typecheck
+
+      - name: Run unit tests
+        run: corepack pnpm test
+
+      - name: Build production extension
+        run: corepack pnpm build
+
+      - name: Create Chrome archive
+        run: corepack pnpm zip
+
+      - name: Package and verify release assets
+        env:
+          ARCHIVE_NAME: ${{ steps.metadata.outputs.archive_name }}
+          CHECKSUM_NAME: ${{ steps.metadata.outputs.checksum_name }}
+        run: |
+          mapfile -t archives < <(find apps/browser-extension/.output -maxdepth 1 -type f -name '*-chrome.zip' -print)
+          if [[ "${#archives[@]}" -ne 1 ]]; then
+            echo "Expected exactly one Chrome ZIP, found ${#archives[@]}" >&2
+            exit 1
+          fi
+          mv "${archives[0]}" "dist/$ARCHIVE_NAME"
+          unzip -t "dist/$ARCHIVE_NAME"
+          if [[ "$(unzip -Z1 "dist/$ARCHIVE_NAME" | grep -Fxc 'manifest.json')" -ne 1 ]]; then
+            echo "Archive must contain exactly one root manifest.json" >&2
+            exit 1
+          fi
+          cd dist
+          sha256sum "$ARCHIVE_NAME" > "$CHECKSUM_NAME"
+          sha256sum --check "$CHECKSUM_NAME"
+
+      - name: Upload validated release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: chrome-extension-${{ steps.metadata.outputs.tag }}
+          path: |
+            dist/${{ steps.metadata.outputs.archive_name }}
+            dist/${{ steps.metadata.outputs.checksum_name }}
+            dist/release-notes.md
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Download validated release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: chrome-extension-${{ needs.build.outputs.tag }}
+          path: dist
+
+      - name: Revalidate transferred assets
+        env:
+          ARCHIVE_NAME: ${{ needs.build.outputs.archive_name }}
+          CHECKSUM_NAME: ${{ needs.build.outputs.checksum_name }}
+        run: |
+          cd dist
+          sha256sum --check "$CHECKSUM_NAME"
+          unzip -t "$ARCHIVE_NAME"
+          if [[ "$(unzip -Z1 "$ARCHIVE_NAME" | grep -Fxc 'manifest.json')" -ne 1 ]]; then
+            echo "Archive must contain exactly one root manifest.json" >&2
+            exit 1
+          fi
+
+      - name: Publish GitHub Release
+        env:
+          ARCHIVE_NAME: ${{ needs.build.outputs.archive_name }}
+          CHECKSUM_NAME: ${{ needs.build.outputs.checksum_name }}
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          prerelease_args=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+          gh release create "$TAG" \
+            "dist/$ARCHIVE_NAME" \
+            "dist/$CHECKSUM_NAME" \
+            --verify-tag \
+            --title "$TAG" \
+            --generate-notes \
+            --notes "$(cat dist/release-notes.md)" \
+            --fail-on-no-commits \
+            "${prerelease_args[@]}"

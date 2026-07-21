@@ -1,0 +1,82 @@
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const VERSION_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?$/;
+const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+export function releaseMetadata({ version, eventName, refName, repository }) {
+  const versionMatch = VERSION_PATTERN.exec(version);
+  if (!versionMatch) {
+    throw new Error("invalid version: expected SemVer without build metadata");
+  }
+  if (!REPOSITORY_PATTERN.test(repository)) {
+    throw new Error("invalid repository: expected owner/name");
+  }
+  if (eventName !== "push" && eventName !== "workflow_dispatch") {
+    throw new Error(`unsupported event: ${eventName}`);
+  }
+
+  const tag = `v${version}`;
+  if (eventName === "push" && refName !== tag) {
+    throw new Error(`tag mismatch: expected ${tag}`);
+  }
+
+  return {
+    version,
+    tag,
+    prerelease: versionMatch[4] !== undefined,
+    archiveName: `awsm-chrome-v${version}.zip`,
+    checksumName: `awsm-chrome-v${version}.zip.sha256`,
+    guideUrl: `https://github.com/${repository}/blob/${tag}/docs/guides/install-chrome-extension.md`,
+  };
+}
+
+export function renderReleaseNotes(metadata) {
+  return `## Install the Chrome extension
+
+1. Download \`${metadata.archiveName}\` and \`${metadata.checksumName}\` from this Release.
+2. Verify the ZIP against the checksum using the full installation guide.
+3. Extract the ZIP into a permanent directory.
+4. Open \`chrome://extensions\` in Chrome.
+5. Enable **Developer mode**.
+6. Select **Load unpacked** and choose the extracted directory containing \`manifest.json\`.
+7. Keep that directory in place. For an upgrade, replace its contents and reload the extension from the same path.
+
+[Read the full installation, checksum, upgrade, and troubleshooting guide](${metadata.guideUrl}).
+`;
+}
+
+async function main() {
+  const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const packageJson = JSON.parse(
+    await readFile(path.join(scriptDirectory, "..", "package.json"), "utf8"),
+  );
+  const metadata = releaseMetadata({
+    version: packageJson.version,
+    eventName: process.env.GITHUB_EVENT_NAME,
+    refName: process.env.GITHUB_REF_NAME,
+    repository: process.env.GITHUB_REPOSITORY,
+  });
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (!outputPath) {
+    throw new Error("GITHUB_OUTPUT is required");
+  }
+
+  const outputs = [
+    ["version", metadata.version],
+    ["tag", metadata.tag],
+    ["prerelease", String(metadata.prerelease)],
+    ["archive_name", metadata.archiveName],
+    ["checksum_name", metadata.checksumName],
+    ["guide_url", metadata.guideUrl],
+  ];
+  await appendFile(outputPath, `${outputs.map(([key, value]) => `${key}=${value}`).join("\n")}\n`);
+  await mkdir("dist", { recursive: true });
+  await writeFile("dist/release-notes.md", renderReleaseNotes(metadata));
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}
