@@ -162,6 +162,7 @@ export class RemoteReplicaDownloader {
       readonly objects: readonly StoredObjectV1[];
     },
     scope?: { readonly recoveryGenerationId: string },
+    beforeArtifactPrepare?: (objectId: string) => Promise<void>,
   ): Promise<PreparedRemoteReplica> {
     if (
       job.vaultId === undefined ||
@@ -231,6 +232,7 @@ export class RemoteReplicaDownloader {
             envelopeChecksumAlgorithm: "hash:sha256:v1",
             envelopeChecksum: advertised.sha256,
           };
+          await beforeArtifactPrepare?.(stored.objectId);
           await this.artifacts.prepareEncrypted({
             vaultId: job.vaultId,
             object: stored,
@@ -394,6 +396,7 @@ export async function verifyPreparedRemoteReplica(input: {
   readonly prepared: PreparedRemoteReplica;
   readonly rootKey: CryptoKey;
   readonly artifacts: Pick<ArtifactStore, "openEncrypted">;
+  readonly openArtifact?: (object: StoredArtifactObjectV1) => Promise<ReadableStream<Uint8Array>>;
 }): Promise<VerifiedRemoteReplica> {
   const files = new Map<string, Uint8Array>();
   files.set("generation.cbor", encodeCanonicalCbor(input.prepared.generation));
@@ -465,7 +468,16 @@ export async function verifyPreparedRemoteReplica(input: {
           throw integrity("Prepared record is unavailable");
         return bytes;
       },
-      openArtifact: (objectId) => input.artifacts.openEncrypted(input.vaultId, objectId),
+      openArtifact: (objectId) => {
+        const object = input.prepared.objects.find(
+          (candidate): candidate is StoredArtifactObjectV1 =>
+            candidate.objectType === "Artifact" && candidate.objectId === objectId,
+        );
+        if (object === undefined) throw integrity("Prepared Artifact Object is unavailable");
+        return input.openArtifact === undefined
+          ? input.artifacts.openEncrypted(input.vaultId, objectId)
+          : input.openArtifact(object);
+      },
     });
     return {
       generation: verified.generation,

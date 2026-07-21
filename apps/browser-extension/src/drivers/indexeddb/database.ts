@@ -19,6 +19,14 @@ export function transactionDone(transaction: IDBTransaction): Promise<void> {
   });
 }
 
+export function abortTransaction(transaction: IDBTransaction): void {
+  try {
+    transaction.abort();
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "InvalidStateError")) throw error;
+  }
+}
+
 export function openDatabase(name: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(name, DATABASE_VERSION);

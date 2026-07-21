@@ -22,9 +22,14 @@ export interface ArtifactStore {
     readonly object: StoredArtifactObjectV1;
     readonly encrypted: ReadableStream<Uint8Array>;
     readonly signal?: AbortSignal;
+    readonly afterFirstWrite?: () => Promise<void>;
   }): Promise<void>;
 
   openEncrypted(vaultId: string, objectId: string): Promise<ReadableStream<Uint8Array>>;
+
+  has(vaultId: string, objectId: string): Promise<boolean>;
+
+  verifyEncrypted(vaultId: string, object: StoredArtifactObjectV1): Promise<boolean>;
 
   openPlaintext(input: {
     readonly vaultId: string;

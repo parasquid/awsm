@@ -12,6 +12,9 @@ export const STORES = {
   synchronizationCheckpoints: "synchronization_checkpoints",
   serverSwitchJobs: "server_switch_jobs",
   serverSwitchCheckpoints: "server_switch_checkpoints",
+  artifactAvailability: "artifact_availability",
+  storageReliefJobs: "storage_relief_jobs",
+  storageReliefCheckpoints: "storage_relief_checkpoints",
   vaultDirectory: "vault_directory",
   vaultNameCache: "vault_name_cache",
   vaultNameProjection: "vault_name_projection",
@@ -77,9 +80,8 @@ export type SynchronizationStage =
   | "Validate"
   | "ActivateLocal"
   | "Checkpoint"
-  | "PrepareRecoveryFork"
   | "PrepareServerReplacement"
-  | "ActivateRecovery";
+  | "ActivateServerReplacement";
 
 export interface SynchronizationJobV1 {
   readonly version: 1;
@@ -109,7 +111,7 @@ export interface SynchronizationJobV1 {
   readonly retryAt?: string;
   readonly errorId?: string;
   readonly attachIdempotencyKey: string;
-  readonly recoveryForkVaultId?: string;
+  readonly preparedArtifactObjectIds?: readonly string[];
 }
 
 export interface SynchronizationCheckpointV1 {

@@ -5,6 +5,7 @@ import { bytesEqual } from "../../domain/hash";
 import { uuid } from "../../domain/validation";
 import type { StoredArtifactObjectV1 } from "../../drivers/indexeddb/schema";
 import type { ArtifactStore, PreparedArtifact } from "../../runtime/artifact";
+import { artifactFileMatches, streamChunks } from "./artifact-store-file";
 
 const ROOT_DIRECTORY = "awsm-vault-objects";
 const SUFFIX = ".artifact";
@@ -104,6 +105,7 @@ export class ChromeArtifactStore implements ArtifactStore {
     readonly object: StoredArtifactObjectV1;
     readonly encrypted: ReadableStream<Uint8Array>;
     readonly signal?: AbortSignal;
+    readonly afterFirstWrite?: () => Promise<void>;
   }): Promise<void> {
     const vaultId = uuid(input.vaultId, "artifactStore.vaultId");
     const objectId = uuid(input.object.objectId, "artifactStore.objectId");
@@ -112,25 +114,7 @@ export class ChromeArtifactStore implements ArtifactStore {
     try {
       const existing = await directory.getFileHandle(name);
       const file = await existing.getFile();
-      let matches = file.size === input.object.envelopeByteLength;
-      if (matches) {
-        const sodium = await readySodium();
-        const hash = sodium.crypto_hash_sha256_init();
-        const reader = file.stream().getReader();
-        try {
-          for (;;) {
-            const next = await reader.read();
-            if (next.done) break;
-            sodium.crypto_hash_sha256_update(hash, next.value);
-          }
-          matches = bytesEqual(
-            Uint8Array.from(sodium.crypto_hash_sha256_final(hash)),
-            input.object.envelopeChecksum,
-          );
-        } finally {
-          reader.releaseLock();
-        }
-      }
+      const matches = await artifactFileMatches(file, input.object);
       if (matches) {
         await input.encrypted.cancel();
         return;
@@ -143,6 +127,7 @@ export class ChromeArtifactStore implements ArtifactStore {
     const sodium = await readySodium();
     const hash = sodium.crypto_hash_sha256_init();
     let byteLength = 0;
+    let wroteChunk = false;
     let writable: FileSystemWritableFileStream | undefined;
     try {
       const handle = await directory.getFileHandle(name, { create: true });
@@ -155,6 +140,10 @@ export class ChromeArtifactStore implements ArtifactStore {
         if (!Number.isSafeInteger(byteLength)) throw new Error("Artifact wrapper is too large.");
         sodium.crypto_hash_sha256_update(hash, next.value);
         await writable.write(Uint8Array.from(next.value).buffer);
+        if (!wroteChunk) {
+          wroteChunk = true;
+          await input.afterFirstWrite?.();
+        }
       }
       const checksum = Uint8Array.from(sodium.crypto_hash_sha256_final(hash));
       if (
@@ -178,6 +167,23 @@ export class ChromeArtifactStore implements ArtifactStore {
 
   openEncrypted(vaultId: string, objectId: string): Promise<ReadableStream<Uint8Array>> {
     return fileStream(vaultId, objectId);
+  }
+
+  async has(vaultId: string, objectId: string): Promise<boolean> {
+    const directory = await vaultDirectory(vaultId);
+    try {
+      await directory.getFileHandle(filename(objectId));
+      return true;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "NotFoundError") return false;
+      throw error;
+    }
+  }
+
+  async verifyEncrypted(vaultId: string, object: StoredArtifactObjectV1): Promise<boolean> {
+    const directory = await vaultDirectory(vaultId);
+    const handle = await directory.getFileHandle(filename(object.objectId));
+    return artifactFileMatches(await handle.getFile(), object);
   }
 
   async openPlaintext(input: {
@@ -238,18 +244,5 @@ export class ChromeArtifactStore implements ArtifactStore {
         await directory.removeEntry(name);
       }
     }
-  }
-}
-
-async function* streamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
-  const reader = stream.getReader();
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) return;
-      yield next.value;
-    }
-  } finally {
-    reader.releaseLock();
   }
 }

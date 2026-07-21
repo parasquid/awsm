@@ -12,6 +12,7 @@ import { noRuntimeFaultCheckpoint, type RuntimeFaultCheckpoint } from "../fault-
 import { LibraryProjectionRebuilder } from "../library/rebuild";
 import { encryptWorkspaceVaultName } from "../vault";
 import { type RemoteReplicaDownloader, verifyPreparedRemoteReplica } from "./download";
+import { openPullArtifact } from "./pull-artifact";
 
 interface PullAccountStore {
   latestSynchronizationJob(): Promise<SynchronizationJobV1 | undefined>;
@@ -43,6 +44,18 @@ interface PullTransport {
   ): Promise<{ readonly status: number; readonly body: unknown }>;
 }
 
+interface PullArtifactAvailability {
+  isArtifactRemoteOnly(vaultId: string, artifactObjectId: string): Promise<boolean>;
+}
+
+interface PullRemoteArtifacts {
+  openEncrypted(input: {
+    readonly vaultId: string;
+    readonly object: import("../../drivers/indexeddb/schema").StoredArtifactObjectV1;
+    readonly generationId: string;
+  }): Promise<ReadableStream<Uint8Array>>;
+}
+
 function integrity(message: string): Error {
   return Object.assign(new Error(message), { id: "SYNCHRONIZATION_INTEGRITY_FAILED" });
 }
@@ -69,6 +82,8 @@ export class IncrementalPullRunner {
     private readonly downloader: Pick<RemoteReplicaDownloader, "prepare">,
     private readonly faultCheckpoint: RuntimeFaultCheckpoint = noRuntimeFaultCheckpoint,
     private readonly signal?: AbortSignal,
+    private readonly availability?: PullArtifactAvailability,
+    private readonly remoteArtifacts?: PullRemoteArtifacts,
   ) {}
 
   async run(rootKey: CryptoKey, now = new Date().toISOString()): Promise<boolean> {
@@ -88,6 +103,8 @@ export class IncrementalPullRunner {
       registration.remoteGenerationNumber !== job.generationNumber
     )
       throw integrity("Pull Account/Vault context differs");
+    const scopedVaultId = job.vaultId;
+    const scopedGenerationId = job.generationId;
     const snapshotCursor = await this.fetchChangeFence(
       job.vaultId,
       job.generationId,
@@ -109,10 +126,20 @@ export class IncrementalPullRunner {
     let committed = false;
     try {
       const verified = await verifyPreparedRemoteReplica({
-        vaultId: job.vaultId,
+        vaultId: scopedVaultId,
         prepared,
         rootKey,
         artifacts: this.artifacts,
+        ...(this.availability === undefined || this.remoteArtifacts === undefined
+          ? {}
+          : {
+              openArtifact: this.pullArtifactOpener(
+                scopedVaultId,
+                scopedGenerationId,
+                this.availability,
+                this.remoteArtifacts,
+              ),
+            }),
       });
       const allObjects = new Map(verified.objects.map((entry) => [entry.objectId, entry]));
       const projections = await new LibraryProjectionRebuilder(
@@ -148,6 +175,7 @@ export class IncrementalPullRunner {
         collectionProjection: projections.collectionProjection,
         vaultNameProjection: projections.vaultNameProjection,
         nameCache,
+        installedArtifactObjectIds: prepared.preparedArtifactObjectIds,
       });
       committed = true;
       return true;
@@ -159,6 +187,21 @@ export class IncrementalPullRunner {
           ),
         );
     }
+  }
+
+  private pullArtifactOpener(
+    vaultId: string,
+    generationId: string,
+    availability: PullArtifactAvailability,
+    remoteArtifacts: PullRemoteArtifacts,
+  ): (
+    object: import("../../drivers/indexeddb/schema").StoredArtifactObjectV1,
+  ) => Promise<ReadableStream<Uint8Array>> {
+    return (object) =>
+      openPullArtifact({ vaultId, object, generationId }, availability, {
+        local: (value) => this.artifacts.openEncrypted(value.vaultId, value.object.objectId),
+        remote: (value) => remoteArtifacts.openEncrypted(value),
+      });
   }
 
   private async fetchChangeFence(

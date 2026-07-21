@@ -3,6 +3,7 @@ export {
   IndexedDbAccountRepository,
   type ServerSwitchReplicaPromotion,
 } from "./account-repository";
+export type { CreateStorageReliefJobInput } from "./create-storage-relief-job";
 export { IndexedDbDriver } from "./driver";
 export {
   StorageDriverError,
@@ -47,5 +48,6 @@ export {
   decodeServerSwitchJob,
   IndexedDbServerSwitchRepository,
 } from "./server-switch-repository";
+export { IndexedDbStorageReliefRepository } from "./storage-relief-repository";
 export { IndexedDbVaultRepository } from "./vault-repository";
 export { IndexedDbWorkspaceRepository } from "./workspace-repository";

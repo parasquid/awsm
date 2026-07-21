@@ -25,6 +25,8 @@ import {
   type StoredEvent,
   type StoredObjectV1,
 } from "./schema";
+import { decodeStorageReliefCheckpoint, decodeStorageReliefJob } from "./storage-relief-decode";
+import { assertNoActiveStorageRelief, hasActiveStorageRelief } from "./storage-relief-lease";
 
 function abortTransaction(transaction: IDBTransaction): void {
   try {
@@ -122,6 +124,7 @@ export class IndexedDbDriver {
         STORES.exportJobs,
         STORES.importJobs,
         STORES.vaultHead,
+        STORES.storageReliefJobs,
       ],
       "readwrite",
     );
@@ -146,6 +149,7 @@ export class IndexedDbDriver {
       }
       await assertNoActiveExport(transaction, this.vaultId);
       await assertNoActiveImport(transaction);
+      await assertNoActiveStorageRelief(transaction, this.vaultId);
       if (
         (await requestValue(
           transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(this.vaultId)),
@@ -372,13 +376,14 @@ export class IndexedDbDriver {
     const job = this.decodeScopedCaptureJob(value);
     const database = await this.databasePromise;
     const transaction = database.transaction(
-      [STORES.captureJobs, STORES.exportJobs, STORES.importJobs],
+      [STORES.captureJobs, STORES.exportJobs, STORES.importJobs, STORES.storageReliefJobs],
       "readwrite",
     );
     const done = transactionDone(transaction);
     if (job.state === "Created" || job.state === "Running") {
       await assertNoActiveExport(transaction, this.vaultId);
       await assertNoActiveImport(transaction);
+      await assertNoActiveStorageRelief(transaction, this.vaultId);
     }
     transaction.objectStore(STORES.captureJobs).put(job, vaultKey(this.vaultId, job.jobId));
     try {
@@ -567,11 +572,15 @@ export class IndexedDbDriver {
         STORES.vaultHead,
         STORES.vacuumJobs,
         STORES.importJobs,
+        STORES.artifactAvailability,
+        STORES.storageReliefJobs,
+        STORES.storageReliefCheckpoints,
       ],
       "readwrite",
     );
     try {
       await assertNoActiveImport(transaction);
+      await assertNoActiveStorageRelief(transaction, this.vaultId);
       for (const event of input.eventsToAdd) this.assertEventVault(event);
       const vacuumJobs = transaction.objectStore(STORES.vacuumJobs);
       const job = (await requestValue(vacuumJobs.get(vaultKey(this.vaultId, input.jobId)))) as
@@ -589,6 +598,36 @@ export class IndexedDbDriver {
       }
       const objects = transaction.objectStore(STORES.objects);
       for (const objectId of input.objectIds) objects.delete(vaultKey(this.vaultId, objectId));
+      const removedObjectIds = new Set(input.objectIds);
+      const availability = transaction.objectStore(STORES.artifactAvailability);
+      for (const objectId of removedObjectIds)
+        availability.delete(vaultKey(this.vaultId, objectId));
+      const checkpoints = transaction.objectStore(STORES.storageReliefCheckpoints);
+      const checkpointValues = await requestValue(checkpoints.getAll(vaultKeyRange(this.vaultId)));
+      const decodedCheckpoints = checkpointValues.map(decodeStorageReliefCheckpoint);
+      const affectedJobIds = new Set(
+        decodedCheckpoints
+          .filter((checkpoint) => removedObjectIds.has(checkpoint.artifactObjectId))
+          .map((checkpoint) => checkpoint.jobId),
+      );
+      if (affectedJobIds.size > 0) {
+        const jobs = transaction.objectStore(STORES.storageReliefJobs);
+        const jobValues = await requestValue(jobs.getAll(vaultKeyRange(this.vaultId)));
+        for (const value of jobValues) {
+          const reliefJob = decodeStorageReliefJob(value);
+          if (!affectedJobIds.has(reliefJob.jobId)) continue;
+          if (
+            reliefJob.state !== "Succeeded" &&
+            reliefJob.state !== "Failed" &&
+            reliefJob.state !== "Cancelled"
+          )
+            throw new Error("Vault Vacuum conflicts with active storage relief.");
+          jobs.delete(vaultKey(this.vaultId, reliefJob.jobId));
+          for (const checkpoint of decodedCheckpoints)
+            if (checkpoint.jobId === reliefJob.jobId)
+              checkpoints.delete([this.vaultId, checkpoint.jobId, checkpoint.artifactObjectId]);
+        }
+      }
       const events = transaction.objectStore(STORES.events);
       for (const eventId of input.eventIds) events.delete(vaultKey(this.vaultId, eventId));
       for (const event of input.eventsToAdd)
@@ -622,6 +661,7 @@ export class IndexedDbDriver {
     const transaction = database.transaction(
       [
         STORES.vaultHead,
+        STORES.storageReliefJobs,
         STORES.vacuumJobs,
         STORES.captureJobs,
         STORES.exportJobs,
@@ -631,6 +671,7 @@ export class IndexedDbDriver {
     );
     try {
       await assertNoActiveImport(transaction);
+      await assertNoActiveStorageRelief(transaction, this.vaultId);
       const jobs = transaction.objectStore(STORES.vacuumJobs);
       if ((await requestValue(jobs.count(vaultKeyRange(this.vaultId)))) !== 0)
         throw new Error("Vault Vacuum is already in progress.");
@@ -806,11 +847,13 @@ export class IndexedDbDriver {
         STORES.vacuumJobs,
         STORES.importJobs,
         STORES.vaultHead,
+        STORES.storageReliefJobs,
       ],
       "readwrite",
     );
     try {
       await assertNoActiveImport(transaction);
+      await assertNoActiveStorageRelief(transaction, this.vaultId);
       const [workspaceValue, metadataValue, exports, captures, vacuumCount, head] =
         await Promise.all([
           requestValue(transaction.objectStore(STORES.workspaceMetadata).get("local")),
@@ -949,18 +992,20 @@ export class IndexedDbDriver {
     return changed;
   }
 
-  async managementBusy(): Promise<"Capture" | "Vacuum" | "Export" | undefined> {
+  async managementBusy(): Promise<"Capture" | "Vacuum" | "Export" | "Storage relief" | undefined> {
     const database = await this.databasePromise;
     const transaction = database.transaction(
-      [STORES.captureJobs, STORES.vacuumJobs, STORES.exportJobs],
+      [STORES.captureJobs, STORES.vacuumJobs, STORES.exportJobs, STORES.storageReliefJobs],
       "readonly",
     );
-    const [captureValues, vacuumCount, exportValues] = await Promise.all([
+    const [captureValues, vacuumCount, exportValues, storageRelief] = await Promise.all([
       requestValue(transaction.objectStore(STORES.captureJobs).getAll(vaultKeyRange(this.vaultId))),
       requestValue(transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(this.vaultId))),
       requestValue(transaction.objectStore(STORES.exportJobs).getAll(vaultKeyRange(this.vaultId))),
+      hasActiveStorageRelief(transaction, this.vaultId),
     ]);
     await transactionDone(transaction);
+    if (storageRelief) return "Storage relief";
     if (vacuumCount !== 0) return "Vacuum";
     if (
       exportValues
