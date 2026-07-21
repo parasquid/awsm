@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { cp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   type BrowserContext,
@@ -32,6 +32,41 @@ import {
   type VaultExportSource,
   writeVaultPackage,
 } from "../../src/runtime/export";
+
+declare const chrome: {
+  readonly downloads: {
+    download(options: {
+      readonly url: string;
+      readonly filename: string;
+      readonly saveAs: boolean;
+    }): Promise<number>;
+    search(options: unknown): Promise<readonly { readonly mime?: string }[]>;
+    readonly onDeterminingFilename: {
+      addListener(
+        listener: (
+          item: { readonly url: string },
+          suggest: (suggestion?: {
+            readonly filename: string;
+            readonly conflictAction: "uniquify";
+          }) => void,
+        ) => void,
+      ): void;
+      removeListener(listener: unknown): void;
+    };
+  };
+  readonly offscreen: {
+    createDocument(options: {
+      readonly url: string;
+      readonly reasons: readonly string[];
+      readonly justification: string;
+    }): Promise<void>;
+    closeDocument(): Promise<void>;
+  };
+  readonly runtime: {
+    sendMessage(message: unknown): Promise<unknown>;
+  };
+};
+
 import {
   prepareVaultNameChange,
   type VaultRecordsV1,
@@ -142,6 +177,101 @@ async function packagedAccountContext(
     worker,
   };
 }
+
+test("downloads typed MHTML with the canonical extension", async ({ browserName }, testInfo) => {
+  expect(browserName).toBe("chromium");
+  const client = await packagedAccountContext(testInfo, "mhtml-download-metadata");
+  const temporaryName = `${crypto.randomUUID()}.mhtml.tmp`;
+  const archive = "MIME-Version: 1.0\r\nContent-Type: multipart/related\r\n\r\nAWSM fixture";
+  try {
+    await client.worker.evaluate(
+      async ({ name, contents }) => {
+        const root = await navigator.storage.getDirectory();
+        const directory = await root.getDirectoryHandle("awsm-artifact-downloads", {
+          create: true,
+        });
+        const handle = await directory.getFileHandle(name, { create: true });
+        const writable = await handle.createWritable();
+        await writable.write(contents);
+        await writable.close();
+      },
+      { name: temporaryName, contents: archive },
+    );
+    await client.worker.evaluate(async () => {
+      await chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: ["BLOBS"],
+        justification: "Verify the production MHTML download boundary.",
+      });
+    });
+    const prepared = await client.popup.evaluate(async (name) => {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const response: unknown = await chrome.runtime
+          .sendMessage({ type: "awsm:prepare-mhtml-download", temporaryName: name })
+          .catch(() => undefined);
+        if (
+          typeof response === "object" &&
+          response !== null &&
+          "url" in response &&
+          typeof response.url === "string"
+        )
+          return response.url;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error("MHTML download preparation failed.");
+    }, temporaryName);
+    const downloadDirectory = testInfo.outputPath("mhtml-download");
+    await mkdir(downloadDirectory, { recursive: true });
+    const cdp = await client.context.newCDPSession(client.popup);
+    await cdp.send("Browser.setDownloadBehavior", {
+      behavior: "allow",
+      downloadPath: downloadDirectory,
+      eventsEnabled: true,
+    });
+    await client.worker.evaluate(
+      async ({ url, filename }) => {
+        const listener = (
+          item: { readonly url: string },
+          suggest: (suggestion?: {
+            readonly filename: string;
+            readonly conflictAction: "uniquify";
+          }) => void,
+        ) => {
+          if (item.url === url) {
+            suggest({ filename, conflictAction: "uniquify" });
+            chrome.downloads.onDeterminingFilename.removeListener(listener);
+          } else suggest();
+        };
+        chrome.downloads.onDeterminingFilename.addListener(listener);
+        await chrome.downloads.download({ url, filename, saveAs: false });
+      },
+      { url: prepared, filename: "awsm-test-mhtml.mhtml" },
+    );
+    await expect.poll(async () => readdir(downloadDirectory)).toContain("awsm-test-mhtml.mhtml");
+    const record = await client.popup.evaluate(async () => {
+      const items = await chrome.downloads.search({ limit: 1, orderBy: ["-startTime"] });
+      return items[0] === undefined ? undefined : { mime: items[0].mime };
+    });
+    expect(record?.mime).toBe("multipart/related");
+    expect(await readFile(resolve(downloadDirectory, "awsm-test-mhtml.mhtml"), "utf8")).toBe(
+      archive,
+    );
+  } finally {
+    await client.worker.evaluate(async (name) => {
+      await chrome.runtime.sendMessage({
+        type: "awsm:release-mhtml-download",
+        temporaryName: name,
+      });
+      const root = await navigator.storage.getDirectory();
+      const directory = await root.getDirectoryHandle("awsm-artifact-downloads", {
+        create: true,
+      });
+      await directory.removeEntry(name).catch(() => undefined);
+    }, temporaryName);
+    await client.worker.evaluate(() => chrome.offscreen.closeDocument()).catch(() => undefined);
+    await client.context.close();
+  }
+});
 
 async function toolbarPopup(
   client: Awaited<ReturnType<typeof packagedAccountContext>>,
@@ -1208,9 +1338,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         vaultSyncState: "AuthenticationRequired",
       });
       await firstLibrary.getByRole("button", { name: "Settings" }).click();
-      await expect(
-        firstLibrary.getByText("Synchronization · AuthenticationRequired"),
-      ).toBeVisible();
+      await expect(firstLibrary.getByText("Sign-in required", { exact: true })).toBeVisible();
       await firstLibrary.screenshot({
         path: testInfo.outputPath("journey-vacuum-authentication-required.png"),
       });
@@ -1299,7 +1427,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         await appRequest(firstLibrary, { type: "GetState" });
       expect((await synchronizationJob(firstLibrary))?.jobId).toBe(stableJobId);
       await firstLibrary.getByRole("button", { name: "Settings" }).click();
-      await expect(firstLibrary.getByText("Synchronization · UpToDate")).toBeVisible();
+      await expect(firstLibrary.getByText("Up to date", { exact: true })).toBeVisible();
       await firstLibrary.screenshot({
         path: testInfo.outputPath("journey-vacuum-up-to-date.png"),
       });
@@ -1327,7 +1455,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       const settings = staleLibrary.getByRole("dialog", {
         name: "Settings",
       });
-      await expect(settings.getByText("Synchronization · Offline")).toBeVisible();
+      await expect(settings.getByText("Offline", { exact: true })).toBeVisible();
       await expect(settings.getByRole("button", { name: "Retry synchronization" })).toBeVisible();
       await staleLibrary.screenshot({
         path: testInfo.outputPath("journey-offline-retry.png"),
@@ -1379,7 +1507,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       await staleLibrary.screenshot({
         path: testInfo.outputPath("journey-stale-conflict.png"),
       });
-      await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+      await settings.getByRole("button", { name: "Close Settings", exact: true }).click();
       await staleLibrary.getByRole("button", { name: "Resolve stale Vault" }).click();
       const discard = staleLibrary.getByRole("dialog", {
         name: "Resolve stale synchronized Vault",
@@ -2158,8 +2286,12 @@ test("renders Account onboarding, signup, progress, success, and settings states
     await expect(
       client.popup.getByRole("heading", { name: "Choose how AWSM starts" }),
     ).toBeVisible();
-    const localOnly = client.popup.getByRole("button", { name: "Continue without sync" });
-    const synchronization = client.popup.getByRole("link", { name: "Set up synchronization" });
+    const localOnly = client.popup.getByRole("button", {
+      name: "Continue without sync",
+    });
+    const synchronization = client.popup.getByRole("link", {
+      name: "Set up synchronization",
+    });
     await expect(localOnly).toHaveClass(/\bprimary\b/u);
     await expect(synchronization).not.toHaveClass(/\bprimary\b/u);
     expect(
@@ -2175,6 +2307,11 @@ test("renders Account onboarding, signup, progress, success, and settings states
       path: testInfo.outputPath("account-server-choice-desktop.png"),
     });
     await client.popup.setViewportSize({ width: 340, height: 700 });
+    const [localOnlyBox, synchronizationBox] = await Promise.all([
+      localOnly.boundingBox(),
+      synchronization.boundingBox(),
+    ]);
+    expect(localOnlyBox?.width).toBe(synchronizationBox?.width);
     await client.popup.screenshot({
       path: testInfo.outputPath("account-server-choice-narrow.png"),
     });
@@ -2230,6 +2367,7 @@ test("renders Account onboarding, signup, progress, success, and settings states
       },
     );
     await expect(signup.locator("#signup-form")).toBeHidden();
+    await expect.poll(() => signup.evaluate(() => window.scrollY)).toBe(0);
     await signup.screenshot({
       path: testInfo.outputPath("account-signup-success.png"),
     });
@@ -2238,11 +2376,19 @@ test("renders Account onboarding, signup, progress, success, and settings states
     await library.goto(`chrome-extension://${client.extensionId}/library.html`);
     await expect(library.getByRole("button", { name: "Settings" })).toBeVisible();
     await library.getByRole("button", { name: "Settings" }).click();
-    await expect(library.getByRole("dialog", { name: "Settings" })).toBeVisible();
+    const settingsDialog = library.getByRole("dialog", { name: "Settings" });
+    await expect(settingsDialog).toBeVisible();
+    await expect(
+      settingsDialog.getByRole("button", { name: "Close Settings", exact: true }),
+    ).toBeVisible();
+    await expect(settingsDialog.getByText("Up to date", { exact: true })).toBeVisible();
     await library.screenshot({
       path: testInfo.outputPath("account-settings.png"),
     });
     await library.setViewportSize({ width: 360, height: 760 });
+    expect(await settingsDialog.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(
+      true,
+    );
     await library.screenshot({
       path: testInfo.outputPath("account-settings-narrow.png"),
     });
@@ -2259,6 +2405,9 @@ test("renders Account onboarding, signup, progress, success, and settings states
       name: "Reset this device?",
     });
     await expect(resetDialog).toBeVisible();
+    await expect(
+      resetDialog.getByRole("button", { name: "Close Reset this device?" }),
+    ).toBeVisible();
     await library.screenshot({
       path: testInfo.outputPath("account-reset-narrow.png"),
     });
@@ -2341,18 +2490,26 @@ test("offers in-tab sign in when signup cannot create the Account", async ({
     await expect(signup.getByRole("button", { name: "Create Account" })).toBeHidden();
     await expect(signup.getByRole("button", { name: "Sign in instead" })).toBeVisible();
     await signup.setViewportSize({ width: 720, height: 900 });
-    await signup.screenshot({ path: testInfo.outputPath("existing-account-wide.png") });
+    await signup.screenshot({
+      path: testInfo.outputPath("existing-account-wide.png"),
+    });
     await signup.setViewportSize({ width: 360, height: 760 });
-    await signup.screenshot({ path: testInfo.outputPath("existing-account-narrow.png") });
+    await signup.screenshot({
+      path: testInfo.outputPath("existing-account-narrow.png"),
+    });
 
     await signup.getByRole("button", { name: "Sign in instead" }).click();
     await expect(signup.getByRole("heading", { name: "Sign in" })).toBeVisible();
     await expect(signup.getByRole("textbox", { name: "Email" })).toHaveValue(email);
     await expect(signup.getByLabel("Confirm password")).toBeHidden();
     await signup.setViewportSize({ width: 720, height: 900 });
-    await signup.screenshot({ path: testInfo.outputPath("existing-account-signin-wide.png") });
+    await signup.screenshot({
+      path: testInfo.outputPath("existing-account-signin-wide.png"),
+    });
     await signup.setViewportSize({ width: 360, height: 760 });
-    await signup.screenshot({ path: testInfo.outputPath("existing-account-signin-narrow.png") });
+    await signup.screenshot({
+      path: testInfo.outputPath("existing-account-signin-narrow.png"),
+    });
     await signup.getByLabel("Password", { exact: true }).fill(password);
     await signup.getByRole("button", { name: "Sign in", exact: true }).click();
     await expect.poll(() => signup.isClosed()).toBe(true);
@@ -2761,7 +2918,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await library.getByRole("tab", { name: "Account & sync" }).click();
     await library
       .getByRole("dialog", { name: "Settings" })
-      .getByRole("button", { name: "Cancel" })
+      .getByRole("button", { name: "Close Settings" })
       .click();
     await library.locator(".card").click();
     const firstSelection = library.getByRole("checkbox", { name: /Select capture from/u }).first();
@@ -3041,7 +3198,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     const primaryArtifact = library
       .locator(".artifact-row")
       .filter({ has: library.locator("strong", { hasText: /^MHTML$/u }) });
+    const mhtmlDownloadStarted = library.waitForEvent("download");
     await primaryArtifact.getByRole("button", { name: "Download" }).click();
+    const mhtmlDownload = await mhtmlDownloadStarted;
     await expect
       .poll(async () =>
         library.evaluate(async () => {
@@ -3066,12 +3225,12 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await expect(library.getByRole("status")).toContainText(
       /Downloaded awsm-[0-9a-f]{8}-mhtml\.mhtml/u,
     );
-    const mhtmlPath = await library.evaluate(async () => {
+    const mhtmlDownloadRecord = await library.evaluate(async () => {
       const extensionApi = (
         globalThis as unknown as {
           chrome: {
             downloads: {
-              search(query: unknown): Promise<readonly { filename?: string }[]>;
+              search(query: unknown): Promise<readonly { filename?: string; mime?: string }[]>;
             };
           };
         }
@@ -3081,9 +3240,12 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
         orderBy: ["-startTime"],
         state: "complete",
       });
-      return downloads[0]?.filename;
+      return downloads[0];
     });
-    if (mhtmlPath === undefined) throw new Error("The MHTML download is unavailable.");
+    expect(mhtmlDownload.suggestedFilename()).toMatch(/awsm-[0-9a-f]{8}-mhtml\.mhtml$/u);
+    expect(mhtmlDownloadRecord?.mime).toBe("multipart/related");
+    const mhtmlPath = await mhtmlDownload.path();
+    if (mhtmlPath === null) throw new Error("The MHTML download is unavailable.");
     const mhtml = await readFile(mhtmlPath, "utf8");
     expect(mhtml).toContain("MIME-Version: 1.0");
     expect(mhtml).toContain("AWSM tall fixture");
@@ -4075,6 +4237,14 @@ test("renders export-first stale Replica discard at desktop and narrow widths", 
       }),
     ).toBeEnabled();
     await library.setViewportSize({ width: 390, height: 844 });
+    const discardAction = dialog.getByRole("button", {
+      name: "Discard stale local Replica and use server data",
+    });
+    await discardAction.scrollIntoViewIfNeeded();
+    const discardBox = await discardAction.boundingBox();
+    expect(
+      discardBox === null ? Number.POSITIVE_INFINITY : discardBox.y + discardBox.height,
+    ).toBeLessThanOrEqual(844);
     await library.screenshot({
       path: testInfo.outputPath("stale-discard-narrow-confirmed.png"),
     });

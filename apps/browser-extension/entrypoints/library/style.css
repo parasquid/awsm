@@ -18,6 +18,7 @@
   --success: #15803d;
   --warning: #b45309;
   --danger: #b42318;
+  --shadow-sm: 0 1px 2px rgb(23 26 31 / 10%);
 }
 * {
   box-sizing: border-box;
@@ -206,6 +207,23 @@ main {
   border-radius: 12px;
   background: var(--surface);
   padding: 18px;
+}
+.notice {
+  border-left: 4px solid #76808d;
+  padding: 12px 14px;
+  background: var(--surface-subtle);
+  overflow-wrap: anywhere;
+}
+.notice.error {
+  border-left-color: var(--danger);
+}
+.notice.warning {
+  border-left-color: var(--warning);
+  background: #fffaf2;
+}
+.notice.success {
+  border-left-color: var(--success);
+  background: #f4fbf6;
 }
 .library-card {
   overflow: hidden;
@@ -403,6 +421,7 @@ main {
 .actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   margin: 0 0 20px;
 }
@@ -507,12 +526,35 @@ main {
   box-sizing: border-box;
   width: min(660px, calc(100% - 20px));
   max-height: calc(100% - 48px);
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 20px;
+  padding: 0;
   color: inherit;
   background: var(--surface);
   box-shadow: 0 24px 64px rgb(23 26 31 / 20%);
+}
+.dialog-header {
+  position: sticky;
+  top: -20px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: -20px -20px 4px;
+  border-bottom: 1px solid var(--border);
+  padding: 16px 20px;
+  background: rgb(255 255 255 / 96%);
+  backdrop-filter: blur(12px);
+}
+.dialog-header h2 {
+  margin: 0;
+}
+.dialog-close {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 7px 11px;
 }
 .settings-vault {
   display: grid;
@@ -536,20 +578,20 @@ main {
 .settings-tab {
   border-color: transparent;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--muted);
   box-shadow: none;
 }
 
 .settings-tab[aria-selected="true"] {
   border-color: var(--border);
   background: var(--surface);
-  color: var(--text);
+  color: #171a1f;
   box-shadow: var(--shadow-sm);
 }
 
 .settings-panel {
   display: grid;
-  gap: 1rem;
+  gap: 16px;
 }
 
 .settings-panel[hidden] {
@@ -561,7 +603,47 @@ main {
   font-weight: 720;
 }
 .settings-actions {
-  margin-bottom: 26px;
+  margin-bottom: 12px;
+}
+.server-actions {
+  justify-content: flex-end;
+}
+.server-actions > button:last-child {
+  border-color: var(--primary);
+  color: #fff;
+  background: var(--primary);
+}
+.server-actions > button:last-child:hover:not(:disabled) {
+  border-color: var(--primary-hover);
+  background: var(--primary-hover);
+}
+.account-summary {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-subtle);
+}
+.account-summary__row {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.34fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 11px 13px;
+}
+.account-summary__row + .account-summary__row {
+  border-top: 1px solid var(--border);
+}
+.account-summary dt {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 650;
+}
+.account-summary dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 .reset-device {
   margin-top: 12px;
@@ -577,7 +659,7 @@ main {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
-  gap: 8px;
+  gap: 10px;
 }
 .picker::backdrop {
   background: rgb(23 33 27 / 45%);
@@ -647,7 +729,7 @@ input:disabled {
     grid-template-columns: 1fr;
   }
   .artifact-row__actions button {
-    flex: 1 1 auto;
+    flex: 1 1 10rem;
   }
 }
 .remove {
@@ -679,8 +761,12 @@ input {
   font: inherit;
 }
 .warning-confirmation input {
-  margin: 0.3em 0 0;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 3px 0 0;
   padding: 0;
+  accent-color: var(--primary);
 }
 .library-title-edit input {
   field-sizing: content;
@@ -734,7 +820,29 @@ input {
   border: 0;
 }
 .picker form {
+  min-width: 0;
   max-width: none;
+  padding: 20px;
+}
+.picker form > .actions:last-child {
+  position: sticky;
+  bottom: -20px;
+  z-index: 2;
+  justify-content: flex-end;
+  margin: 4px -20px -20px;
+  border-top: 1px solid var(--border);
+  padding: 16px 20px;
+  background: rgb(255 255 255 / 96%);
+  backdrop-filter: blur(12px);
+}
+.picker form > .actions:last-child > button:last-child:not(.danger-action) {
+  border-color: var(--primary);
+  color: #fff;
+  background: var(--primary);
+}
+.picker form > .actions:last-child > button:last-child:not(.danger-action):hover:not(:disabled) {
+  border-color: var(--primary-hover);
+  background: var(--primary-hover);
 }
 .snackbar button {
   border-color: #fff;
@@ -759,5 +867,28 @@ input {
   .library-title-edit input {
     width: auto;
     flex: 1 1 auto;
+  }
+  .picker {
+    width: calc(100% - 28px);
+    max-height: calc(100% - 32px);
+  }
+  .account-summary__row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .picker form > .actions:last-child {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .picker form > .actions:last-child > button,
+  .picker form > .actions:last-child > a {
+    width: 100%;
+  }
+  .server-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .server-actions > button {
+    width: 100%;
   }
 }

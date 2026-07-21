@@ -151,11 +151,17 @@ a.primary {
   text-decoration: none;
 }
 
+.onboarding-actions > button,
+.onboarding-actions > a {
+  width: 100%;
+}
+
 .muted {
-  margin-top: -4px;
+  margin: -4px 0 0;
   color: var(--muted);
   font-size: 13px;
   text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .self-hosted {

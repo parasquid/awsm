@@ -1,4 +1,5 @@
 import { type Browser, browser } from "wxt/browser";
+import { mhtmlDownloadBlob } from "../../src/hosts/chrome/mhtml-download";
 import type { ScreenshotPlan, ScreenshotTile } from "../../src/hosts/chrome/screenshot";
 
 const SCREENSHOT_WEBP_QUALITY = 0.72;
@@ -82,7 +83,7 @@ async function mhtmlDownload(
   const directory = await root.getDirectoryHandle("awsm-artifact-downloads");
   const handle = await directory.getFileHandle(request.temporaryName);
   if (previous !== undefined) URL.revokeObjectURL(previous);
-  const url = URL.createObjectURL(await handle.getFile());
+  const url = URL.createObjectURL(mhtmlDownloadBlob(await handle.getFile()));
   activeMhtmlUrls.set(request.temporaryName, url);
   return { url };
 }

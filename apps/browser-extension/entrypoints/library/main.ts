@@ -92,6 +92,25 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+const synchronizationLabels = {
+  LocalOnly: "Local only",
+  Enrolling: "Preparing synchronization",
+  Uploading: "Uploading",
+  Downloading: "Downloading",
+  UpToDate: "Up to date",
+  Offline: "Offline",
+  AuthenticationRequired: "Sign-in required",
+  Conflict: "Needs attention",
+  Failed: "Failed",
+  SetupRequired: "Setup required",
+} as const satisfies Record<AppState["account"]["vaultSyncState"], string>;
+
+function summaryRow(term: string, value: string): HTMLDivElement {
+  const row = element("div", undefined, "account-summary__row");
+  row.append(element("dt", term), element("dd", value));
+  return row;
+}
+
 function installSettingsTabs(form: HTMLFormElement): void {
   const headings = [...form.querySelectorAll(":scope > h3")];
   const accountHeading = headings.find((heading) => heading.textContent === "Account & sync");
@@ -104,8 +123,8 @@ function installSettingsTabs(form: HTMLFormElement): void {
   accountPanel.id = "settings-account-panel";
   vaultPanel.setAttribute("role", "tabpanel");
   accountPanel.setAttribute("role", "tabpanel");
-  for (const child of [...form.children].slice(0, accountStart)) vaultPanel.append(child);
-  for (const child of [...form.children]) accountPanel.append(child);
+  for (const child of [...form.children].slice(1, accountStart)) vaultPanel.append(child);
+  for (const child of [...form.children].slice(1)) accountPanel.append(child);
   accountPanel.hidden = true;
 
   const tabs = element("div", undefined, "settings-tabs");
@@ -224,11 +243,13 @@ function showAccountSettings(): void {
     vaultActions.append(create, importVault, exportVault);
     form.append(vaultSummary, vaultActions, element("h3", "Account & sync"));
   }
-  form.append(
-    element("p", `Server · ${server}`, "muted"),
-    element("p", `Account · ${account.email ?? "Not signed in"}`, "muted"),
-    element("p", `Synchronization · ${account.vaultSyncState}`, "muted"),
+  const accountSummary = element("dl", undefined, "account-summary");
+  accountSummary.append(
+    summaryRow("Server", server),
+    summaryRow("Account", account.email ?? "Not signed in"),
+    summaryRow("Synchronization", synchronizationLabels[account.vaultSyncState]),
   );
+  form.append(accountSummary);
   const serverSwitch = state.serverSwitch;
   if (serverSwitch !== undefined) {
     if (serverSwitch.state === "Conflict") form.append(element("h3", "Server switch conflict"));
@@ -361,9 +382,6 @@ function showAccountSettings(): void {
       });
       form.append(keepSource);
     }
-    form.append(element("button", "Close"));
-    (form.lastElementChild as HTMLButtonElement).type = "button";
-    form.lastElementChild?.addEventListener("click", () => dialog.close());
     installSettingsTabs(form);
     dialog.addEventListener("close", () => accountSettings.focus(), {
       once: true,
@@ -455,16 +473,13 @@ function showAccountSettings(): void {
     );
     form.append(warning);
   }
-  const controls = element("div", undefined, "actions");
+  const controls = element("div", undefined, "actions server-actions");
   const save = element(
     "button",
     account.configuration.mode === "Configured" ? "Change server" : "Connect server",
   );
   save.type = "submit";
-  const cancel = element("button", "Cancel");
-  cancel.type = "button";
-  cancel.addEventListener("click", () => dialog.close());
-  controls.append(save, cancel);
+  controls.append(save);
   form.append(controls);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -573,7 +588,8 @@ function showResetDeviceDialog(returnFocus: HTMLElement): void {
   const cancel = element("button", "Cancel");
   cancel.type = "button";
   cancel.addEventListener("click", () => dialog.close());
-  controls.append(reset, cancel);
+  controls.append(cancel, reset);
+  const closeButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-close]");
   form.append(label, status, controls);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -581,6 +597,7 @@ function showResetDeviceDialog(returnFocus: HTMLElement): void {
     confirmation.disabled = true;
     reset.disabled = true;
     cancel.disabled = true;
+    if (closeButton !== null) closeButton.disabled = true;
     status.textContent = "Deleting local AWSM data…";
     void sendRequest<null>({ type: "ResetLocalDevice" }).then(
       () => {
@@ -590,6 +607,7 @@ function showResetDeviceDialog(returnFocus: HTMLElement): void {
       (error) => {
         confirmation.disabled = false;
         cancel.disabled = false;
+        if (closeButton !== null) closeButton.disabled = false;
         reset.disabled = confirmation.value !== "RESET";
         status.setAttribute("role", "alert");
         status.textContent =
@@ -650,7 +668,7 @@ async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
   const cancel = element("button", "Cancel");
   cancel.type = "button";
   cancel.addEventListener("click", () => dialog.close());
-  controls.append(submit, cancel);
+  controls.append(cancel, submit);
   form.append(label, regenerate, controls);
   form.onsubmit = (event) => {
     event.preventDefault();
@@ -682,7 +700,7 @@ async function showCreateVaultDialog(restoreFocus: HTMLElement): Promise<void> {
 
 function showImportVaultDialog(restoreFocus: HTMLElement): void {
   const { dialog, form } = dialogShell("Import encrypted Vault");
-  const title = form.querySelector("h2");
+  const title = form.querySelector<HTMLElement>(".dialog-header");
   if (title === null) throw new Error("Import dialog title is missing.");
   const host = importHost;
   let jobId: string | undefined;
@@ -724,7 +742,7 @@ function showImportVaultDialog(restoreFocus: HTMLElement): void {
     const cancelButton = element("button", "Cancel Import");
     cancelButton.type = "button";
     cancelButton.addEventListener("click", () => void cancel().then(close));
-    actions.append(submit, cancelButton);
+    actions.append(cancelButton, submit);
     form.replaceChildren(title, passphraseLabel, help, error, actions);
     form.onsubmit = (event) => {
       event.preventDefault();
@@ -820,7 +838,7 @@ function showImportVaultDialog(restoreFocus: HTMLElement): void {
   const dismiss = element("button", "Cancel");
   dismiss.type = "button";
   dismiss.addEventListener("click", close);
-  actions.append(begin, dismiss);
+  actions.append(dismiss, begin);
   form.append(intro, fileLabel, feedback, actions);
   form.onsubmit = (event) => {
     event.preventDefault();
@@ -966,7 +984,7 @@ function showExportVaultDialog(restoreFocus: HTMLElement): void {
   const cancel = element("button", "Cancel");
   cancel.type = "button";
   cancel.addEventListener("click", () => dialog.close());
-  actions.append(submit, cancel);
+  actions.append(cancel, submit);
   form.append(passphraseLabel, help, confirmationLabel, feedback, actions);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1076,7 +1094,7 @@ function showStaleReplicaDiscardDialog(restoreFocus: HTMLElement): void {
   const cancel = element("button", "Cancel");
   cancel.type = "button";
   cancel.addEventListener("click", () => dialog.close());
-  actions.append(resolve, cancel);
+  actions.append(cancel, resolve);
   let exported = false;
   let activating = false;
   const updateResolve = (): void => {
@@ -1152,6 +1170,8 @@ function showStaleReplicaDiscardDialog(restoreFocus: HTMLElement): void {
     activating = true;
     resolve.disabled = true;
     cancel.disabled = true;
+    const closeButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-close]");
+    if (closeButton !== null) closeButton.disabled = true;
     exportButton.disabled = true;
     skipCheckbox.disabled = true;
     overwriteCheckbox.disabled = true;
@@ -1179,6 +1199,7 @@ function showStaleReplicaDiscardDialog(restoreFocus: HTMLElement): void {
         await minimumBusyDisplay;
         activating = false;
         cancel.disabled = false;
+        if (closeButton !== null) closeButton.disabled = false;
         resolve.textContent = "Discard stale local Replica and use server data";
         updateResolve();
         feedback.className = "notice error";
@@ -1492,8 +1513,15 @@ function dialogShell(title: string): {
   form.method = "dialog";
   const heading = element("h2", title);
   heading.id = `dialog-title-${crypto.randomUUID()}`;
+  const close = element("button", "Close", "dialog-close");
+  close.type = "button";
+  close.dataset.dialogClose = "true";
+  close.setAttribute("aria-label", `Close ${title}`);
+  close.addEventListener("click", () => dialog.close());
+  const header = element("div", undefined, "dialog-header");
+  header.append(heading, close);
   dialog.setAttribute("aria-labelledby", heading.id);
-  form.append(heading);
+  form.append(header);
   dialog.append(form);
   document.body.append(dialog);
   dialog.addEventListener("close", () => dialog.remove(), { once: true });
@@ -1541,7 +1569,7 @@ function showMergePicker(destination: LibraryPageGroupMessage): void {
   const cancel = element("button", "Cancel");
   cancel.type = "button";
   cancel.addEventListener("click", () => dialog.close());
-  actions.append(submit, cancel);
+  actions.append(cancel, submit);
   form.append(actions);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1590,7 +1618,7 @@ function showMovePicker(bundleIds: readonly string[], sourceCollectionId: string
   const cancel = element("button", "Cancel");
   cancel.type = "button";
   cancel.addEventListener("click", () => dialog.close());
-  actions.append(submit, cancel);
+  actions.append(cancel, submit);
   form.append(actions);
   form.addEventListener("submit", (event) => {
     event.preventDefault();

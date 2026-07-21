@@ -5,6 +5,7 @@ import {
   exportDownloadFailure,
   waitForChromeDownload,
 } from "./download-waiter";
+import { mhtmlDownloadFilenameSuggestion } from "./mhtml-download";
 
 const DIRECTORY = "awsm-artifact-downloads";
 
@@ -80,14 +81,24 @@ export class ChromeMhtmlDownloadHost {
         });
       }
       let downloadId: number | undefined;
+      let removeFilenameListener: (() => void) | undefined;
       try {
         const prepared: unknown = await browser.runtime.sendMessage({
           type: "awsm:prepare-mhtml-download",
           temporaryName: input.temporaryName,
         });
         signal.throwIfAborted();
+        const url = preparedUrl(prepared);
+        const determineFilename: Parameters<
+          typeof browser.downloads.onDeterminingFilename.addListener
+        >[0] = (item, suggest) => {
+          suggest(mhtmlDownloadFilenameSuggestion(item.url, url, input.filename));
+        };
+        browser.downloads.onDeterminingFilename.addListener(determineFilename);
+        removeFilenameListener = () =>
+          browser.downloads.onDeterminingFilename.removeListener(determineFilename);
         downloadId = await browser.downloads.download({
-          url: preparedUrl(prepared),
+          url,
           filename: input.filename,
           saveAs: false,
         });
@@ -98,6 +109,7 @@ export class ChromeMhtmlDownloadHost {
         if (error instanceof DOMException && error.name === "AbortError") throw error;
         throw downloadError(exportDownloadFailure(error));
       } finally {
+        removeFilenameListener?.();
         await browser.runtime
           .sendMessage({
             type: "awsm:release-mhtml-download",

@@ -209,11 +209,13 @@ function render(state: AppState, transientError?: string): void {
       event.preventDefault();
       void browser.tabs.create({ url: setup.href });
     });
-    content.append(
+    const actions = element("div", undefined, "actions onboarding-actions");
+    actions.append(
       localOnly,
       setup,
       element("p", `Hosted service · ${view.hostedOrigin}`, "muted"),
     );
+    content.append(actions);
   } else if (view.screen === "login") {
     content.append(element("p", `Sign in to synchronize through ${view.serverOrigin}.`));
     const login = element("form");

@@ -29,7 +29,7 @@ body {
 }
 
 main {
-  width: min(44rem, calc(100% - 32px));
+  width: min(36rem, calc(100% - 32px));
   margin: 48px auto;
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -114,6 +114,15 @@ input[type="url"] {
 fieldset label {
   grid-template-columns: auto 1fr;
   align-items: start;
+  column-gap: 10px;
+}
+
+.acknowledgement input,
+fieldset input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  margin: 3px 0 0;
+  accent-color: var(--primary);
 }
 
 button {
@@ -147,6 +156,20 @@ button:disabled {
   border-radius: 8px;
   padding: 12px;
   background: var(--surface-subtle);
+  overflow-wrap: anywhere;
+}
+
+#status[data-tone="success"] {
+  border-left-color: #15803d;
+}
+
+#status[data-tone="error"] {
+  border-left-color: var(--danger);
+  background: #fff8f6;
+}
+
+input[type="email"] {
+  text-overflow: ellipsis;
 }
 
 :focus-visible {

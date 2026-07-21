@@ -32,8 +32,13 @@ const accountSubmit = required<HTMLButtonElement>("#account-submit");
 const signInInstead = required<HTMLButtonElement>("#signin-instead");
 let accountMode: "signup" | "login" | "completion" = "signup";
 
-function showStatus(message: string, role: "status" | "alert" = "status"): void {
+function showStatus(
+  message: string,
+  role: "status" | "alert" = "status",
+  tone: "neutral" | "success" | "error" = role === "alert" ? "error" : "neutral",
+): void {
   status.setAttribute("role", role);
+  status.dataset.tone = tone;
   status.textContent = message;
 }
 
@@ -207,8 +212,9 @@ form.addEventListener("submit", (event) => {
       (state) => {
         if (state.account.vaultSyncState === "SetupRequired") void initialize();
         else {
-          showStatus("Signed in. Returning to your page…");
+          showStatus("Signed in. Returning to your page…", "status", "success");
           form.hidden = true;
+          window.scrollTo(0, 0);
           window.setTimeout(() => window.close(), 750);
         }
       },
@@ -247,8 +253,11 @@ form.addEventListener("submit", (event) => {
         accountMode === "completion"
           ? "Synchronization setup complete. Returning to your page…"
           : "Account created. Returning to your page…",
+        "status",
+        "success",
       );
       form.hidden = true;
+      window.scrollTo(0, 0);
       window.setTimeout(() => window.close(), 750);
     },
     (cause: unknown) => {
