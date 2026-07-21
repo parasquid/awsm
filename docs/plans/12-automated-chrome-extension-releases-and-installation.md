@@ -293,6 +293,8 @@ Add a `publish` job with these fixed properties:
 - `if: github.event_name == 'push'`;
 - `contents: write` and no other elevated permission;
 - the same ref-scoped non-cancelling concurrency behavior;
+- check out the tagged repository with full history so GitHub CLI can generate notes and enforce the
+  no-empty-release guard;
 - download the named build artifact into `dist/`; and
 - re-run `sha256sum --check` and the ZIP/root-manifest validations before publication.
 
