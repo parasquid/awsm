@@ -13,23 +13,6 @@ numbered plan and reconciliation with the owning specifications.
 
 ---
 
-## Automated Chrome Extension Builds
-
-**Status:** Candidate
-
-Add a GitHub Actions workflow that runs on pushes to `main` only when the browser extension or its
-workspace build inputs change. The workflow must install the pinned dependencies, run the extension
-quality gates and release verifier, create the Chrome ZIP with `corepack pnpm zip`, and publish it
-with a checksum and source commit identifier.
-
-Publish the ZIP as an asset on a clearly labeled rolling pre-release so the README can use one
-stable public download link without committing generated output. Replacing that rolling asset must
-happen only after all required checks pass. Document that the artifact is a pre-release,
-developer-mode installation with manual updates; Chrome Web Store signing, review, and automatic
-updates remain separate future distribution work.
-
----
-
 ## Redis-Backed Ephemeral Coordination
 
 **Status:** Candidate

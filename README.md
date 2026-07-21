@@ -56,29 +56,21 @@ work.
 # Install the Chrome Extension
 
 AWSM is pre-release and is not available from the Chrome Web Store. Install it as an unpacked
-developer-mode extension. Use a GitHub Release archive when one is published, or build the extension
-from source.
+developer-mode extension. Release notes provide a brief installation procedure alongside a Chrome
+ZIP and its SHA-256 checksum.
 
 ## From a GitHub Release
 
-1. Download the Chrome extension ZIP from the applicable [GitHub Release](../../releases).
-2. Extract the ZIP into a permanent directory.
-3. Open `chrome://extensions` in Chrome.
-4. Enable **Developer mode**.
-5. Select **Load unpacked**.
-6. Choose the extracted directory that contains `manifest.json`.
-7. Optionally pin AWSM from Chrome's Extensions menu.
-
-Keep the extracted directory in place because Chrome loads the extension from that directory.
-Updates are manual during pre-release: download and extract the newer build, then reload it from
-`chrome://extensions`. Create an encrypted Complete Export before replacing an installation.
+Follow the [full Chrome extension installation guide](docs/guides/install-chrome-extension.md) to
+download the correct GitHub Release assets, verify the checksum, load the unpacked extension, and
+upgrade or troubleshoot an installation safely.
 
 ## Build From Source
 
-The development environment requires Node.js and Corepack. From a clone of this repository, run:
+The development environment requires Node.js 22 and Corepack. From a clone of this repository, run:
 
 ```bash
-corepack pnpm install
+corepack pnpm install --frozen-lockfile
 corepack pnpm build
 ```
 
@@ -98,9 +90,17 @@ After installation, open the AWSM toolbar icon and choose a compatible self-host
 Server or continue without synchronization. The hosted service is not currently advertised as an
 available public service.
 
-Chrome may display warnings for developer-mode extensions. Moving or deleting the unpacked
-directory can disable the installation, and installing the same build from a different directory
-may give it a different extension identity and separate local browser storage.
+## Maintainer Release Procedure
+
+1. Update `version` in `apps/browser-extension/package.json`.
+2. Commit and push that change to `main`.
+3. Create the `v<version>` tag at that commit.
+4. Push the tag.
+5. Wait for the Chrome Extension Release workflow to validate the build and publish the Release.
+
+Versions ending in `-alpha.N`, `-beta.N`, or `-rc.N` create prereleases. Plain versions create
+stable Releases. Failed validation creates no Release. Before retrying with changed code, handle the
+existing tag explicitly; the workflow never moves, replaces, or overwrites a tag or Release.
 
 ---
 
