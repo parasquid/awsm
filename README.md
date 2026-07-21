@@ -1,253 +1,228 @@
-# AWSM
+# AWSM — Archive What Should Matter
 
-> A local-first, zero-knowledge knowledge preservation platform.
+AWSM is a local-first webpage archival platform with optional zero-knowledge synchronization. It
+captures, stores, and presents an archive on the user's device; a Coordination Server is
+optional and receives encrypted data rather than plaintext archive content.
 
-**AWSM** stands for **Archive What Should Matter**.
+AWSM was created for the OpenAI Devpost hackathon from a concern with conventional clipping
+services: an archive should not become inaccessible because a provider shuts down, changes
+direction, or restricts access, and sensitive captures should not require giving a service provider
+plaintext content.
 
-The project domain is `awsm.foo`.
+The implementation is pre-release software. It is not currently available from the Chrome Web
+Store, and the hosted service is not advertised as a public service.
 
-## Overview
+## What works today
 
-AWSM is an extensible platform for capturing, preserving, organizing, and enriching digital knowledge while ensuring that user content remains private. The system is designed around a zero-knowledge architecture: all user content is encrypted before leaving trusted client devices, and the cloud service never has access to plaintext data.
+The Chrome extension currently supports:
 
-Unlike traditional web clipping or note-taking applications, AWSM is designed around immutable
-captures rather than editable documents. A web Capture is one immutable Bundle graph whose MHTML,
-full screenshot, thumbnail, normalized text, and structured content are independently encrypted
-Artifacts. This preserves the exact source while allowing bounded-memory storage, verification, and
-portable Complete Export and Import.
+- local-only setup with no Account or server;
+- webpage capture from active HTTP and HTTPS tabs;
+- immutable Captures containing MHTML, a full-page screenshot, a thumbnail, extracted text, and
+  structured content when each best-effort representation succeeds;
+- an encrypted local Vault backed by browser-local storage;
+- offline Library browsing, screenshot viewing, text and structure inspection, and MHTML download;
+- multiple local Vaults, Vault locking and renaming, Collections, deletion, restoration, and Vault
+  Vacuum;
+- passphrase-protected Complete Vault Export and Import; and
+- optional Account authentication and synchronization of an encrypted Vault Replica through a
+  compatible self-hosted Coordination Server.
 
-The browser extension can create a passphrase-protected Complete Vault Package and import that
-package into a fresh or populated local Workspace. Import validates the entire encrypted package,
-preserves authoritative Vault identity and history, provisions fresh device-local credentials, and
-adds the result as a locked Vault. Import is not Backup, Restore, merging, or synchronization.
+MHTML is preserved as the primary Capture Artifact and can be downloaded from the Library. AWSM
+does not render MHTML inside the Library. The full-page screenshot is previewed in the Capture detail
+view, while extracted text and structured content can be inspected there.
 
-The platform is intended to support not only web pages, but eventually any digital artifact, including PDFs, emails, images, documents, transcripts, and other content types.
+Search, AI-generated summaries, tags, embeddings, classifications, annotations, and folders are
+not implemented user-facing features. AWSM already preserves normalized text and document structure
+as architectural groundwork for future client-side search and derived Artifacts; it does not
+present those future capabilities as current behavior.
 
----
+## Quick start: local-only Chrome extension
 
-# Core Principles
+### Requirements
 
-## Local First
+- Chrome 116 or newer
+- Node.js 22
+- Corepack
 
-The client is the primary execution environment.
-
-All critical functionality—including capture, search, AI processing, projection materialization, and viewing—must continue to function without network connectivity.
-
-The cloud exists to synchronize data, not to enable the application.
-
-The Chrome extension can run local-only or connect to a user-selected compatible Coordination
-Server. An Account uses email/password authentication without email delivery, enrolls exactly one
-Vault through a client-created Account Encryption Key slot, and synchronizes the Complete encrypted
-Replica while retaining offline access through its device-local slot. The server stores opaque
-ciphertext and wrapped keys only. Polling is sufficient for convergence; Action Cable is advisory.
-When a local Replica is stale, AWSM offers a Complete Export, re-authors its current logical state as
-a fresh local-only Vault, and only then replaces the synchronized Vault with verified server data.
-An authenticated Vault can move between compatible Coordination Servers without signing out first:
-AWSM verifies the candidate Account and Root Key, publishes an empty candidate, safely unions
-same-Generation append-only history, fast-forwards only with cryptographic ancestry proof, and
-reports divergent Generations without overwriting either side.
-
-The implementation remains pre-release. Device signing/revocation, Account Recovery Keys, password
-change, quotas, shared object storage, billing, and production deployment hardening remain future
-work.
-
----
-
-# Install the Chrome Extension
-
-AWSM is pre-release and is not available from the Chrome Web Store. Install it as an unpacked
-developer-mode extension. Release notes provide a brief installation procedure alongside a Chrome
-ZIP and its SHA-256 checksum.
-
-## From a GitHub Release
-
-Follow the [full Chrome extension installation guide](docs/guides/install-chrome-extension.md) to
-download the correct GitHub Release assets, verify the checksum, load the unpacked extension, and
-upgrade or troubleshoot an installation safely.
-
-## Build From Source
-
-The development environment requires Node.js 22 and Corepack. From a clone of this repository, run:
+Clone the repository, install the pinned dependencies, and build the extension:
 
 ```bash
+git clone https://github.com/parasquid/awsm.git
+cd awsm
 corepack pnpm install --frozen-lockfile
 corepack pnpm build
 ```
 
-Then use **Load unpacked** in `chrome://extensions` and select:
+Load the build in Chrome:
 
-```text
-apps/browser-extension/.output/chrome-mv3
+1. Open `chrome://extensions`.
+2. Enable **Developer mode**.
+3. Select **Load unpacked**.
+4. Choose `apps/browser-extension/.output/chrome-mv3`.
+5. Pin AWSM from Chrome's Extensions menu.
+6. Open AWSM and select **Continue without sync**.
+7. Name and create a local Vault.
+
+AWSM is now ready to capture without an Account or Coordination Server. For installation from a
+[GitHub Release](https://github.com/parasquid/awsm/releases/latest), download the latest Chrome ZIP
+and its SHA-256 checksum. See the
+[Chrome extension installation guide](docs/guides/install-chrome-extension.md) for checksum
+verification, unpacked installation, upgrades, and troubleshooting.
+
+## Try a Capture
+
+No seeded sample data is required. AWSM creates its sample data by capturing a live HTTP or HTTPS
+page.
+
+1. Open a webpage in Chrome.
+2. Open the AWSM toolbar popup.
+3. Select **Archive this page**.
+4. Wait for the **Archived:** preview card.
+5. Open that card or select **Open library**.
+6. Open the Capture to view its full-page screenshot and Artifact list.
+7. Select **Inspect** for extracted text or structured content, or **Download** for MHTML.
+
+The Devpost demonstration uses this CNN article:
+
+<https://edition.cnn.com/2026/07/20/science/pompeii-survivors-docuseries>
+
+If that page is unavailable or does not capture reliably, use the equivalent Science News article:
+
+<https://www.sciencenews.org/article/pompeii-documentary-tom-hiddleston>
+
+These links are demonstration inputs, not repository fixtures, and may change independently of
+AWSM.
+
+### Verify offline behavior
+
+After a successful Capture:
+
+1. Disconnect Chrome or the machine from the network.
+2. Close or reload the original webpage to confirm it is unavailable.
+3. Open the AWSM Library.
+4. Open the saved Capture.
+5. View and scroll the full-page screenshot.
+6. Inspect the extracted text or structured content.
+7. Download the locally stored MHTML if desired.
+
+Core archive functionality remains available because the Capture and its local Artifacts do not
+depend on a server. A user who explicitly applies synchronized storage relief can remove local MHTML
+and screenshot wrappers after AWSM verifies their encrypted server copies. Those remote-only
+Artifacts require the configured Account and a network connection until retrieved again; compact
+Library data remains local.
+
+## Optional self-hosted synchronization
+
+The local client is the primary application. Synchronization is an optional coordination layer for
+encrypted data between devices.
+
+Start the development Coordination Server and PostgreSQL with Docker Compose:
+
+```bash
+docker compose up --build
 ```
 
-To create the distributable Chrome ZIP locally, run:
+The server is then available at <http://localhost:3000>. In AWSM, choose self-hosted
+synchronization, enter that origin, grant Chrome access to it, and create an Account. See the
+[Coordination Server development guide](apps/coordination-server/README.md) for operations and
+troubleshooting.
+
+The client encrypts Vault content before transmission. The server stores opaque encrypted Objects,
+Events, Artifacts, and wrapped keys; it does not receive the keys needed to decrypt plaintext Vault
+content. The current pre-release implementation does not include device signing and revocation,
+Account Recovery Keys, password changes, production quotas, billing, shared object storage, or
+production deployment hardening.
+
+## Development
+
+Use the repository-pinned pnpm through Corepack:
+
+```bash
+corepack pnpm build
+corepack pnpm typecheck
+corepack pnpm lint
+corepack pnpm test
+corepack pnpm test:integration
+corepack pnpm test:e2e
+```
+
+Create a distributable Chrome ZIP with:
 
 ```bash
 corepack pnpm zip
 ```
 
-After installation, open the AWSM toolbar icon and choose a compatible self-hosted Coordination
-Server or continue without synchronization. The hosted service is not currently advertised as an
-available public service.
-
-## Maintainer Release Procedure
-
-1. Update `version` in `apps/browser-extension/package.json`.
-2. Commit and push that change to `main`.
-3. Create the `v<version>` tag at that commit.
-4. Push the tag.
-5. Wait for the Chrome Extension Release workflow to validate the build and publish the Release.
-
-Versions ending in `-alpha.N`, `-beta.N`, or `-rc.N` create prereleases. Plain versions create
-stable Releases. Failed validation creates no Release. Before retrying with changed code, handle the
-existing tag explicitly; the workflow never moves, replaces, or overwrites a tag or Release.
-
----
-
-## Zero Knowledge
-
-The server never has access to decrypted user content.
-
-All user content is encrypted before transmission.
-
-Encryption keys are owned exclusively by the user.
-
----
-
-## Immutable Captures
-
-Captured content is immutable.
-
-Derived artifacts such as summaries, OCR, tags, embeddings, or translations may evolve over time, but the original capture is never modified.
-
-This guarantees long-term archival integrity.
-
----
-
-## AI as a Client Capability
-
-Artificial intelligence is considered a client-side feature.
-
-AI operates only on decrypted content within trusted environments.
-
-Generated artifacts are encrypted before synchronization.
-
-The backend never performs inference on user content.
-
----
-
-## Offline by Default
-
-Users should be able to:
-
-- browse archives
-- search archives
-- read captures
-- annotate captures
-- create folders
-- generate AI artifacts
-
-without requiring network connectivity.
-
-Synchronization occurs opportunistically.
-
-For a connected Account, users may explicitly reduce device storage by removing locally stored
-`PRIMARY` and full-screenshot wrappers only after AWSM proves byte-identical encrypted copies belong
-to the active Coordination Server Generation. Compact Library data remains local. Opening a
-remote-only screenshot or inspected text Artifact, or downloading remote-only MHTML, retrieves and
-verifies it through the trusted Runtime, normally restoring it locally; offline or signed-out access
-explains that Account access is required rather than reporting corruption. Complete Export still
-includes every Artifact without rehydrating these wrappers.
-
----
-
-## Cloud as Coordination Layer
-
-The backend provides:
-
-- authentication
-- account management
-- encrypted object coordination
-- encrypted storage
-
-Billing, Device coordination, and sharing coordination remain future capabilities.
-
-The backend is intentionally unaware of archive contents.
-
-If a synchronized device is stale after Vault Vacuum, AWSM keeps it read-only, offers Complete
-Export first, and requires explicit acknowledgement before atomically replacing it with verified
-server state. This discard creates no hidden recovery Vault.
-
----
-
-# Project Goals
-
-The platform aims to provide:
-
-- faithful preservation of web content
-- long-term readability
-- privacy-preserving synchronization
-- high-performance local search
-- extensibility through immutable artifacts
-- support for future AI capabilities
-- multi-device synchronization
-- enterprise-grade security architecture
-
----
-
-# Non-Goals
-
-The platform is not intended to become:
-
-- a collaborative document editor
-- a real-time note-taking application
-- a cloud document management system
-- a server-side AI platform
-- a centralized search engine
-
-These capabilities may exist as optional services in the future but are outside the architectural goals of the platform.
-
----
-
-# Repository Structure
+The repository is organized as follows:
 
 ```text
-docs/plans/
-docs/architecture/
-docs/specifications/
+apps/browser-extension/     Chrome Host, Runtime, local storage, and user interface
+apps/coordination-server/   Rails coordination service for opaque encrypted data
+docs/architecture/          architectural intent and system boundaries
+docs/specifications/        formal formats, protocols, and Runtime contracts
+docs/plans/                 approved implementation plans and TDD evidence
 ```
 
-Each directory documents one aspect of the platform. The architecture documents explain intent and trade-offs; the specifications define normative formats, protocols, and runtime contracts.
+Product intent begins in [VISION.md](VISION.md). Architectural constraints are defined by the
+[design principles](docs/architecture/00-design-principles.md), and canonical terminology is in the
+[glossary](docs/architecture/glossary.md).
 
----
+## How OpenAI tools were used
 
-# Guiding Philosophy
+AWSM was developed as a human-directed, AI-assisted project. The product problem, privacy goals,
+local-first requirements, architectural decisions, and acceptance of the resulting behavior were
+provided and reviewed by the project author. OpenAI tools supported the work end to end:
 
-The platform is built on a simple premise:
+- **Planning and design:** GPT-5.6 in ChatGPT helped turn the initial product idea into requirements,
+  implementation plans, architecture documents, specifications, threat boundaries, and explicit
+  acceptance criteria.
+- **Implementation:** Codex implemented the browser extension, local Runtime and storage Drivers,
+  cryptographic workflows, Coordination Server, synchronization protocol, and user-facing flows
+  under the author's direction and review.
+- **Testing and debugging:** Codex developed unit, browser integration, packaged-extension
+  end-to-end, multi-replica synchronization, failure-injection, and recovery tests; investigated
+  failures; and iterated on implementations until the required behavior was demonstrated.
+- **Privacy and consistency review:** GPT-5.6 and Codex helped trace changes across architecture,
+  formal contracts, implementation, tests, and operations so that plaintext remained inside trusted
+  clients and superseded pre-release behavior was not retained as compatibility code.
+- **Product and UI refinement:** Codex iterated on onboarding, capture feedback, Library and Artifact
+  presentation, responsive layouts, accessibility, error states, and rendered visual checks based on
+  author guidance.
+- **Delivery:** Codex helped build the development environment, packaging and release validation,
+  GitHub Actions CI/CD, installation documentation, and the Devpost demo narrative.
 
-> Knowledge belongs to its owner.
+The tools accelerated design, implementation, review, and iteration; they did not replace human
+product direction or responsibility for the project's decisions and claims.
 
-The client captures knowledge.
+## Design principles
 
-The client encrypts knowledge.
+- **Local first:** Captures are created, encrypted, stored, and viewed on the client.
+- **Cloud optional:** A Coordination Server synchronizes encrypted data but is not required for core
+  archive use.
+- **Preserve first, interpret later:** Original source Artifacts are retained independently from
+  future derived interpretations.
+- **Immutable originals:** Captures and their authoritative Objects are not edited in place.
+- **No plaintext server dependency:** The server must not require plaintext user content or
+  unwrapped Vault keys.
 
-The client understands knowledge.
+AWSM treats a web Capture as one immutable Bundle graph. Its MHTML, screenshot, thumbnail,
+normalized text, and structured content are independently encrypted Artifacts. This preserves the
+source while supporting bounded-memory storage, integrity verification, portable Complete Export
+and Import, and future locally derived capabilities.
 
-The cloud merely coordinates encrypted Objects, Events, and wrapped keys between trusted devices.
+## Release process
 
-Every architectural decision should reinforce this principle.
+Maintainers publish validated Chrome artifacts from version tags:
 
----
+1. Update `version` in `apps/browser-extension/package.json`.
+2. Commit and push the change to `main`.
+3. Create and push the matching `v<version>` tag.
+4. Wait for the Chrome Extension Release workflow to validate and publish the Release.
 
-# Development Status
+Versions ending in `-alpha.N`, `-beta.N`, or `-rc.N` create prereleases. Plain versions create
+stable Releases. The workflow does not move or overwrite an existing tag or Release.
 
-This repository documents the design and implementation of AWSM.
+## License
 
-The implementation will proceed incrementally through well-defined phases, beginning with a minimal viable product focused on web page archival and expanding toward a general-purpose, privacy-preserving knowledge platform.
-
----
-
-# License
-
-AWSM is free software licensed under the GNU Affero General Public License, version 3 or
-any later version. See [`LICENSE`](LICENSE) for the full terms.
+AWSM is free software licensed under the GNU Affero General Public License, version 3 or later. See
+[LICENSE](LICENSE) for the complete license text.
