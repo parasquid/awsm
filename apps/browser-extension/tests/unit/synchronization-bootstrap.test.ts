@@ -109,6 +109,8 @@ describe("remote Replica bootstrap", () => {
         openPlaintext: async () => {
           throw new Error("unexpected");
         },
+        has: async () => false,
+        verifyEncrypted: async () => false,
         remove: async () => undefined,
         reconcile: async () => undefined,
       },

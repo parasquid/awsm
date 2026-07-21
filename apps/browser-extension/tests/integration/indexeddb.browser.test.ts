@@ -29,6 +29,39 @@ test("persists a non-exportable device key and Vault records", async ({ page }) 
   });
 });
 
+test("creates the canonical storage-relief stores without a schema upgrade", async ({ page }) => {
+  await expect(scenario(page, "storage-relief-schema")).resolves.toEqual({
+    databaseVersion: 1,
+    stores: ["artifact_availability", "storage_relief_checkpoints", "storage_relief_jobs"],
+  });
+});
+
+test("persists storage-relief checkpoints and remote-only state atomically", async ({ page }) => {
+  await expect(scenario(page, "storage-relief-persistence")).resolves.toEqual({
+    state: "Running",
+    checkpointState: "Evicted",
+    verifiedArtifacts: 1,
+    evictedArtifacts: 1,
+    freedBytes: 4096,
+    remoteBeforeClear: true,
+    remoteAfterClear: false,
+    jobStateAfterClear: "Running",
+    cancellationPersisted: true,
+    driftErrorId: "STORAGE_RELIEF_ESTIMATE_CHANGED",
+    mismatchedAvailabilityRejected: true,
+    stateAfterRejectedCommit: "Evicting",
+  });
+});
+
+test("holds a storage-relief maintenance lease only while actively working", async ({ page }) => {
+  await expect(scenario(page, "storage-relief-lease")).resolves.toEqual({
+    busy: "Storage relief",
+    captureErrorId: "VAULT_BUSY",
+    vacuumErrorId: "VAULT_BUSY",
+    busyWhileWaiting: null,
+  });
+});
+
 test("restores encrypted Account credentials and erases only Account state on logout", async ({
   page,
 }) => {
@@ -306,6 +339,17 @@ test("rolls back every Vacuum deletion when the transaction fails", async ({ pag
   });
 });
 
+test("removes reclaimed remote-only availability and terminal relief history during Vacuum", async ({
+  page,
+}) => {
+  await expect(scenario(page, "vacuum-availability-cleanup")).resolves.toEqual({
+    objectRetained: false,
+    availabilityRows: 0,
+    reliefJobs: 0,
+    reliefCheckpoints: 0,
+  });
+});
+
 test("activates nothing when the source Vault Generation changed", async ({ page }) => {
   await expect(scenario(page, "vacuum-cas-conflict")).resolves.toEqual({
     failed: true,
@@ -422,17 +466,15 @@ test("atomically activates an imported Vault and rejects destination collisions"
   });
 });
 
-test("atomically replaces a stale Replica and activates an independent local recovery fork", async ({
+test("atomically discards a stale Replica and activates the complete server replacement", async ({
   page,
 }) => {
-  await expect(scenario(page, "atomic-stale-recovery")).resolves.toEqual({
-    rollbackFailurePoints: 23,
+  await expect(scenario(page, "atomic-stale-discard")).resolves.toEqual({
+    rollbackFailurePoints: 11,
     rollbackAlwaysAtomic: true,
     originalUsesServerGeneration: true,
     originalEventIds: ["00000000-0000-4000-8000-000000000851"],
-    forkGenerationIndependent: true,
-    forkEventIds: ["00000000-0000-4000-8000-000000000870"],
-    directoryContainsBoth: true,
+    additionalVaultCreated: false,
     jobState: "Succeeded",
   });
 });
@@ -443,23 +485,79 @@ test("rejects remote reconciliation that races or omits local authority", async 
     changedHeadErrorId: "VAULT_CONTEXT_CHANGED",
     localMutationPreserved: true,
     jobStillRunning: true,
+    retainedRemoteOnlyIds: ["00000000-0000-4000-8000-000000000916"],
   });
 });
 
-test("reconciles every interrupted stale-recovery stage after an IndexedDB restart", async ({
+test("evicts a verified Artifact wrapper through the persisted storage-relief Job", async ({
+  page,
+}) => {
+  const result = await scenario(page, "storage-relief-runner");
+  expect(result).toMatchObject({
+    synchronized: true,
+    localPresent: false,
+    remoteOnly: true,
+    state: "Succeeded",
+  });
+  expect((result as { freedBytes: number }).freedBytes).toBeGreaterThan(0);
+});
+
+test("recovers every storage-relief interruption around proof and deletion", async ({ page }) => {
+  const result = await scenario(page, "storage-relief-fault-matrix");
+  const completed = {
+    synchronized: true,
+    localPresent: false,
+    remoteOnly: true,
+    state: "Succeeded",
+    interrupted: true,
+  };
+  expect(result).toMatchObject({
+    afterSynchronization: {
+      ...completed,
+      interruptedCheckpointState: "Candidate",
+      localAfterInterruption: true,
+      remoteOnlyAfterInterruption: false,
+    },
+    afterVerifiedCheckpoint: {
+      ...completed,
+      interruptedCheckpointState: "Verified",
+      localAfterInterruption: true,
+      remoteOnlyAfterInterruption: false,
+    },
+    afterEvictingCheckpoint: {
+      ...completed,
+      interruptedCheckpointState: "Evicting",
+      localAfterInterruption: true,
+      remoteOnlyAfterInterruption: false,
+    },
+    afterWrapperRemoved: {
+      ...completed,
+      interruptedCheckpointState: "Evicting",
+      localAfterInterruption: false,
+      remoteOnlyAfterInterruption: false,
+    },
+    afterRemoteOnlyCommit: {
+      ...completed,
+      interruptedCheckpointState: "Evicted",
+      localAfterInterruption: false,
+      remoteOnlyAfterInterruption: true,
+    },
+  });
+});
+
+test("reconciles every interrupted stale-discard stage after an IndexedDB restart", async ({
   page,
 }) => {
   const recovered = {
     reconciled: true,
     state: "Conflict",
     stage: "Checkpoint",
-    forkRemoved: true,
+    preparedIdsCleared: true,
     artifactsRemoved: true,
   };
-  await expect(scenario(page, "stale-recovery-restart")).resolves.toEqual({
-    PrepareRecoveryFork: recovered,
+  await expect(scenario(page, "stale-discard-restart")).resolves.toEqual({
     PrepareServerReplacement: recovered,
-    ActivateRecovery: recovered,
+    ActivateServerReplacement: recovered,
   });
 });
 
@@ -474,6 +572,9 @@ test("streams encrypted Artifact wrappers through scoped OPFS storage", async ({
     encryptedImportCopiedExactly: true,
     encryptedImportReplaySucceeded: true,
     corruptEncryptedImportRejected: true,
+    wrapperPresent: true,
+    wrapperVerified: true,
+    wrapperAbsentAfterRemoval: true,
     quotaErrorId: "STORAGE_QUOTA_EXCEEDED",
     quotaArtifactRemoved: true,
   });

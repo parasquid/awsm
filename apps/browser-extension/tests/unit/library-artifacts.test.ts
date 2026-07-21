@@ -145,6 +145,11 @@ async function fixture(warnings: LibraryItemV1["warnings"] = []) {
   const artifactStore = {
     openPlaintext: vi.fn(async () => new Blob(["hello"]).stream()),
   } as unknown as ArtifactStore;
+  const availability = {
+    isArtifactRemoteOnly: vi.fn(
+      async (_vaultId: string, artifactObjectId: string) => artifactObjectId === id(11),
+    ),
+  };
   return {
     service: new LibraryService(
       {
@@ -155,6 +160,7 @@ async function fixture(warnings: LibraryItemV1["warnings"] = []) {
       root,
       vaultId,
       artifactStore,
+      availability,
     ),
     artifactStore,
     bundleId,
@@ -176,10 +182,17 @@ describe("Library Artifact detail", () => {
       ["CONTENT_STRUCTURED", "Failed"],
     ]);
     expect(detail.artifacts.find((artifact) => artifact.role === "PRIMARY")).toMatchObject({
+      availability: "Local",
       canDownload: true,
       canInspect: false,
       canPreview: false,
     });
+    expect(detail.artifacts.find((artifact) => artifact.role === "SCREENSHOT_FULL")).toMatchObject({
+      availability: "RemoteOnly",
+    });
+    expect(detail.artifacts.find((artifact) => artifact.role === "THUMBNAIL")).not.toHaveProperty(
+      "availability",
+    );
   });
 
   it("opens only the requested authenticated Artifact record", async () => {

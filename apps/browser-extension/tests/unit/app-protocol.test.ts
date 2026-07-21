@@ -75,19 +75,19 @@ describe("application request routing", () => {
   it("requires an explicit stale Replica recovery decision", () => {
     expect(
       isAppRequest({
-        type: "ResolveStaleReplica",
+        type: "DiscardStaleReplica",
         expectedVaultId: "vault",
         exportDecision: "Exported",
       }),
     ).toBe(true);
     expect(
       isAppRequest({
-        type: "ResolveStaleReplica",
+        type: "DiscardStaleReplica",
         expectedVaultId: "vault",
         exportDecision: "SkipConfirmed",
       }),
     ).toBe(true);
-    expect(isAppRequest({ type: "ResolveStaleReplica", expectedVaultId: "vault" })).toBe(false);
+    expect(isAppRequest({ type: "DiscardStaleReplica", expectedVaultId: "vault" })).toBe(false);
   });
 
   it("routes only canonical Workspace-scoped Import requests", () => {

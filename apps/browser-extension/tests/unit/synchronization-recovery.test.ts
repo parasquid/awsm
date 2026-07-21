@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { SynchronizationJobV1 } from "../../src/drivers/indexeddb/schema";
-import { StaleReplicaRecoveryService } from "../../src/runtime/synchronization/recovery";
+import { StaleReplicaDiscardService } from "../../src/runtime/synchronization/recovery";
 
-describe("stale Replica recovery", () => {
-  it("returns an interrupted preparation to retryable Conflict and removes fork Artifacts", async () => {
-    const vaultId = "01900000-0000-7000-8000-000000000701";
-    const staleGenerationId = "01900000-0000-7000-8000-000000000702";
-    const remoteGenerationId = "01900000-0000-7000-8000-000000000703";
-    const forkVaultId = "01900000-0000-7000-8000-000000000704";
+describe("stale Replica discard", () => {
+  it("returns interrupted replacement to Conflict and removes only prepared replacement wrappers", async () => {
+    const vaultId = crypto.randomUUID();
+    const staleGenerationId = crypto.randomUUID();
+    const remoteGenerationId = crypto.randomUUID();
+    const preparedArtifactObjectId = crypto.randomUUID();
     const initial: SynchronizationJobV1 = {
       version: 1,
-      jobId: "01900000-0000-7000-8000-000000000705",
-      accountId: "01900000-0000-7000-8000-000000000706",
+      jobId: crypto.randomUUID(),
+      accountId: crypto.randomUUID(),
       vaultId,
       generationId: remoteGenerationId,
       generationNumber: 2,
@@ -25,20 +25,20 @@ describe("stale Replica recovery", () => {
       updatedAt: "2026-07-19T00:00:00.000Z",
       snapshotCursor: 8,
       retryCount: 0,
-      attachIdempotencyKey: "01900000-0000-7000-8000-000000000707",
+      attachIdempotencyKey: crypto.randomUUID(),
     };
     const saved: SynchronizationJobV1[] = [];
-    const reconciled: string[] = [];
-    const failure = Object.assign(new Error("offline"), { id: "SYNCHRONIZATION_INTERRUPTED" });
-    const service = new StaleReplicaRecoveryService(
+    const removed: string[] = [];
+    const failure = new Error("worker stopped");
+    const service = new StaleReplicaDiscardService(
       {
         latestSynchronizationJob: async () => initial,
         loadAccountVault: async () => ({
           version: 1,
           accountId: initial.accountId,
           vaultId,
-          accountKeyId: "01900000-0000-7000-8000-000000000708",
-          accountSlot: {} as never,
+          accountKeyId: crypto.randomUUID(),
+          accountSlot: {},
           remoteGenerationId,
           remoteGenerationNumber: 2,
           deliveryCursor: 8,
@@ -59,30 +59,38 @@ describe("stale Replica recovery", () => {
       } as never,
       {} as CryptoKey,
       {
-        prepare: async (didCreateFork: (created: string) => Promise<void>) => {
-          await didCreateFork(forkVaultId);
-          return { records: { metadata: { vaultId: forkVaultId } } } as never;
-        },
-      } as never,
-      {
-        prepare: async () => {
-          throw failure;
+        prepare: async (_job, _rootKey, _existing, _scope, beforeArtifactPrepare) => {
+          await beforeArtifactPrepare?.(preparedArtifactObjectId);
+          return { preparedArtifactObjectIds: [preparedArtifactObjectId] } as never;
         },
       },
       {
-        reconcile: async (targetVaultId: string) => {
-          reconciled.push(targetVaultId);
+        remove: async (_vaultId: string, objectId: string) => {
+          removed.push(objectId);
         },
       } as never,
+      {
+        prepareServerReplacement: async () => undefined,
+        serverReplacementPrepared: async () => {
+          throw failure;
+        },
+        beforeActivation: async () => undefined,
+        afterActivation: async () => undefined,
+      },
     );
 
     await expect(service.execute("2026-07-19T01:00:00.000Z")).rejects.toBe(failure);
-
-    expect(saved.at(-1)).toMatchObject({
-      state: "Conflict",
-      stage: "Checkpoint",
-    });
-    expect(saved.at(-1)).not.toHaveProperty("recoveryForkVaultId");
-    expect(reconciled).toEqual([forkVaultId]);
+    expect(saved).toContainEqual(
+      expect.objectContaining({
+        state: "Running",
+        stage: "PrepareServerReplacement",
+        preparedArtifactObjectIds: [preparedArtifactObjectId],
+      }),
+    );
+    expect(saved.at(-1)).toEqual(
+      expect.objectContaining({ state: "Conflict", stage: "Checkpoint" }),
+    );
+    expect(saved.at(-1)).not.toHaveProperty("preparedArtifactObjectIds");
+    expect(removed).toEqual([preparedArtifactObjectId]);
   });
 });

@@ -7,6 +7,9 @@ import {
   libraryGroupDestination,
   libraryStateConfirmation,
   mergeDropRequest,
+  remoteArtifactFailureMessage,
+  signOutConfirmation,
+  storageReliefConfirmation,
 } from "../../src/ui/library-view";
 
 const capture = (suffix: string) => ({ bundleId: `00000000-0000-4000-8000-${suffix}` });
@@ -31,6 +34,37 @@ describe("Library collection navigation", () => {
     expect(formatByteSize(824)).toBe("824 B");
     expect(formatByteSize(12_697)).toBe("12.4 KiB");
     expect(formatByteSize(3_250_586)).toBe("3.1 MiB");
+  });
+
+  it("explains the complete proof-before-delete storage-relief boundary", () => {
+    expect(storageReliefConfirmation(2, 3_250_586)).toBe(
+      "Free up to 3.1 MiB by removing 2 encrypted Artifact wrappers from this browser?\n\n" +
+        "AWSM will synchronize and verify each encrypted server copy first. Only verified copies are removed locally.\n\n" +
+        "The server may then hold the only copy. Those payloads will be unavailable offline until AWSM retrieves them.\n\n" +
+        "You can run this again later.",
+    );
+  });
+
+  it("warns before signing out when remote-only payloads depend on Account access", () => {
+    expect(signOutConfirmation(3)).toBe(
+      "Sign out while 3 remote-only Artifacts depend on this Account?\n\n" +
+        "Those payloads will be unavailable until you sign in to the same Account on this synchronization server again.",
+    );
+    expect(signOutConfirmation(0)).toBeUndefined();
+  });
+  it("distinguishes remote integrity, availability, authentication, and offline failures", () => {
+    expect(remoteArtifactFailureMessage("REMOTE_ARTIFACT_INTEGRITY_FAILED", "Screenshot")).toBe(
+      "Screenshot failed integrity verification.",
+    );
+    expect(remoteArtifactFailureMessage("REMOTE_ARTIFACT_UNAVAILABLE", "Inspect")).toBe(
+      "The server copy is temporarily unavailable. Try again.",
+    );
+    expect(
+      remoteArtifactFailureMessage("REMOTE_ARTIFACT_AUTHENTICATION_REQUIRED", "Download"),
+    ).toBe("Sign in to retrieve this Artifact.");
+    expect(remoteArtifactFailureMessage("REMOTE_ARTIFACT_OFFLINE", "Screenshot")).toBe(
+      "This screenshot is stored on the server. Reconnect and try again.",
+    );
   });
   it("opens a single capture directly without an intermediate history view", () => {
     expect(libraryGroupDestination({ captures: [capture("000000000001")] })).toEqual({

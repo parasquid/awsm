@@ -358,6 +358,32 @@ describe("Artifact graph Vault Export", () => {
       expect(bytes).toEqual(store.encrypted.get(objectId));
     }
 
+    const remoteOnlyObjectId = id(20);
+    const remoteOnlyBytes = store.encrypted.get(remoteOnlyObjectId);
+    expect(remoteOnlyBytes).toBeDefined();
+    store.encrypted.delete(remoteOnlyObjectId);
+    const remoteReads: string[] = [];
+    const remoteComplete = await new VaultExportService(source, vault, vaultId, {
+      openEncrypted: async (requestedVaultId, objectId, object) => {
+        expect(requestedVaultId).toBe(vaultId);
+        if (objectId === remoteOnlyObjectId) {
+          remoteReads.push(objectId);
+          expect(object.envelopeByteLength).toBe(remoteOnlyBytes?.byteLength);
+          return new Blob([Uint8Array.from(remoteOnlyBytes ?? []).buffer]).stream();
+        }
+        return store.openEncrypted(requestedVaultId, objectId);
+      },
+    }).prepare({
+      ...options,
+      packageId: "10000000-0000-4000-8000-000000000003",
+    });
+    expect(remoteComplete.manifest.coverage).toBe("Complete");
+    await expect(
+      validateVaultPackage(await packageFixture(remoteComplete.entries), options.passphrase),
+    ).resolves.toMatchObject({ manifest: { coverage: "Complete" } });
+    expect(remoteReads).toEqual([remoteOnlyObjectId, remoteOnlyObjectId]);
+    if (remoteOnlyBytes !== undefined) store.encrypted.set(remoteOnlyObjectId, remoteOnlyBytes);
+
     const selective = await service.prepare({
       ...options,
       packageId: "10000000-0000-4000-8000-000000000002",

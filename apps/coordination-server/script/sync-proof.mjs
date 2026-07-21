@@ -1,4 +1,10 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import assert from "node:assert/strict";
 
 const baseUrl = process.env.AWSM_PROOF_BASE_URL;
@@ -7,6 +13,19 @@ let requestSequence = 0;
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("base64url");
+}
+
+function encryptArtifact(plaintext, key) {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]);
+}
+
+function decryptArtifact(wrapper, key) {
+  const decipher = createDecipheriv("aes-256-gcm", key, wrapper.subarray(0, 12));
+  decipher.setAuthTag(wrapper.subarray(12, 28));
+  return Buffer.concat([decipher.update(wrapper.subarray(28)), decipher.final()]);
 }
 
 function requestId() {
@@ -255,7 +274,11 @@ await waitFor(
 );
 
 const artifactId = randomUUID();
-const artifactBytes = Buffer.alloc(policy.uploadPartSizeBytes + 17, 0x5a);
+const artifactPlaintext = Buffer.alloc(policy.uploadPartSizeBytes + 17, 0x5a);
+const artifactKey = randomBytes(32);
+const artifactBytes = encryptArtifact(artifactPlaintext, artifactKey);
+const replicaOneLocalArtifacts = new Map([[artifactId, artifactBytes]]);
+const replicaOneRemoteOnlyArtifacts = new Set();
 const artifact = await beginUpload(
   vaultId,
   generationZeroId,
@@ -338,6 +361,29 @@ const activeBefore = (
   await control("GET", `/api/vaults/${vaultId}/records?limit=100`)
 ).payload;
 assert(activeBefore.records.some((record) => record.objectId === eventId));
+const durableArtifact = activeBefore.records.find(
+  (record) => record.objectId === artifactId,
+);
+const durableEvent = activeBefore.records.find(
+  (record) => record.objectId === eventId,
+);
+assert.deepEqual(
+  {
+    objectType: durableArtifact?.objectType,
+    byteLength: durableArtifact?.byteLength,
+    sha256: durableArtifact?.sha256,
+  },
+  {
+    objectType: "Artifact",
+    byteLength: artifactBytes.byteLength,
+    sha256: sha256(artifactBytes),
+  },
+);
+assert.deepEqual(durableEvent?.dependencyObjectIds, dependencies);
+replicaOneLocalArtifacts.delete(artifactId);
+replicaOneRemoteOnlyArtifacts.add(artifactId);
+assert.equal(replicaOneLocalArtifacts.has(artifactId), false);
+assert.equal(replicaOneRemoteOnlyArtifacts.has(artifactId), true);
 const download = (
   await control(
     "POST",
@@ -368,6 +414,11 @@ const rebuilt = Buffer.concat([
   Buffer.from(await secondRange.arrayBuffer()),
 ]);
 assert.equal(sha256(rebuilt), sha256(artifactBytes));
+assert.deepEqual(decryptArtifact(rebuilt, artifactKey), artifactPlaintext);
+replicaOneLocalArtifacts.set(artifactId, rebuilt);
+replicaOneRemoteOnlyArtifacts.delete(artifactId);
+assert.equal(replicaOneLocalArtifacts.has(artifactId), true);
+assert.equal(replicaOneRemoteOnlyArtifacts.has(artifactId), false);
 
 const staleSuccessorId = randomUUID();
 const staleGenerationBytes = Buffer.from("stale-successor");
@@ -591,5 +642,5 @@ await control(
 );
 
 process.stdout.write(
-  "two replicas converged through HTTP, Cable, polling, Generation recovery, and verified purge\n",
+  "two replicas converged through HTTP, Cable, polling, remote-only Artifact restoration, Generation recovery, and verified purge\n",
 );

@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { SynchronizationJobV1 } from "../../src/drivers/indexeddb/schema";
-import { InterruptedStaleRecoveryReconciler } from "../../src/runtime/synchronization/recovery-reconciliation";
+import { InterruptedStaleDiscardReconciler } from "../../src/runtime/synchronization/recovery-reconciliation";
 
-function job(
-  stage: SynchronizationJobV1["stage"],
-  state: SynchronizationJobV1["state"] = "Running",
-): SynchronizationJobV1 {
+function job(stage: SynchronizationJobV1["stage"]): SynchronizationJobV1 {
   return {
     version: 1,
     jobId: crypto.randomUUID(),
@@ -13,7 +10,7 @@ function job(
     vaultId: crypto.randomUUID(),
     generationId: crypto.randomUUID(),
     generationNumber: 1,
-    state,
+    state: "Running",
     stage,
     createdAt: "2026-07-20T00:00:00.000Z",
     updatedAt: "2026-07-20T00:00:00.000Z",
@@ -24,21 +21,17 @@ function job(
     totalBytes: 0,
     retryCount: 0,
     attachIdempotencyKey: crypto.randomUUID(),
-    recoveryForkVaultId: crypto.randomUUID(),
+    preparedArtifactObjectIds: [crypto.randomUUID(), crypto.randomUUID()],
   };
 }
 
-describe("interrupted stale recovery reconciliation", () => {
-  for (const stage of [
-    "PrepareRecoveryFork",
-    "PrepareServerReplacement",
-    "ActivateRecovery",
-  ] as const) {
-    it(`returns ${stage} to Conflict and cleans the uncommitted fork`, async () => {
+describe("interrupted stale discard reconciliation", () => {
+  for (const stage of ["PrepareServerReplacement", "ActivateServerReplacement"] as const) {
+    it(`returns ${stage} to Conflict and removes prepared replacement wrappers`, async () => {
       const initial = job(stage);
       const saved: SynchronizationJobV1[] = [];
-      const reconciled: string[] = [];
-      const result = await new InterruptedStaleRecoveryReconciler(
+      const removed: string[] = [];
+      const result = await new InterruptedStaleDiscardReconciler(
         {
           latestSynchronizationJob: async () => initial,
           saveSynchronizationJob: async (value) => {
@@ -46,30 +39,30 @@ describe("interrupted stale recovery reconciliation", () => {
           },
         },
         {
-          reconcile: async (vaultId) => {
-            reconciled.push(vaultId);
+          remove: async (_vaultId, objectId) => {
+            removed.push(objectId);
           },
         },
       ).execute("2026-07-20T01:00:00.000Z");
 
       expect(result).toBe(true);
-      expect(reconciled).toEqual([initial.recoveryForkVaultId]);
+      expect(removed.toSorted()).toEqual(initial.preparedArtifactObjectIds?.toSorted());
       expect(saved).toEqual([expect.objectContaining({ state: "Conflict", stage: "Checkpoint" })]);
-      expect(saved[0]).not.toHaveProperty("recoveryForkVaultId");
+      expect(saved[0]).not.toHaveProperty("preparedArtifactObjectIds");
     });
   }
 
-  it("does not roll back a committed recovery", async () => {
-    const initial = job("Checkpoint", "Succeeded");
+  it("does not roll back a committed replacement", async () => {
+    const initial = { ...job("Checkpoint"), state: "Succeeded" as const };
     let saved = false;
-    const result = await new InterruptedStaleRecoveryReconciler(
+    const result = await new InterruptedStaleDiscardReconciler(
       {
         latestSynchronizationJob: async () => initial,
         saveSynchronizationJob: async () => {
           saved = true;
         },
       },
-      { reconcile: async () => undefined },
+      { remove: async () => undefined },
     ).execute();
 
     expect(result).toBe(false);

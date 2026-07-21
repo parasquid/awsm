@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -128,6 +129,7 @@ async function packagedAccountContext(
   const context = await chromium.launchPersistentContext(testInfo.outputPath(`${name}-profile`), {
     channel: "chromium",
     headless: true,
+    acceptDownloads: true,
     args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
   });
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
@@ -153,6 +155,103 @@ async function toolbarPopup(
     await extensionApi.action.openPopup();
   });
   return extensionPopup(client.context, client.extensionId);
+}
+
+interface SavedArtifactProbe {
+  readonly aborted: boolean;
+  readonly chunks: readonly (readonly number[])[];
+  readonly closed: boolean;
+  readonly suggestedName: string;
+}
+
+async function installSavedArtifactProbe(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const saved = {
+      aborted: false,
+      chunks: [] as number[][],
+      closed: false,
+      suggestedName: "",
+    };
+    Object.defineProperty(window, "__awsmSavedArtifact", {
+      configurable: true,
+      value: saved,
+    });
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: async (options: { suggestedName: string }) => {
+        saved.suggestedName = options.suggestedName;
+        return {
+          createWritable: async () => ({
+            write: async (chunk: Uint8Array) => saved.chunks.push(Array.from(chunk)),
+            close: async () => {
+              saved.closed = true;
+            },
+            abort: async () => {
+              saved.aborted = true;
+            },
+          }),
+        };
+      },
+    });
+  });
+}
+
+async function savedArtifactProbe(page: Page): Promise<SavedArtifactProbe> {
+  return page.evaluate(
+    () =>
+      (
+        window as typeof window & {
+          __awsmSavedArtifact: SavedArtifactProbe;
+        }
+      ).__awsmSavedArtifact,
+  );
+}
+
+async function artifactStorageSnapshot(
+  page: Page,
+  vaultId: string,
+): Promise<{
+  readonly filenames: readonly string[];
+  readonly remoteOnlyArtifactIds: readonly string[];
+}> {
+  return page.evaluate(async (expectedVaultId) => {
+    const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
+      const request = indexedDB.open("awsm-vault");
+      request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    const transaction = database.transaction("artifact_availability", "readonly");
+    const availability = await new Promise<
+      readonly { readonly vaultId: string; readonly artifactObjectId: string }[]
+    >((resolveRows, reject) => {
+      const request = transaction.objectStore("artifact_availability").getAll();
+      request.addEventListener(
+        "success",
+        () =>
+          resolveRows(
+            request.result as readonly {
+              readonly vaultId: string;
+              readonly artifactObjectId: string;
+            }[],
+          ),
+        { once: true },
+      );
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    database.close();
+    const root = await navigator.storage.getDirectory();
+    const objects = await root.getDirectoryHandle("awsm-vault-objects");
+    const directory = await objects.getDirectoryHandle(expectedVaultId);
+    const filenames: string[] = [];
+    for await (const [name] of directory.entries()) filenames.push(name);
+    return {
+      filenames: filenames.toSorted(),
+      remoteOnlyArtifactIds: availability
+        .filter((row) => row.vaultId === expectedVaultId)
+        .map((row) => row.artifactObjectId)
+        .toSorted(),
+    };
+  }, vaultId);
 }
 
 async function archiveFixture(
@@ -204,6 +303,12 @@ async function archiveFixture(
   await expect(popup.getByRole("button", { name: "Archive this page" })).toBeVisible();
   let captured = false;
   for (let attempt = 0; attempt < 2 && !captured; attempt += 1) {
+    const serverOrigin = (
+      await appRequest<{
+        account: { configuration: { serverOrigin?: string } };
+      }>(popup, { type: "GetState" })
+    ).account.configuration.serverOrigin;
+    if (serverOrigin !== undefined) await waitForSynchronizedState(popup, serverOrigin);
     const priorCaptureJobId = (
       await appRequest<{ latestJob?: { jobId: string } }>(popup, {
         type: "GetState",
@@ -334,6 +439,48 @@ async function setCoordinationServerUnavailable(
     });
     await keepalive.close();
   }
+}
+
+async function corruptRemoteArtifactObjects(artifactObjectIds: readonly string[]): Promise<void> {
+  const rails = [
+    "require 'json'",
+    "require 'digest'",
+    "JSON.parse(ENV.fetch('AWSM_CORRUPT_OBJECT_IDS')).each do |object_id|",
+    "  record = OpaqueRecord.find_by!(object_id: object_id)",
+    "  path = Coordination::DiskStore.path(record.storage_key)",
+    "  File.open(path, 'r+b') do |file|",
+    "    first = file.read(1).unpack1('C')",
+    "    file.seek(0)",
+    "    file.write([first ^ 0xff].pack('C'))",
+    "  end",
+    "  raise 'proof-server corruption failed' if Digest::SHA256.file(path).digest == record.sha256",
+    "end",
+  ].join("; ");
+  await new Promise<void>((resolveValue, reject) => {
+    execFile(
+      "docker",
+      [
+        "compose",
+        "-f",
+        resolve("../..", "compose.sync-proof.yml"),
+        "exec",
+        "-T",
+        "-e",
+        `AWSM_CORRUPT_OBJECT_IDS=${JSON.stringify(artifactObjectIds)}`,
+        "coordination-proof",
+        "bin/rails",
+        "runner",
+        rails,
+      ],
+      (error, _stdout, stderr) => {
+        if (error === null) resolveValue();
+        else
+          reject(
+            new Error(`Failed to corrupt proof-server Artifacts: ${stderr}`, { cause: error }),
+          );
+      },
+    );
+  });
 }
 
 async function appRequest<T>(page: Page, request: Record<string, unknown>): Promise<T> {
@@ -600,9 +747,29 @@ async function interruptServerSwitchAt(
     password,
   }).catch(() => undefined);
   await expect
-    .poll(async () => (await faultControl(page, "status")).reached, {
-      timeout: 120_000,
-    })
+    .poll(
+      async () => {
+        const [fault, state] = await Promise.all([
+          faultControl(page, "status"),
+          appRequest<{
+            readonly serverSwitch?: {
+              readonly state: string;
+              readonly errorId?: string;
+              readonly direction?: string;
+            };
+          }>(page, { type: "GetState" }),
+        ]);
+        if (state.serverSwitch?.state === "Failed")
+          throw new Error(
+            `Server Switch failed before ${checkpoint}: ${JSON.stringify({
+              switch: state.serverSwitch,
+              failure: fault.lastFailure,
+            })}`,
+          );
+        return fault.reached;
+      },
+      { timeout: 120_000 },
+    )
     .toBe(true);
   const visual = await client.context.newPage();
   await visual.goto(`chrome-extension://${client.extensionId}/library.html`);
@@ -1200,44 +1367,63 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       });
       await settings.getByRole("button", { name: "Cancel", exact: true }).click();
       await staleLibrary.getByRole("button", { name: "Resolve stale Vault" }).click();
-      const recovery = staleLibrary.getByRole("dialog", {
+      const discard = staleLibrary.getByRole("dialog", {
         name: "Resolve stale synchronized Vault",
       });
-      await recovery.getByLabel("Export passphrase", { exact: true }).fill(password);
-      await recovery.getByLabel("Confirm export passphrase").fill(password);
-      await recovery.getByRole("button", { name: "Export encrypted Vault" }).click();
-      await expect(recovery.getByRole("button", { name: "Try Export again" })).toBeVisible({
-        timeout: 60_000,
+      await discard.getByLabel("Export passphrase", { exact: true }).fill(password);
+      await discard.getByLabel("Confirm export passphrase").fill(password);
+      await discard.getByRole("button", { name: "Export encrypted Vault" }).click();
+      await expect(discard.getByRole("button", { name: "Export downloaded" })).toBeVisible({
+        timeout: 120_000,
       });
+      const recoveryPackagePath = await staleLibrary.evaluate(async () => {
+        const extensionApi = (
+          globalThis as unknown as {
+            chrome: {
+              downloads: {
+                search(query: {
+                  readonly limit: 1;
+                  readonly orderBy: readonly ["-startTime"];
+                  readonly state: "complete";
+                }): Promise<readonly { readonly filename?: string }[]>;
+              };
+            };
+          }
+        ).chrome;
+        const downloads = await extensionApi.downloads.search({
+          limit: 1,
+          orderBy: ["-startTime"],
+          state: "complete",
+        });
+        const exported = downloads[0];
+        if (exported?.filename === undefined)
+          throw new Error("The completed Recovery Export download is unavailable.");
+        return exported.filename;
+      });
+      expect((await readFile(recoveryPackagePath)).byteLength).toBeGreaterThan(0);
       await staleLibrary.setViewportSize({ width: 390, height: 844 });
       await staleLibrary.screenshot({
-        path: testInfo.outputPath("journey-stale-export-failure-narrow.png"),
+        path: testInfo.outputPath("journey-stale-export-success-narrow.png"),
         fullPage: true,
       });
-      await recovery
-        .getByLabel("I understand that I am declining the recommended encrypted Export.")
-        .check();
-      await recovery
-        .getByLabel(
-          "I understand that the stale synchronized Vault will be completely overwritten by server data.",
-        )
-        .check();
-      const interruptRecoveryAt = async (checkpoint: string): Promise<void> => {
-        const activeRecovery = staleLibrary.getByRole("dialog", {
+      const interruptDiscardAt = async (checkpoint: string): Promise<void> => {
+        const activeDiscard = staleLibrary.getByRole("dialog", {
           name: "Resolve stale synchronized Vault",
         });
         await faultControl(staleLibrary, "arm", checkpoint);
-        await activeRecovery
-          .getByLabel("I understand that I am declining the recommended encrypted Export.")
-          .check();
-        await activeRecovery
-          .getByLabel(
-            "I understand that the stale synchronized Vault will be completely overwritten by server data.",
-          )
-          .check();
-        await activeRecovery
+        const skipExport = activeDiscard.getByLabel(
+          "I understand that I am declining the recommended encrypted Export.",
+        );
+        const overwrite = activeDiscard.getByLabel(
+          "I understand that the stale synchronized Vault will be completely overwritten by server data.",
+        );
+        if (await skipExport.isEnabled()) {
+          await skipExport.check();
+          await overwrite.check();
+        }
+        await activeDiscard
           .getByRole("button", {
-            name: "Preserve local copy and use server data",
+            name: "Discard stale local Replica and use server data",
           })
           .click();
         await expect
@@ -1249,13 +1435,11 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         await staleLibrary.reload();
       };
       for (const checkpoint of [
-        "stale-recovery:prepare-fork",
-        "stale-recovery:fork-persisted",
-        "stale-recovery:prepare-server-replacement",
-        "stale-recovery:remote-prepared",
-        "stale-recovery:before-activation",
+        "stale-discard:prepare-server-replacement",
+        "stale-discard:server-replacement-prepared",
+        "stale-discard:before-activation",
       ]) {
-        await interruptRecoveryAt(checkpoint);
+        await interruptDiscardAt(checkpoint);
         await expect(staleLibrary.getByRole("button", { name: "Resolve stale Vault" })).toBeVisible(
           {
             timeout: 120_000,
@@ -1264,7 +1448,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         await expect(staleLibrary.getByText(/2 captures/u)).toBeVisible();
         await staleLibrary.getByRole("button", { name: "Resolve stale Vault" }).click();
       }
-      await interruptRecoveryAt("stale-recovery:after-activation");
+      await interruptDiscardAt("stale-discard:after-activation");
       await expect
         .poll(
           async () =>
@@ -1278,15 +1462,40 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         .toBe("UpToDate");
       await staleLibrary.setViewportSize({ width: 1280, height: 900 });
       await expect(staleLibrary.getByText("1 capture", { exact: false })).toBeVisible();
-      await staleLibrary.getByRole("button", { name: "Switch Vault" }).click();
-      const switcher = staleLibrary.getByRole("dialog", {
-        name: "Switch Vault",
+      const state = await appRequest<{ workspace: { vaults: readonly unknown[] } }>(staleLibrary, {
+        type: "GetState",
       });
-      await expect(switcher.getByText(/recovered local copy/u)).toBeVisible();
+      expect(state.workspace.vaults).toHaveLength(1);
     });
 
     await test.step("publish the Vault to an empty second self-hosted server", async () => {
+      if (vaultId === undefined) throw new Error("The first Journey Vault is unavailable.");
       await firstLibrary.bringToFront();
+      const reliefEstimate = await appRequest<{
+        readonly candidateArtifacts: number;
+        readonly candidateBytes: number;
+      }>(firstLibrary, {
+        type: "GetStorageReliefEstimate",
+        expectedVaultId: vaultId,
+      });
+      expect(reliefEstimate.candidateArtifacts).toBeGreaterThanOrEqual(2);
+      firstLibrary.once("dialog", (dialog) => void dialog.accept());
+      await firstLibrary.getByRole("button", { name: "Free up browser storage" }).click();
+      await expect
+        .poll(
+          async () =>
+            (
+              await appRequest<{
+                readonly latestStorageReliefJob?: { readonly state: string };
+              }>(firstLibrary, { type: "GetState" })
+            ).latestStorageReliefJob?.state,
+          { timeout: 120_000 },
+        )
+        .toBe("Succeeded");
+      const remoteSource = await artifactStorageSnapshot(firstLibrary, vaultId);
+      expect(remoteSource.remoteOnlyArtifactIds).toHaveLength(reliefEstimate.candidateArtifacts);
+      for (const artifactObjectId of remoteSource.remoteOnlyArtifactIds)
+        expect(remoteSource.filenames).not.toContain(`${artifactObjectId}.artifact`);
       await faultControl(firstLibrary, "arm", "synchronization:before-reconciliation-commit");
       await appRequest(firstLibrary, { type: "WakeSynchronization" });
       await expect
@@ -1361,6 +1570,17 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         },
       });
       expect(state.serverSwitch).toBeUndefined();
+      expect(
+        (
+          await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(firstLibrary, {
+            type: "GetState",
+          })
+        ).remoteOnlyArtifactCount,
+      ).toBe(reliefEstimate.candidateArtifacts);
+      const promotedStorage = await artifactStorageSnapshot(firstLibrary, vaultId);
+      expect(promotedStorage.remoteOnlyArtifactIds).toEqual(remoteSource.remoteOnlyArtifactIds);
+      for (const artifactObjectId of promotedStorage.remoteOnlyArtifactIds)
+        expect(promotedStorage.filenames).not.toContain(`${artifactObjectId}.artifact`);
       await expect
         .poll(
           async () =>
@@ -1376,6 +1596,44 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       await firstLibrary.screenshot({
         path: testInfo.outputPath("journey-server-changed.png"),
       });
+      await firstLibrary.keyboard.press("Escape");
+      const groups = await appRequest<
+        readonly { readonly captures: readonly { readonly bundleId: string }[] }[]
+      >(firstLibrary, { type: "ListLibrary", expectedVaultId: vaultId });
+      const bundleId = groups.flatMap((group) => group.captures).at(0)?.bundleId;
+      if (bundleId === undefined) throw new Error("The switched Capture is unavailable.");
+      await firstLibrary.goto(
+        `chrome-extension://${first.extensionId}/library.html?bundleId=${bundleId}`,
+      );
+      await expect(firstLibrary.getByRole("img", { name: /Full-page screenshot/u })).toBeVisible({
+        timeout: 120_000,
+      });
+      await expect
+        .poll(
+          async () =>
+            (
+              await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(firstLibrary, {
+                type: "GetState",
+              })
+            ).remoteOnlyArtifactCount,
+        )
+        .toBe(reliefEstimate.candidateArtifacts - 1);
+      await installSavedArtifactProbe(firstLibrary);
+      const primary = firstLibrary
+        .locator(".artifact-row")
+        .filter({ has: firstLibrary.locator("strong", { hasText: /^PRIMARY$/u }) });
+      await primary.getByRole("button", { name: "Download" }).click();
+      await expect.poll(async () => (await savedArtifactProbe(firstLibrary)).closed).toBe(true);
+      await expect
+        .poll(
+          async () =>
+            (
+              await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(firstLibrary, {
+                type: "GetState",
+              })
+            ).remoteOnlyArtifactCount,
+        )
+        .toBe(0);
     });
   } finally {
     await second?.context.close();
@@ -1429,6 +1687,31 @@ test("fast-forwards a stale local Replica from a candidate successor", async ({
     const stalePage = await stale.context.newPage();
     await stalePage.goto(`chrome-extension://${stale.extensionId}/library.html`);
     const base = await activeGeneration(stalePage);
+    const reliefEstimate = await appRequest<{
+      readonly candidateArtifacts: number;
+      readonly candidateBytes: number;
+    }>(stalePage, {
+      type: "GetStorageReliefEstimate",
+      expectedVaultId: stale.vaultId,
+    });
+    expect(reliefEstimate.candidateArtifacts).toBeGreaterThanOrEqual(2);
+    stalePage.once("dialog", (dialog) => void dialog.accept());
+    await stalePage.getByRole("button", { name: "Free up browser storage" }).click();
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{
+              readonly latestStorageReliefJob?: { readonly state: string };
+            }>(stalePage, { type: "GetState" })
+          ).latestStorageReliefJob?.state,
+        { timeout: 120_000 },
+      )
+      .toBe("Succeeded");
+    const remoteOnlyBefore = await artifactStorageSnapshot(stalePage, stale.vaultId);
+    expect(remoteOnlyBefore.remoteOnlyArtifactIds).toHaveLength(reliefEstimate.candidateArtifacts);
+    for (const artifactObjectId of remoteOnlyBefore.remoteOnlyArtifactIds)
+      expect(remoteOnlyBefore.filenames).not.toContain(`${artifactObjectId}.artifact`);
     await vacuumDeleted(setup.page, setup.client.vaultId);
     const successor = await activeGeneration(setup.page);
     expect(successor.generationNumber).toBe(base.generationNumber + 1);
@@ -1444,6 +1727,48 @@ test("fast-forwards a stale local Replica from a candidate successor", async ({
       "server-switch-fast-forward-local",
     );
     expect(await activeGeneration(stalePage)).toEqual(successor);
+    expect(
+      (
+        await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(stalePage, {
+          type: "GetState",
+        })
+      ).remoteOnlyArtifactCount,
+    ).toBe(0);
+    const localAfter = await artifactStorageSnapshot(stalePage, stale.vaultId);
+    expect(localAfter.remoteOnlyArtifactIds).toEqual([]);
+    const authoritativeArtifactIds = await stalePage.evaluate(async () => {
+      const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
+        const request = indexedDB.open("awsm-vault");
+        request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
+        request.addEventListener("error", () => reject(request.error), { once: true });
+      });
+      const transaction = database.transaction("objects", "readonly");
+      const values = await new Promise<readonly { objectId?: string; objectType?: string }[]>(
+        (resolveValues, reject) => {
+          const request = transaction.objectStore("objects").getAll();
+          request.addEventListener(
+            "success",
+            () =>
+              resolveValues(
+                request.result as readonly { objectId?: string; objectType?: string }[],
+              ),
+            { once: true },
+          );
+          request.addEventListener("error", () => reject(request.error), { once: true });
+        },
+      );
+      database.close();
+      return values
+        .filter(
+          (value): value is { objectId: string; objectType: "Artifact" } =>
+            value.objectType === "Artifact" && typeof value.objectId === "string",
+        )
+        .map((value) => value.objectId)
+        .toSorted();
+    });
+    expect(authoritativeArtifactIds.length).toBeGreaterThan(0);
+    for (const artifactObjectId of authoritativeArtifactIds)
+      expect(localAfter.filenames).toContain(`${artifactObjectId}.artifact`);
   } finally {
     await stale?.context.close();
     await setup.client.context.close();
@@ -2731,15 +3056,741 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
   }
 });
 
-test("renders export-first stale Replica recovery at desktop and narrow widths", async ({
+test("frees synchronized browser storage and restores remote Artifacts on demand", async ({
+  browserName,
+}, testInfo) => {
+  test.setTimeout(300_000);
+  expect(browserName).toBe("chromium");
+  const password = "correct horse storage battery";
+  const email = `storage-${crypto.randomUUID()}@example.test`;
+  const client = await createSynchronizedClient(
+    testInfo,
+    "storage-relief",
+    "http://127.0.0.1:3300",
+    email,
+    password,
+  );
+  try {
+    const fixture = await client.context.newPage();
+    await fixture.goto("http://127.0.0.1:4174/fixture");
+    await archiveFixture(client, fixture, 1);
+    const desktop = await client.context.newPage();
+    const narrow = await client.context.newPage();
+    await desktop.setViewportSize({ width: 1280, height: 900 });
+    await narrow.setViewportSize({ width: 390, height: 844 });
+    await Promise.all([
+      desktop.goto(`chrome-extension://${client.extensionId}/library.html`),
+      narrow.goto(`chrome-extension://${client.extensionId}/library.html`),
+    ]);
+    await waitForSynchronizedState(desktop, "http://127.0.0.1:3300");
+    const groups = await appRequest<
+      readonly { readonly captures: readonly { readonly bundleId: string }[] }[]
+    >(desktop, { type: "ListLibrary", expectedVaultId: client.vaultId });
+    const bundleId = groups.flatMap((group) => group.captures).at(0)?.bundleId;
+    if (bundleId === undefined) throw new Error("The storage-relief Capture is unavailable.");
+    await desktop.goto(
+      `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
+    );
+    const localScreenshot = desktop.getByRole("img", { name: /Full-page screenshot/u });
+    await expect(localScreenshot).toBeVisible();
+    const originalScreenshotPixels = await localScreenshot.evaluate(async (node) => {
+      const image = node as HTMLImageElement;
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (context === null) throw new Error("The screenshot pixel context is unavailable.");
+      context.drawImage(image, 0, 0);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      return {
+        width: canvas.width,
+        height: canvas.height,
+        digest: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", pixels))),
+      };
+    });
+    expect(originalScreenshotPixels.width).toBeGreaterThan(0);
+    expect(originalScreenshotPixels.height).toBeGreaterThan(0);
+    await installSavedArtifactProbe(desktop);
+    const localPrimary = desktop
+      .locator(".artifact-row")
+      .filter({ has: desktop.locator("strong", { hasText: /^PRIMARY$/u }) });
+    await localPrimary.getByRole("button", { name: "Download" }).click();
+    await expect.poll(async () => (await savedArtifactProbe(desktop)).closed).toBe(true);
+    const originalPrimaryBytes = Uint8Array.from((await savedArtifactProbe(desktop)).chunks.flat());
+    expect(originalPrimaryBytes.byteLength).toBeGreaterThan(0);
+    await desktop.goto(`chrome-extension://${client.extensionId}/library.html`);
+    const estimate = await appRequest<{
+      readonly candidateArtifacts: number;
+      readonly candidateBytes: number;
+    }>(desktop, { type: "GetStorageReliefEstimate", expectedVaultId: client.vaultId });
+    expect(estimate.candidateArtifacts).toBeGreaterThanOrEqual(2);
+    expect(estimate.candidateBytes).toBeGreaterThan(0);
+    await expect(desktop.getByRole("heading", { name: "Storage maintenance" })).toBeVisible();
+    await expect(narrow.getByRole("heading", { name: "Storage maintenance" })).toBeVisible();
+    await expect(desktop.getByText(/can be freed/u)).toBeVisible();
+    await expect(narrow.getByText(/can be freed/u)).toBeVisible();
+    await desktop.screenshot({
+      path: testInfo.outputPath("storage-relief-estimate-desktop.png"),
+      fullPage: true,
+    });
+    await narrow.screenshot({
+      path: testInfo.outputPath("storage-relief-estimate-narrow.png"),
+      fullPage: true,
+    });
+    let confirmation = "";
+    desktop.once("dialog", async (dialog) => {
+      confirmation = dialog.message();
+      await dialog.accept();
+    });
+    await faultControl(desktop, "arm", "storage-relief:after-synchronization");
+    await desktop.getByRole("button", { name: "Free up browser storage" }).click();
+    expect(confirmation).toContain("verify each encrypted server copy first");
+    expect(confirmation).toContain("only copy");
+    await expect
+      .poll(async () => (await faultControl(desktop, "status")).reached, { timeout: 120_000 })
+      .toBe(true);
+    await expect(
+      desktop.getByRole("progressbar", { name: "Storage cleanup progress" }),
+    ).toBeVisible();
+    await expect(
+      narrow.getByRole("progressbar", { name: "Storage cleanup progress" }),
+    ).toBeVisible();
+    const desktopCancel = desktop.getByRole("button", { name: "Cancel" });
+    const narrowCancel = narrow.getByRole("button", { name: "Cancel" });
+    await desktop.bringToFront();
+    await desktop.keyboard.press("Tab");
+    await desktopCancel.focus();
+    await expect(desktopCancel).toBeFocused();
+    await expect(desktop.getByRole("status")).toContainText(/Storage cleanup/u);
+    await desktop.screenshot({
+      path: testInfo.outputPath("storage-relief-running-desktop.png"),
+      fullPage: true,
+    });
+    await narrow.bringToFront();
+    await narrow.keyboard.press("Tab");
+    await narrowCancel.focus();
+    await expect(narrowCancel).toBeFocused();
+    await expect(narrow.getByRole("status")).toContainText(/Storage cleanup/u);
+    await narrow.screenshot({
+      path: testInfo.outputPath("storage-relief-running-narrow.png"),
+      fullPage: true,
+    });
+    await faultControl(desktop, "release");
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{
+              readonly latestStorageReliefJob?: { readonly state: string };
+            }>(desktop, { type: "GetState" })
+          ).latestStorageReliefJob?.state,
+        { timeout: 120_000 },
+      )
+      .toBe("Succeeded");
+    await expect(desktop.getByText(/^Freed /u)).toBeVisible();
+    await expect(narrow.getByText(/^Freed /u)).toBeVisible();
+    await expect(desktop.getByRole("heading", { name: "Storage maintenance" })).toBeFocused();
+    await expect(narrow.getByRole("heading", { name: "Storage maintenance" })).toBeFocused();
+    await expect(desktop.getByRole("status")).toContainText("Storage cleanup completed");
+    await expect(narrow.getByRole("status")).toContainText("Storage cleanup completed");
+    const remoteState = await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+      type: "GetState",
+    });
+    expect(remoteState.remoteOnlyArtifactCount).toBe(estimate.candidateArtifacts);
+    const evictedStorage = await artifactStorageSnapshot(desktop, client.vaultId);
+    expect(evictedStorage.remoteOnlyArtifactIds).toHaveLength(estimate.candidateArtifacts);
+    for (const artifactObjectId of evictedStorage.remoteOnlyArtifactIds)
+      expect(evictedStorage.filenames).not.toContain(`${artifactObjectId}.artifact`);
+    expect(evictedStorage.filenames.length).toBeGreaterThan(0);
+    await desktop.bringToFront();
+    await desktop.keyboard.press("Tab");
+    await desktop.getByRole("heading", { name: "Storage maintenance" }).focus();
+    await expect(desktop.getByRole("heading", { name: "Storage maintenance" })).toBeFocused();
+    await desktop.screenshot({
+      path: testInfo.outputPath("storage-relief-success-desktop.png"),
+      fullPage: true,
+    });
+    await narrow.bringToFront();
+    await narrow.keyboard.press("Tab");
+    await narrow.getByRole("heading", { name: "Storage maintenance" }).focus();
+    await expect(narrow.getByRole("heading", { name: "Storage maintenance" })).toBeFocused();
+    await narrow.screenshot({
+      path: testInfo.outputPath("storage-relief-success-narrow.png"),
+      fullPage: true,
+    });
+
+    await appRequest(desktop, { type: "RetrySynchronization" });
+    await waitForSynchronizedState(desktop, "http://127.0.0.1:3300");
+    expect(
+      (
+        await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+          type: "GetState",
+        })
+      ).remoteOnlyArtifactCount,
+    ).toBe(estimate.candidateArtifacts);
+
+    await desktop.getByRole("button", { name: "Export Vault" }).click();
+    const exportDialog = desktop.getByRole("dialog", { name: "Export encrypted Vault" });
+    await exportDialog.getByLabel("Export passphrase", { exact: true }).fill(password);
+    await exportDialog.getByLabel("Confirm export passphrase").fill(password);
+    await exportDialog.getByRole("button", { name: "Export Vault" }).click();
+    await expect(exportDialog).not.toBeVisible({ timeout: 120_000 });
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{
+              readonly latestExportJob?: { readonly state: string };
+              readonly remoteOnlyArtifactCount?: number;
+            }>(desktop, { type: "GetState" })
+          ).latestExportJob?.state,
+        { timeout: 120_000 },
+      )
+      .toBe("Succeeded");
+    const exportState = await appRequest<{
+      readonly latestExportJob?: {
+        readonly state: string;
+        readonly stage: string;
+        readonly errorId?: string;
+      };
+    }>(desktop, { type: "GetState" });
+    expect(exportState.latestExportJob).toMatchObject({
+      state: "Succeeded",
+      stage: "Download",
+    });
+    const exportedPackagePath = await desktop.evaluate(async () => {
+      const extensionApi = (
+        globalThis as unknown as {
+          chrome: {
+            downloads: {
+              search(query: {
+                readonly limit: 1;
+                readonly orderBy: readonly ["-startTime"];
+                readonly state: "complete";
+              }): Promise<readonly { readonly filename?: string; readonly mime?: string }[]>;
+            };
+          };
+        }
+      ).chrome;
+      const downloads = await extensionApi.downloads.search({
+        limit: 1,
+        orderBy: ["-startTime"],
+        state: "complete",
+      });
+      const exported = downloads[0];
+      if (exported?.filename === undefined)
+        throw new Error("The completed Vault Package download is unavailable.");
+      return exported.filename;
+    });
+    expect((await readFile(exportedPackagePath)).byteLength).toBeGreaterThan(0);
+    expect(
+      (
+        await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+          type: "GetState",
+        })
+      ).remoteOnlyArtifactCount,
+    ).toBe(estimate.candidateArtifacts);
+
+    await setCoordinationServerUnavailable(client, true);
+    const offlineDetail = await client.context.newPage();
+    await offlineDetail.goto(
+      `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
+    );
+    await expect(
+      offlineDetail.getByText("Stored on server · retrieves when opened").first(),
+    ).toBeVisible();
+    await expect(
+      offlineDetail.getByText("This screenshot is stored on the server. Reconnect and try again."),
+    ).toBeVisible();
+    await offlineDetail.screenshot({
+      path: testInfo.outputPath("storage-relief-offline-detail-desktop.png"),
+      fullPage: true,
+    });
+    await offlineDetail.setViewportSize({ width: 390, height: 844 });
+    await offlineDetail.screenshot({
+      path: testInfo.outputPath("storage-relief-offline-detail-narrow.png"),
+      fullPage: true,
+    });
+    await offlineDetail.close();
+    await setCoordinationServerUnavailable(client, false);
+    await appRequest(desktop, { type: "RetrySynchronization" });
+    await waitForSynchronizedState(desktop, "http://127.0.0.1:3300");
+    expect(
+      (
+        await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+          type: "GetState",
+        })
+      ).remoteOnlyArtifactCount,
+    ).toBe(estimate.candidateArtifacts);
+
+    await desktop.goto(
+      `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
+    );
+    await expect(desktop.getByRole("img", { name: /Full-page screenshot/u })).toBeVisible({
+      timeout: 120_000,
+    });
+    const restoredScreenshotPixels = await desktop
+      .getByRole("img", { name: /Full-page screenshot/u })
+      .evaluate(async (node) => {
+        const image = node as HTMLImageElement;
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth;
+        canvas.height = image.naturalHeight;
+        const context = canvas.getContext("2d");
+        if (context === null) throw new Error("The restored pixel context is unavailable.");
+        context.drawImage(image, 0, 0);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        return {
+          width: canvas.width,
+          height: canvas.height,
+          digest: Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", pixels))),
+        };
+      });
+    expect(restoredScreenshotPixels).toEqual(originalScreenshotPixels);
+    await desktop.screenshot({
+      path: testInfo.outputPath("storage-relief-restored-detail-desktop.png"),
+      fullPage: true,
+    });
+    await desktop.setViewportSize({ width: 390, height: 844 });
+    await desktop.screenshot({
+      path: testInfo.outputPath("storage-relief-restored-detail-narrow.png"),
+      fullPage: true,
+    });
+    await desktop.setViewportSize({ width: 1280, height: 900 });
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+              type: "GetState",
+            })
+          ).remoteOnlyArtifactCount,
+      )
+      .toBe(estimate.candidateArtifacts - 1);
+    await expect.poll(async () => narrow.getByText(/^Freed /u).isVisible()).toBe(true);
+
+    await installSavedArtifactProbe(desktop);
+    const remotePrimary = desktop
+      .locator(".artifact-row")
+      .filter({ has: desktop.locator("strong", { hasText: /^PRIMARY$/u }) });
+    await remotePrimary.getByRole("button", { name: "Download" }).click();
+    await expect.poll(async () => (await savedArtifactProbe(desktop)).closed).toBe(true);
+    const restoredPrimary = await savedArtifactProbe(desktop);
+    expect(restoredPrimary.aborted).toBe(false);
+    expect(Uint8Array.from(restoredPrimary.chunks.flat())).toEqual(originalPrimaryBytes);
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+              type: "GetState",
+            })
+          ).remoteOnlyArtifactCount,
+      )
+      .toBe(0);
+
+    await desktop.goto(`chrome-extension://${client.extensionId}/library.html`);
+    const repeatEstimate = await appRequest<{
+      readonly candidateArtifacts: number;
+      readonly candidateBytes: number;
+    }>(desktop, { type: "GetStorageReliefEstimate", expectedVaultId: client.vaultId });
+    expect(repeatEstimate).toEqual(estimate);
+    const priorReliefJobId = (
+      await appRequest<{ readonly latestStorageReliefJob?: { readonly jobId: string } }>(desktop, {
+        type: "GetState",
+      })
+    ).latestStorageReliefJob?.jobId;
+    desktop.once("dialog", async (dialog) => dialog.accept());
+    await desktop.getByRole("button", { name: "Free up browser storage" }).click();
+    await expect
+      .poll(
+        async () => {
+          const job = (
+            await appRequest<{
+              readonly latestStorageReliefJob?: {
+                readonly jobId: string;
+                readonly state: string;
+              };
+            }>(desktop, { type: "GetState" })
+          ).latestStorageReliefJob;
+          return job?.jobId !== priorReliefJobId ? job?.state : undefined;
+        },
+        { timeout: 120_000 },
+      )
+      .toBe("Succeeded");
+    const repeatedStorage = await artifactStorageSnapshot(desktop, client.vaultId);
+    expect(repeatedStorage.remoteOnlyArtifactIds).toHaveLength(estimate.candidateArtifacts);
+    for (const artifactObjectId of repeatedStorage.remoteOnlyArtifactIds)
+      expect(repeatedStorage.filenames).not.toContain(`${artifactObjectId}.artifact`);
+
+    await narrow.getByRole("button", { name: "Settings" }).click();
+    let signOutWarning = "";
+    narrow.once("dialog", async (dialog) => {
+      signOutWarning = dialog.message();
+      await dialog.accept();
+    });
+    await narrow.getByRole("button", { name: "Sign out" }).click();
+    expect(signOutWarning).toMatch(/remote-only Artifacts? depends? on this Account/u);
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{ readonly account: { readonly accountState: string } }>(narrow, {
+              type: "GetState",
+            })
+          ).account.accountState,
+      )
+      .toBe("SignedOut");
+
+    await desktop.goto(
+      `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
+    );
+    await expect(desktop.getByText("Sign in to retrieve this screenshot.")).toBeVisible();
+    const compactArtifact = desktop
+      .locator(".artifact-row")
+      .filter({ has: desktop.locator("strong", { hasText: /^TEXT EXTRACTED$/u }) });
+    await compactArtifact.getByRole("button", { name: "Inspect" }).click();
+    await expect(desktop.locator(".artifact-inspection")).toBeVisible();
+
+    await desktop.goto(`chrome-extension://${client.extensionId}/library.html`);
+    await appRequest(desktop, { type: "LoginAccount", email, password });
+    await waitForSynchronizedState(desktop, "http://127.0.0.1:3300");
+    await setCoordinationServerUnavailable(client, true);
+    await desktop.goto(
+      `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
+    );
+    await expect(
+      desktop.getByText("This screenshot is stored on the server. Reconnect and try again."),
+    ).toBeVisible();
+    await desktop.goto(`chrome-extension://${client.extensionId}/library.html`);
+    await setCoordinationServerUnavailable(client, false);
+    await appRequest(desktop, { type: "RetrySynchronization" });
+    await waitForSynchronizedState(desktop, "http://127.0.0.1:3300");
+
+    await faultControl(
+      desktop,
+      "arm",
+      "artifact-retrieval:after-partial-local-write",
+      "STORAGE_QUOTA_EXCEEDED",
+    );
+    await desktop.goto(
+      `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
+    );
+    await expect(desktop.getByRole("img", { name: /Full-page screenshot/u })).toBeVisible({
+      timeout: 120_000,
+    });
+    expect(
+      (
+        await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+          type: "GetState",
+        })
+      ).remoteOnlyArtifactCount,
+    ).toBe(estimate.candidateArtifacts);
+    const transientStorage = await artifactStorageSnapshot(desktop, client.vaultId);
+    expect(transientStorage.remoteOnlyArtifactIds).toHaveLength(estimate.candidateArtifacts);
+    for (const artifactObjectId of transientStorage.remoteOnlyArtifactIds)
+      expect(transientStorage.filenames).not.toContain(`${artifactObjectId}.artifact`);
+    await desktop.goto(`chrome-extension://${client.extensionId}/library.html`);
+    await faultControl(desktop, "release");
+
+    const imported = await packagedAccountContext(testInfo, "storage-relief-import");
+    try {
+      await imported.popup.close();
+      const importedLibrary = await imported.context.newPage();
+      await importedLibrary.goto(
+        `chrome-extension://${imported.extensionId}/library.html?import=1`,
+      );
+      const importDialog = importedLibrary.getByRole("dialog", { name: "Import encrypted Vault" });
+      await importDialog.getByLabel("Vault Package").setInputFiles(exportedPackagePath);
+      await importDialog.getByRole("button", { name: "Continue" }).click();
+      await importDialog.getByLabel("Export passphrase").fill(password);
+      await importDialog.getByRole("button", { name: "Import Vault" }).click();
+      await expect(importDialog).not.toBeVisible({ timeout: 120_000 });
+      const importedState = await appRequest<{
+        readonly workspace: { readonly activeVaultId?: string };
+        readonly remoteOnlyArtifactCount?: number;
+      }>(importedLibrary, { type: "GetState" });
+      if (importedState.workspace.activeVaultId === undefined)
+        throw new Error("The imported Vault is not active.");
+      expect(importedState.remoteOnlyArtifactCount).toBe(0);
+      const importedStorage = await artifactStorageSnapshot(
+        importedLibrary,
+        importedState.workspace.activeVaultId,
+      );
+      expect(importedStorage.remoteOnlyArtifactIds).toEqual([]);
+      expect(importedStorage.filenames.length).toBeGreaterThanOrEqual(estimate.candidateArtifacts);
+      await importedLibrary.getByRole("button", { name: "Unlock on this device" }).click();
+      await importedLibrary.goto(
+        `chrome-extension://${imported.extensionId}/library.html?bundleId=${bundleId}`,
+      );
+      await installSavedArtifactProbe(importedLibrary);
+      const importedPrimary = importedLibrary
+        .locator(".artifact-row")
+        .filter({ has: importedLibrary.locator("strong", { hasText: /^PRIMARY$/u }) });
+      await importedPrimary.getByRole("button", { name: "Download" }).click();
+      await expect.poll(async () => (await savedArtifactProbe(importedLibrary)).closed).toBe(true);
+      expect(Uint8Array.from((await savedArtifactProbe(importedLibrary)).chunks.flat())).toEqual(
+        originalPrimaryBytes,
+      );
+    } finally {
+      await imported.context.close();
+    }
+
+    const preCorruptionStorage = await artifactStorageSnapshot(desktop, client.vaultId);
+    expect(preCorruptionStorage.remoteOnlyArtifactIds).toEqual(
+      transientStorage.remoteOnlyArtifactIds,
+    );
+    for (const artifactObjectId of preCorruptionStorage.remoteOnlyArtifactIds)
+      expect(preCorruptionStorage.filenames).not.toContain(`${artifactObjectId}.artifact`);
+    await corruptRemoteArtifactObjects(preCorruptionStorage.remoteOnlyArtifactIds);
+    const artifactReadResult = await desktop.evaluate(
+      async ({ expectedVaultId, expectedBundleId }) => {
+        const extensionApi = (
+          globalThis as typeof globalThis & {
+            chrome: {
+              runtime: {
+                sendMessage(message: unknown, callback: (response: unknown) => void): void;
+              };
+            };
+          }
+        ).chrome;
+        const send = (message: unknown): Promise<unknown> =>
+          new Promise((resolveResponse) =>
+            extensionApi.runtime.sendMessage(message, resolveResponse),
+          );
+        const opened = (await send({
+          type: "OpenArtifact",
+          expectedVaultId,
+          bundleId: expectedBundleId,
+          role: "SCREENSHOT_FULL",
+        })) as { ok: boolean; value?: { sessionId: string }; error?: { id: string } };
+        if (!opened.ok || opened.value === undefined) return { stage: "open", response: opened };
+        for (;;) {
+          const next = (await send({
+            type: "ReadArtifactChunk",
+            expectedVaultId,
+            sessionId: opened.value.sessionId,
+          })) as { ok: boolean; value?: { done: boolean }; error?: { id: string } };
+          if (!next.ok) return { stage: "read", response: next };
+          if (next.value?.done === true) return { stage: "done", response: next };
+        }
+      },
+      { expectedVaultId: client.vaultId, expectedBundleId: bundleId },
+    );
+    expect(artifactReadResult).toEqual({
+      stage: "open",
+      response: {
+        ok: false,
+        error: expect.objectContaining({ id: "REMOTE_ARTIFACT_INTEGRITY_FAILED" }),
+      },
+    });
+    await desktop.goto(
+      `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
+    );
+    await expect(desktop.getByText("Screenshot failed integrity verification.")).toBeVisible({
+      timeout: 120_000,
+    });
+    expect(
+      (
+        await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+          type: "GetState",
+        })
+      ).remoteOnlyArtifactCount,
+    ).toBe(estimate.candidateArtifacts);
+    expect(await desktop.getByRole("img", { name: /Full-page screenshot/u }).isVisible()).toBe(
+      false,
+    );
+  } finally {
+    await client.context.close();
+  }
+});
+
+test("resumes every packaged storage-relief removal boundary and preserves partial cancellation", async ({
+  browserName,
+}, testInfo) => {
+  test.setTimeout(600_000);
+  expect(browserName).toBe("chromium");
+  const password = "correct horse restart battery";
+  const client = await createSynchronizedClient(
+    testInfo,
+    "storage-relief-restart",
+    "http://127.0.0.1:3300",
+    `storage-restart-${crypto.randomUUID()}@example.test`,
+    password,
+  );
+  try {
+    const fixture = await client.context.newPage();
+    await fixture.goto("http://127.0.0.1:4174/fixture");
+    await archiveFixture(client, fixture, 1);
+    const library = await client.context.newPage();
+    await library.goto(`chrome-extension://${client.extensionId}/library.html`);
+    await waitForSynchronizedState(library, "http://127.0.0.1:3300");
+    const groups = await appRequest<
+      readonly { readonly captures: readonly { readonly bundleId: string }[] }[]
+    >(library, { type: "ListLibrary", expectedVaultId: client.vaultId });
+    const bundleId = groups.flatMap((group) => group.captures).at(0)?.bundleId;
+    if (bundleId === undefined) throw new Error("The restart Capture is unavailable.");
+
+    const estimate = async (): Promise<{
+      readonly candidateArtifacts: number;
+      readonly candidateBytes: number;
+    }> =>
+      appRequest(library, {
+        type: "GetStorageReliefEstimate",
+        expectedVaultId: client.vaultId,
+      });
+    const start = async (): Promise<void> => {
+      library.once("dialog", (dialog) => void dialog.accept());
+      await library.getByRole("button", { name: "Free up browser storage" }).click();
+    };
+    const restoreHeavyArtifacts = async (): Promise<void> => {
+      await library.goto(
+        `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
+      );
+      await expect(library.getByRole("img", { name: /Full-page screenshot/u })).toBeVisible({
+        timeout: 120_000,
+      });
+      await installSavedArtifactProbe(library);
+      const primary = library
+        .locator(".artifact-row")
+        .filter({ has: library.locator("strong", { hasText: /^PRIMARY$/u }) });
+      await primary.getByRole("button", { name: "Download" }).click();
+      await expect.poll(async () => (await savedArtifactProbe(library)).closed).toBe(true);
+      await expect
+        .poll(
+          async () =>
+            (
+              await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(library, {
+                type: "GetState",
+              })
+            ).remoteOnlyArtifactCount,
+          { timeout: 120_000 },
+        )
+        .toBe(0);
+      await library.goto(`chrome-extension://${client.extensionId}/library.html`);
+    };
+
+    const initialEstimate = await estimate();
+    expect(initialEstimate.candidateArtifacts).toBeGreaterThanOrEqual(2);
+    for (const checkpoint of [
+      "storage-relief:after-verified-checkpoint",
+      "storage-relief:after-evicting-checkpoint",
+      "storage-relief:after-wrapper-removed",
+      "storage-relief:after-remote-only-commit",
+    ]) {
+      expect(await estimate()).toEqual(initialEstimate);
+      await faultControl(library, "arm", checkpoint);
+      await start();
+      await expect
+        .poll(async () => (await faultControl(library, "status")).reached, {
+          timeout: 120_000,
+        })
+        .toBe(true);
+      await stopExtensionWorker(client.context, library, client.extensionId);
+      await library.reload();
+      await expect
+        .poll(
+          async () =>
+            (
+              await appRequest<{
+                readonly latestStorageReliefJob?: { readonly state: string };
+              }>(library, { type: "GetState" })
+            ).latestStorageReliefJob?.state,
+          { timeout: 120_000 },
+        )
+        .toBe("Succeeded");
+      const storage = await artifactStorageSnapshot(library, client.vaultId);
+      expect(storage.remoteOnlyArtifactIds).toHaveLength(initialEstimate.candidateArtifacts);
+      for (const artifactObjectId of storage.remoteOnlyArtifactIds)
+        expect(storage.filenames).not.toContain(`${artifactObjectId}.artifact`);
+      await restoreHeavyArtifacts();
+    }
+
+    await faultControl(library, "arm", "storage-relief:after-remote-only-commit");
+    await start();
+    await expect
+      .poll(async () => (await faultControl(library, "status")).reached, {
+        timeout: 120_000,
+      })
+      .toBe(true);
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(library, {
+              type: "GetState",
+            })
+          ).remoteOnlyArtifactCount,
+      )
+      .toBe(1);
+    const running = await appRequest<{
+      readonly latestStorageReliefJob?: { readonly jobId: string };
+    }>(library, { type: "GetState" });
+    if (running.latestStorageReliefJob === undefined)
+      throw new Error("The cancellable storage-relief Job is unavailable.");
+    const cancel = library.getByRole("button", { name: "Cancel" });
+    await cancel.focus();
+    await expect(cancel).toBeFocused();
+    await library.keyboard.press("Enter");
+    await expect(library.getByRole("status")).toContainText("Cancelling storage cleanup");
+    await faultControl(library, "release");
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{
+              readonly latestStorageReliefJob?: {
+                readonly jobId: string;
+                readonly state: string;
+                readonly cancellationRequested: boolean;
+              };
+            }>(library, { type: "GetState" })
+          ).latestStorageReliefJob,
+        { timeout: 120_000 },
+      )
+      .toMatchObject({
+        jobId: running.latestStorageReliefJob.jobId,
+        state: "Cancelled",
+        cancellationRequested: true,
+      });
+    await expect(library.getByRole("button", { name: "Free up browser storage" })).toBeFocused();
+    await expect(library.getByRole("status")).toContainText("Storage cleanup cancelled");
+    expect((await estimate()).candidateArtifacts).toBe(initialEstimate.candidateArtifacts - 1);
+    const cancelledStorage = await artifactStorageSnapshot(library, client.vaultId);
+    expect(cancelledStorage.remoteOnlyArtifactIds).toHaveLength(1);
+    await stopExtensionWorker(client.context, library, client.extensionId);
+    await library.reload();
+    await expect
+      .poll(
+        async () =>
+          (
+            await appRequest<{
+              readonly latestStorageReliefJob?: { readonly jobId: string; readonly state: string };
+            }>(library, { type: "GetState" })
+          ).latestStorageReliefJob,
+      )
+      .toMatchObject({ jobId: running.latestStorageReliefJob.jobId, state: "Cancelled" });
+    expect(
+      (
+        await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(library, {
+          type: "GetState",
+        })
+      ).remoteOnlyArtifactCount,
+    ).toBe(1);
+  } finally {
+    await client.context.close();
+  }
+});
+
+test("renders export-first stale Replica discard at desktop and narrow widths", async ({
   browserName,
 }, testInfo) => {
   test.setTimeout(90_000);
   expect(browserName).toBe("chromium");
-  const extensionPath = testInfo.outputPath("stale-recovery-extension");
+  const extensionPath = testInfo.outputPath("stale-discard-extension");
   await cp(extensionBuildPath, extensionPath, { recursive: true });
   const context = await chromium.launchPersistentContext(
-    testInfo.outputPath("stale-recovery-profile"),
+    testInfo.outputPath("stale-discard-profile"),
     {
       channel: "chromium",
       headless: true,
@@ -2785,28 +3836,28 @@ test("renders export-first stale Replica recovery at desktop and narrow widths",
     await expect(dialog).toBeVisible();
     await expect(
       dialog.getByRole("button", {
-        name: "Preserve local copy and use server data",
+        name: "Discard stale local Replica and use server data",
       }),
     ).toBeDisabled();
     await library.setViewportSize({ width: 1280, height: 900 });
     await library.screenshot({
-      path: testInfo.outputPath("stale-recovery-desktop.png"),
+      path: testInfo.outputPath("stale-discard-desktop.png"),
     });
     await dialog.getByLabel(/declining the recommended encrypted Export/u).check();
     await expect(
       dialog.getByRole("button", {
-        name: "Preserve local copy and use server data",
+        name: "Discard stale local Replica and use server data",
       }),
     ).toBeDisabled();
     await dialog.getByLabel(/completely overwritten by server data/u).check();
     await expect(
       dialog.getByRole("button", {
-        name: "Preserve local copy and use server data",
+        name: "Discard stale local Replica and use server data",
       }),
     ).toBeEnabled();
     await library.setViewportSize({ width: 390, height: 844 });
     await library.screenshot({
-      path: testInfo.outputPath("stale-recovery-narrow-confirmed.png"),
+      path: testInfo.outputPath("stale-discard-narrow-confirmed.png"),
     });
     const replacementVaultId = await library.evaluate(async (expectedActiveVaultId) => {
       const extensionApi = (
@@ -2823,7 +3874,7 @@ test("renders export-first stale Replica recovery at desktop and narrow widths",
           {
             type: "CreateVault",
             expectedActiveVaultId,
-            name: "Recovery failure fixture",
+            name: "Discard failure fixture",
           },
           (response) => {
             const result = response as {
@@ -2838,11 +3889,13 @@ test("renders export-first stale Replica recovery at desktop and narrow widths",
         );
       });
     }, state.workspace.activeVaultId);
-    await dialog.getByRole("button", { name: "Preserve local copy and use server data" }).click();
+    await dialog
+      .getByRole("button", { name: "Discard stale local Replica and use server data" })
+      .click();
     await expect(dialog.getByText(/active Vault changed|context changed/iu)).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
     await library.screenshot({
-      path: testInfo.outputPath("stale-recovery-failure.png"),
+      path: testInfo.outputPath("stale-discard-failure.png"),
     });
     await library.close();
 
@@ -2857,11 +3910,11 @@ test("renders export-first stale Replica recovery at desktop and narrow widths",
     await busyDialog.getByLabel(/declining the recommended encrypted Export/u).check();
     await busyDialog.getByLabel(/completely overwritten by server data/u).check();
     await busyDialog
-      .getByRole("button", { name: "Preserve local copy and use server data" })
+      .getByRole("button", { name: "Discard stale local Replica and use server data" })
       .click();
     await expect(busyDialog.getByText(/Keep this page open/u)).toBeVisible();
     await busyLibrary.screenshot({
-      path: testInfo.outputPath("stale-recovery-busy.png"),
+      path: testInfo.outputPath("stale-discard-busy.png"),
     });
   } finally {
     await context.close();
@@ -3131,8 +4184,35 @@ test("exports a Vault and imports it into a fresh Workspace", async ({ browserNa
     await reexportDialog
       .getByLabel("Confirm export passphrase")
       .fill("re-exported package passphrase");
+    await faultControl(library, "arm", "export-download:before-download", "EXPORT_DOWNLOAD_FAILED");
     await reexportDialog.getByRole("button", { name: "Export Vault" }).click();
     await expect(reexportDialog).not.toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(() =>
+        appRequest<{
+          readonly latestExportJob?: {
+            readonly state: string;
+            readonly stage: string;
+            readonly errorId?: string;
+          };
+        }>(library, { type: "GetState" }).then((state) => state.latestExportJob),
+      )
+      .toMatchObject({
+        state: "Failed",
+        stage: "Download",
+        errorId: "EXPORT_DOWNLOAD_FAILED",
+      });
+    await faultControl(library, "release");
+    await library.getByRole("button", { name: "Export Vault" }).click();
+    const retryDialog = library.getByRole("dialog", { name: "Export encrypted Vault" });
+    await retryDialog
+      .getByLabel("Export passphrase", { exact: true })
+      .fill("re-exported package passphrase");
+    await retryDialog
+      .getByLabel("Confirm export passphrase")
+      .fill("re-exported package passphrase");
+    await retryDialog.getByRole("button", { name: "Export Vault" }).click();
+    await expect(retryDialog).not.toBeVisible({ timeout: 30_000 });
     await expect
       .poll(() =>
         library.evaluate(
@@ -3156,13 +4236,31 @@ test("exports a Vault and imports it into a fresh Workspace", async ({ browserNa
         ),
       )
       .toMatchObject({
-        state: "Failed",
-        stage: "Download",
-        errorId: "EXPORT_DOWNLOAD_FAILED",
+        state: "Succeeded",
       });
-    await expect(library.getByText("The last Vault Export failed safely.")).toBeVisible({
+    await expect(library.getByText("The last encrypted Vault Export was downloaded.")).toBeVisible({
       timeout: 30_000,
     });
+    const reexportedFilename = await library.evaluate(async () => {
+      const extensionApi = (
+        globalThis as unknown as {
+          chrome: {
+            downloads: {
+              search(query: unknown): Promise<readonly { filename?: string }[]>;
+            };
+          };
+        }
+      ).chrome;
+      const downloads = await extensionApi.downloads.search({
+        limit: 1,
+        orderBy: ["-startTime"],
+        state: "complete",
+      });
+      return downloads[0]?.filename;
+    });
+    if (reexportedFilename === undefined)
+      throw new Error("The re-exported Vault Package download is unavailable.");
+    expect((await readFile(reexportedFilename)).byteLength).toBeGreaterThan(0);
     await library.setViewportSize({ width: 1280, height: 900 });
     await library.screenshot({
       path: testInfo.outputPath("import-success-wide.png"),

@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { cp, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { type BrowserContext, chromium, expect, type Page, type TestInfo } from "@playwright/test";
@@ -93,13 +94,14 @@ export async function faultControl(
   page: Page,
   action: "arm" | "arm-authentication-expiry" | "status" | "release",
   checkpoint?: string,
+  failureId?: string,
 ): Promise<{
   ok: boolean;
   reached?: boolean;
   lastFailure?: { message: string; id?: string; status?: number };
 }> {
   return page.evaluate(
-    ({ requestedAction, requestedCheckpoint }) =>
+    ({ requestedAction, requestedCheckpoint, requestedFailureId }) =>
       new Promise((resolveValue, reject) => {
         const extensionApi = (
           globalThis as unknown as {
@@ -116,6 +118,7 @@ export async function faultControl(
             type: "awsm:test-fault-control",
             action: requestedAction,
             ...(requestedCheckpoint === undefined ? {} : { checkpoint: requestedCheckpoint }),
+            ...(requestedFailureId === undefined ? {} : { failureId: requestedFailureId }),
           },
           (response) => {
             if (extensionApi.runtime.lastError !== undefined)
@@ -135,8 +138,122 @@ export async function faultControl(
           },
         );
       }),
-    { requestedAction: action, requestedCheckpoint: checkpoint },
+    {
+      requestedAction: action,
+      requestedCheckpoint: checkpoint,
+      requestedFailureId: failureId,
+    },
   );
+}
+
+export async function freeBrowserStorage(
+  page: Page,
+  vaultId: string,
+): Promise<{
+  readonly filenames: readonly string[];
+  readonly remoteOnlyArtifactIds: readonly string[];
+}> {
+  const estimate = await appRequest<{
+    readonly candidateArtifacts: number;
+    readonly candidateBytes: number;
+  }>(page, { type: "GetStorageReliefEstimate", expectedVaultId: vaultId });
+  expect(estimate.candidateArtifacts).toBeGreaterThan(0);
+  await appRequest(page, {
+    type: "StartStorageRelief",
+    expectedVaultId: vaultId,
+    candidateArtifacts: estimate.candidateArtifacts,
+    candidateBytes: estimate.candidateBytes,
+  });
+  await expect
+    .poll(
+      async () =>
+        (
+          await appRequest<{
+            readonly latestStorageReliefJob?: { readonly state: string };
+          }>(page, { type: "GetState" })
+        ).latestStorageReliefJob?.state,
+      { timeout: 120_000 },
+    )
+    .toBe("Succeeded");
+  return page.evaluate(async (expectedVaultId) => {
+    const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
+      const request = indexedDB.open("awsm-vault");
+      request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    try {
+      const transaction = database.transaction("artifact_availability", "readonly");
+      const remoteOnlyArtifactIds = await new Promise<readonly string[]>(
+        (resolveValues, reject) => {
+          const request = transaction.objectStore("artifact_availability").getAll();
+          request.addEventListener(
+            "success",
+            () =>
+              resolveValues(
+                request.result
+                  .filter((value) => Reflect.get(value, "vaultId") === expectedVaultId)
+                  .map((value) => String(Reflect.get(value, "artifactObjectId")))
+                  .toSorted(),
+              ),
+            { once: true },
+          );
+          request.addEventListener("error", () => reject(request.error), { once: true });
+        },
+      );
+      const root = await navigator.storage.getDirectory();
+      const objects = await root.getDirectoryHandle("awsm-vault-objects");
+      const directory = await objects.getDirectoryHandle(expectedVaultId);
+      const filenames: string[] = [];
+      for await (const [name] of directory.entries()) filenames.push(name);
+      return { filenames: filenames.toSorted(), remoteOnlyArtifactIds };
+    } finally {
+      database.close();
+    }
+  }, vaultId);
+}
+
+export async function corruptRemoteArtifactObjects(
+  artifactObjectIds: readonly string[],
+): Promise<void> {
+  const rails = [
+    "require 'json'",
+    "require 'digest'",
+    "JSON.parse(ENV.fetch('AWSM_CORRUPT_OBJECT_IDS')).each do |object_id|",
+    "  record = OpaqueRecord.find_by!(object_id: object_id)",
+    "  path = Coordination::DiskStore.path(record.storage_key)",
+    "  File.open(path, 'r+b') do |file|",
+    "    first = file.read(1).unpack1('C')",
+    "    file.seek(0)",
+    "    file.write([first ^ 0xff].pack('C'))",
+    "  end",
+    "  raise 'proof-server corruption failed' if Digest::SHA256.file(path).digest == record.sha256",
+    "end",
+  ].join("; ");
+  await new Promise<void>((resolveValue, reject) => {
+    execFile(
+      "docker",
+      [
+        "compose",
+        "-f",
+        resolve("../..", "compose.sync-proof.yml"),
+        "exec",
+        "-T",
+        "-e",
+        `AWSM_CORRUPT_OBJECT_IDS=${JSON.stringify(artifactObjectIds)}`,
+        "coordination-proof",
+        "bin/rails",
+        "runner",
+        rails,
+      ],
+      (error, _stdout, stderr) => {
+        if (error === null) resolveValue();
+        else
+          reject(
+            new Error(`Failed to corrupt proof-server Artifacts: ${stderr}`, { cause: error }),
+          );
+      },
+    );
+  });
 }
 
 async function packagedContext(testInfo: TestInfo, name: string) {
@@ -286,6 +403,12 @@ export async function archiveFixture(
   await expect(popup.getByRole("button", { name: "Archive this page" })).toBeVisible();
   let captured = false;
   for (let attempt = 0; attempt < 2 && !captured; attempt += 1) {
+    const serverOrigin = (
+      await appRequest<{
+        account: { configuration: { serverOrigin?: string } };
+      }>(popup, { type: "GetState" })
+    ).account.configuration.serverOrigin;
+    if (serverOrigin !== undefined) await waitForSynchronizedState(popup, serverOrigin);
     const priorJobId = (
       await appRequest<{ latestJob?: { jobId: string } }>(popup, {
         type: "GetState",

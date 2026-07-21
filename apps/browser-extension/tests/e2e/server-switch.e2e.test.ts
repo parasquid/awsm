@@ -103,6 +103,7 @@ test("publishes a live source Vault to an empty candidate server", async ({
       document.body.dataset.sourceStillLive = "true";
     });
     await archiveFixture(source, fixture, 3);
+    await waitForSynchronizedState(library, "http://127.0.0.1:3300");
     await waitForSynchronizedState(observerLibrary, "http://127.0.0.1:3300");
     const observerBeforePromotion = await appRequest<readonly { captures: readonly unknown[] }[]>(
       observerLibrary,

@@ -2,13 +2,107 @@ import { expect, test } from "@playwright/test";
 import {
   appRequest,
   archiveFixture,
+  corruptRemoteArtifactObjects,
   createSynchronizedClient,
   faultControl,
+  freeBrowserStorage,
   loginSynchronizedClient,
   sharedDeletedBase,
   vacuumDeleted,
   waitForSynchronizedState,
 } from "./server-switch-support";
+
+test("keeps remote-only source Artifacts safe across relay failures", async ({
+  browserName,
+}, testInfo) => {
+  test.setTimeout(900_000);
+  expect(browserName).toBe("chromium");
+  const password = "correct horse relay battery";
+  const scenarios = [
+    {
+      name: "source-authentication",
+      errorId: "REMOTE_ARTIFACT_AUTHENTICATION_REQUIRED",
+      checkpoint: "server-switch-relay:before-source-artifact-read",
+      corruptSource: false,
+    },
+    {
+      name: "candidate-interruption",
+      errorId: "SYNCHRONIZATION_INTERRUPTED",
+      checkpoint: "server-switch-relay:after-candidate-upload-part",
+      corruptSource: false,
+    },
+    {
+      name: "source-corruption",
+      errorId: "REMOTE_ARTIFACT_INTEGRITY_FAILED",
+      checkpoint: undefined,
+      corruptSource: true,
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const source = await createSynchronizedClient(
+      testInfo,
+      `relay-${scenario.name}`,
+      "http://127.0.0.1:3300",
+      `relay-source-${crypto.randomUUID()}@example.test`,
+      password,
+    );
+    try {
+      const fixture = await source.context.newPage();
+      await fixture.goto("http://127.0.0.1:4174/fixture");
+      await archiveFixture(source, fixture, 1);
+      const page = await source.context.newPage();
+      await page.goto(`chrome-extension://${source.extensionId}/library.html`);
+      await waitForSynchronizedState(page, "http://127.0.0.1:3300");
+      const storage = await freeBrowserStorage(page, source.vaultId);
+      expect(storage.remoteOnlyArtifactIds.length).toBeGreaterThan(0);
+      for (const artifactObjectId of storage.remoteOnlyArtifactIds)
+        expect(storage.filenames).not.toContain(`${artifactObjectId}.artifact`);
+      if (scenario.corruptSource) await corruptRemoteArtifactObjects(storage.remoteOnlyArtifactIds);
+
+      await appRequest(page, {
+        type: "BeginServerSwitch",
+        candidateOrigin: "http://127.0.0.1:3301",
+        expectedVaultId: source.vaultId,
+      });
+      if (scenario.checkpoint !== undefined)
+        await faultControl(page, "arm", scenario.checkpoint, scenario.errorId);
+      await appRequest(page, {
+        type: "SignupServerSwitchCandidate",
+        email: `relay-candidate-${crypto.randomUUID()}@example.test`,
+        password,
+      }).catch(() => undefined);
+      await expect
+        .poll(async () => {
+          const state = await appRequest<{
+            readonly account: { readonly configuration: { readonly serverOrigin?: string } };
+            readonly remoteOnlyArtifactCount?: number;
+            readonly serverSwitch?: { readonly state: string; readonly errorId?: string };
+          }>(page, { type: "GetState" });
+          return {
+            serverOrigin: state.account.configuration.serverOrigin,
+            remoteOnlyArtifactCount: state.remoteOnlyArtifactCount,
+            switchState: state.serverSwitch?.state,
+            errorId: state.serverSwitch?.errorId,
+          };
+        })
+        .toEqual({
+          serverOrigin: "http://127.0.0.1:3300",
+          remoteOnlyArtifactCount: storage.remoteOnlyArtifactIds.length,
+          switchState: "Failed",
+          errorId: scenario.errorId,
+        });
+      if (scenario.checkpoint !== undefined) await faultControl(page, "release");
+      const groups = await appRequest<readonly { readonly captures: readonly unknown[] }[]>(page, {
+        type: "ListLibrary",
+        expectedVaultId: source.vaultId,
+      });
+      expect(groups.reduce((total, group) => total + group.captures.length, 0)).toBe(1);
+    } finally {
+      await source.context.close();
+    }
+  }
+});
 
 test("preserves the source context across candidate authentication failures", async ({
   browserName,

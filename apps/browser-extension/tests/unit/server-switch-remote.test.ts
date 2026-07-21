@@ -13,6 +13,146 @@ const jobId = "01900000-0000-7000-8000-000000000003";
 const accountId = "01900000-0000-7000-8000-000000000004";
 
 describe("Server Switch remote application", () => {
+  it("exposes source reads and durable candidate parts to relay fault controls", async () => {
+    const artifactId = "01900000-0000-7000-8000-000000000009";
+    const reached: string[] = [];
+    const sourceFailure = Object.assign(new Error("Source authentication expired"), {
+      id: "REMOTE_ARTIFACT_AUTHENTICATION_REQUIRED",
+    });
+    const faults = {
+      beforeSourceArtifactRead: async () => {
+        reached.push("source");
+        throw sourceFailure;
+      },
+      afterCandidateUploadPart: async () => {
+        reached.push("candidate");
+      },
+    };
+    const running = {
+      version: 1 as const,
+      jobId,
+      sourceOrigin: "https://source.example",
+      candidateOrigin: "https://candidate.example",
+      vaultId,
+      state: "Running" as const,
+      stage: "PrepareRemote" as const,
+      direction: "PublishLocal" as const,
+      expectedLocalHead: {
+        version: 1 as const,
+        vaultId,
+        generationId,
+        generationNumber: 7,
+        appendedObjectIds: [artifactId],
+        appendedEventIds: [],
+      },
+      createdAt: "2026-07-20T00:00:00.000Z",
+      updatedAt: "2026-07-20T00:00:00.000Z",
+      completedItems: 0,
+      totalItems: 2,
+      processedBytes: 0,
+      totalBytes: 7,
+      retryCount: 0,
+      candidateAuthorityChanged: false,
+      attachIdempotencyKey: "01900000-0000-7000-8000-000000000005",
+      candidateIdempotencyKey: "01900000-0000-7000-8000-000000000006",
+    } satisfies ServerSwitchJobV1;
+    let current: ServerSwitchJobV1 = running;
+    const checkpoints = new Map<string, ServerSwitchCheckpointV1>();
+    const request = vi.fn(async (method: string, path: string) => {
+      if (method === "POST" && path === "/api/vaults")
+        return {
+          status: 201,
+          body: {
+            upload: {
+              uploadId: "01900000-0000-7000-8000-000000000007",
+              partSizeBytes: 1024,
+              receivedParts: [],
+            },
+            ticket: { url: "/generation/{partNumber}" },
+          },
+        };
+      if (path.endsWith("/uploads"))
+        return {
+          status: 201,
+          body: {
+            upload: {
+              uploadId: "01900000-0000-7000-8000-000000000010",
+              state: "Open",
+              partSizeBytes: 1024,
+              receivedParts: [],
+            },
+            ticket: { url: "/artifact/{partNumber}" },
+          },
+        };
+      return { status: 200, body: {} };
+    });
+    const applicator = new ServerSwitchRemoteApplicator(
+      {
+        loadJob: async () => current,
+        saveJob: async (next) => {
+          current = next;
+        },
+        loadCheckpoint: async (_jobId, kind, entityId) => checkpoints.get(`${kind}:${entityId}`),
+        saveCheckpoint: async (checkpoint) => {
+          checkpoints.set(`${checkpoint.kind}:${checkpoint.entityId}`, checkpoint);
+        },
+      },
+      {
+        loadAccountVault: async () => ({
+          version: 1,
+          accountId,
+          vaultId,
+          accountKeyId: "01900000-0000-7000-8000-000000000008",
+          accountSlot: { encrypted: true },
+          remoteGenerationId: generationId,
+          remoteGenerationNumber: 7,
+          deliveryCursor: 0,
+        }),
+        saveAccountVault: async () => undefined,
+      },
+      {
+        listStoredObjects: async () => [
+          {
+            version: 1,
+            objectId: artifactId,
+            objectType: "Artifact",
+            envelopeFormat: "artifact:xchacha20poly1305-chunked:v1",
+            envelopeByteLength: 4,
+            envelopeChecksumAlgorithm: "hash:sha256:v1",
+            envelopeChecksum: new Uint8Array(32).fill(3),
+          },
+        ],
+        listStoredEvents: async () => [],
+      },
+      {
+        openEncrypted: async () =>
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array([9, 8, 7, 6]));
+              controller.close();
+            },
+          }),
+      },
+      { request, putTransfer: async () => undefined },
+      undefined,
+      faults,
+    );
+
+    await expect(
+      applicator.publishLocal({
+        metadata: { vaultId },
+        generation: {
+          version: 1,
+          generationId,
+          generationNumber: 7,
+          envelopeBytes: new Uint8Array([1, 2, 3]),
+        },
+        head: running.expectedLocalHead,
+      } as unknown as VaultRecordsV1),
+    ).rejects.toBe(sourceFailure);
+    expect(reached).toEqual(["source"]);
+  });
+
   it("publishes the original Generation only after every closure record is durable", async () => {
     let job: ServerSwitchJobV1 = {
       version: 1,
@@ -115,6 +255,146 @@ describe("Server Switch remote application", () => {
       candidateAuthorityChanged: true,
       direction: "PublishLocal",
     });
+  });
+
+  it("relays a remote-only Artifact reader from the source server to the candidate", async () => {
+    const artifactId = "01900000-0000-7000-8000-000000000009";
+    const encrypted = new Uint8Array([9, 8, 7, 6]);
+    let job: ServerSwitchJobV1 = {
+      version: 1,
+      jobId,
+      sourceOrigin: "https://source.example",
+      candidateOrigin: "https://candidate.example",
+      vaultId,
+      state: "Running",
+      stage: "PrepareRemote",
+      direction: "PublishLocal",
+      expectedLocalHead: {
+        version: 1,
+        vaultId,
+        generationId,
+        generationNumber: 7,
+        appendedObjectIds: [artifactId],
+        appendedEventIds: [],
+      },
+      createdAt: "2026-07-20T00:00:00.000Z",
+      updatedAt: "2026-07-20T00:00:00.000Z",
+      completedItems: 0,
+      totalItems: 2,
+      processedBytes: 0,
+      totalBytes: 7,
+      retryCount: 0,
+      candidateAuthorityChanged: false,
+      attachIdempotencyKey: "01900000-0000-7000-8000-000000000005",
+      candidateIdempotencyKey: "01900000-0000-7000-8000-000000000006",
+    };
+    const checkpoints = new Map<string, ServerSwitchCheckpointV1>();
+    const openEncrypted = vi.fn(
+      async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encrypted);
+            controller.close();
+          },
+        }),
+    );
+    const putTransfer = vi.fn(async () => undefined);
+    const reached: string[] = [];
+    const request = vi.fn(async (method: string, path: string) => {
+      if (method === "POST" && path === "/api/vaults")
+        return {
+          status: 201,
+          body: {
+            upload: {
+              uploadId: "01900000-0000-7000-8000-000000000007",
+              partSizeBytes: 1024,
+              receivedParts: [],
+            },
+            ticket: { url: "/generation/{partNumber}" },
+          },
+        };
+      if (path.endsWith("/uploads"))
+        return {
+          status: 201,
+          body: {
+            upload: {
+              uploadId: "01900000-0000-7000-8000-000000000010",
+              state: "Open",
+              partSizeBytes: 1024,
+              receivedParts: [],
+            },
+            ticket: { url: "/artifact/{partNumber}" },
+          },
+        };
+      return { status: 200, body: {} };
+    });
+    await new ServerSwitchRemoteApplicator(
+      {
+        loadJob: async () => job,
+        saveJob: async (next) => {
+          job = next;
+        },
+        loadCheckpoint: async (_jobId, kind, entityId) => checkpoints.get(`${kind}:${entityId}`),
+        saveCheckpoint: async (checkpoint) => {
+          checkpoints.set(`${checkpoint.kind}:${checkpoint.entityId}`, checkpoint);
+        },
+      },
+      {
+        loadAccountVault: async () => ({
+          version: 1,
+          accountId,
+          vaultId,
+          accountKeyId: "01900000-0000-7000-8000-000000000008",
+          accountSlot: { encrypted: true },
+          remoteGenerationId: generationId,
+          remoteGenerationNumber: 7,
+          deliveryCursor: 0,
+        }),
+        saveAccountVault: async () => undefined,
+      },
+      {
+        listStoredObjects: async () => [
+          {
+            version: 1,
+            objectId: artifactId,
+            objectType: "Artifact",
+            envelopeFormat: "artifact:xchacha20poly1305-chunked:v1",
+            envelopeByteLength: encrypted.byteLength,
+            envelopeChecksumAlgorithm: "hash:sha256:v1",
+            envelopeChecksum: new Uint8Array(32).fill(3),
+          },
+        ],
+        listStoredEvents: async () => [],
+      },
+      { openEncrypted },
+      { request, putTransfer },
+      undefined,
+      {
+        beforeSourceArtifactRead: async () => {
+          reached.push("source");
+        },
+        afterCandidateUploadPart: async () => {
+          reached.push("candidate");
+        },
+      },
+    ).publishLocal(
+      {
+        metadata: { vaultId },
+        generation: {
+          version: 1,
+          generationId,
+          generationNumber: 7,
+          envelopeBytes: new Uint8Array([1, 2, 3]),
+        },
+        head: job.expectedLocalHead,
+      } as unknown as VaultRecordsV1,
+      "2026-07-20T00:01:00.000Z",
+    );
+
+    expect(openEncrypted).toHaveBeenCalledExactlyOnceWith(vaultId, artifactId);
+    expect(putTransfer).toHaveBeenCalledWith("/artifact/{partNumber}", 0, encrypted);
+    expect(reached).toEqual(["source", "candidate"]);
+    expect(checkpoints.get(`Object:${artifactId}`)?.state).toBe("Durable");
   });
 
   it("CAS-activates the original direct successor without committing Events early", async () => {
