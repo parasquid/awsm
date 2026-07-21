@@ -1,34 +1,37 @@
 import type { SynchronizationJobV1 } from "../../drivers/indexeddb/schema";
 
-interface RecoveryJobStore {
+interface DiscardJobStore {
   latestSynchronizationJob(): Promise<SynchronizationJobV1 | undefined>;
   saveSynchronizationJob(job: SynchronizationJobV1): Promise<void>;
 }
 
-interface RecoveryArtifactStore {
-  reconcile(vaultId: string, authoritativeObjectIds: ReadonlySet<string>): Promise<void>;
+interface DiscardArtifactStore {
+  remove(vaultId: string, objectId: string): Promise<void>;
 }
 
-export class InterruptedStaleRecoveryReconciler {
+export class InterruptedStaleDiscardReconciler {
   constructor(
-    private readonly jobs: RecoveryJobStore,
-    private readonly artifacts: RecoveryArtifactStore,
+    private readonly jobs: DiscardJobStore,
+    private readonly artifacts: DiscardArtifactStore,
   ) {}
 
   async execute(now = new Date().toISOString()): Promise<boolean> {
     const job = await this.jobs.latestSynchronizationJob();
     if (
       job?.state !== "Running" ||
-      (job.stage !== "PrepareRecoveryFork" &&
-        job.stage !== "PrepareServerReplacement" &&
-        job.stage !== "ActivateRecovery")
+      (job.stage !== "PrepareServerReplacement" && job.stage !== "ActivateServerReplacement") ||
+      job.vaultId === undefined
     )
       return false;
-    if (job.recoveryForkVaultId !== undefined)
-      await this.artifacts.reconcile(job.recoveryForkVaultId, new Set()).catch(() => undefined);
-    const { recoveryForkVaultId: _recoveryForkVaultId, ...withoutFork } = job;
+    const vaultId = job.vaultId;
+    await Promise.all(
+      (job.preparedArtifactObjectIds ?? []).map((objectId) =>
+        this.artifacts.remove(vaultId, objectId).catch(() => undefined),
+      ),
+    );
+    const { preparedArtifactObjectIds: _preparedArtifactObjectIds, ...retryable } = job;
     await this.jobs.saveSynchronizationJob({
-      ...withoutFork,
+      ...retryable,
       state: "Conflict",
       stage: "Checkpoint",
       updatedAt: now,
