@@ -120,6 +120,9 @@ The following invariants are fundamental.
   boundary, ordinary synchronization preservation, quota fallback, multi-surface invalidation,
   keyboard cancellation, terminal focus restoration, and polite live-region announcements at
   desktop and narrow widths.
+- Toolbar-popup navigation tests activate Open library and the recent-Capture preview through a
+  packaged Chrome popup and prove that the destination tab is created before asynchronous preview
+  dismissal can outlive the popup execution context.
 - Complete Export tests source remote-only wrappers through active or Recovery Snapshot tickets
   without local rehydration. Chrome Download Host tests register completion observation before
   starting a download, reconcile already-terminal downloads, surface interruption as a typed

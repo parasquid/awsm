@@ -1,6 +1,7 @@
 import { browser } from "wxt/browser";
 import { AppClientError, sendRequest } from "../../src/app/client";
 import type { AppState } from "../../src/app/protocol";
+import { navigateFromPopup } from "../../src/ui/popup-navigation";
 import { popupView } from "../../src/ui/popup-view";
 import {
   RECENT_CAPTURE_DURATION_MS,
@@ -327,8 +328,10 @@ function render(state: AppState, transientError?: string): void {
       card.setAttribute("aria-label", `Open archived capture: ${recentCapture.title}`);
       card.addEventListener("click", (event) => {
         event.preventDefault();
-        const open = (): Promise<unknown> => browser.tabs.create({ url: card.href });
-        void dismissSeenCapture(recentCapture.jobId).then(open, open);
+        navigateFromPopup({
+          open: () => browser.tabs.create({ url: card.href }),
+          dismiss: () => dismissSeenCapture(recentCapture.jobId),
+        });
       });
       const title = element("p", undefined, "recent-capture__title");
       title.append(document.createTextNode("Archived: "), element("strong", recentCapture.title));
@@ -448,7 +451,11 @@ function render(state: AppState, transientError?: string): void {
         void open();
         return;
       }
-      void dismissSeenCapture(view.recentCapture.jobId).then(open, open);
+      const jobId = view.recentCapture.jobId;
+      navigateFromPopup({
+        open,
+        dismiss: () => dismissSeenCapture(jobId),
+      });
     });
     const actions = element("div", undefined, "actions");
     actions.append(capture, library);

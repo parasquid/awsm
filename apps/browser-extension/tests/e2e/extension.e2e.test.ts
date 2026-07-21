@@ -2832,13 +2832,11 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await completedPopup.screenshot({
       path: testInfo.outputPath("popup-recent-capture.png"),
     });
-    await completedPopup.close();
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-    const reopenedPopup = await extensionPopup(context, extensionId);
-    await expect(reopenedPopup.getByText("Archived: AWSM tall fixture")).toHaveCount(0);
-    await expect(reopenedPopup.getByRole("button", { name: "Archive this page" })).toBeVisible();
-    const directCapturePage = await context.newPage();
-    await directCapturePage.goto(captureHref);
+    const capturePageOpened = context.waitForEvent("page", {
+      predicate: (page) => page.url().startsWith(captureHref),
+    });
+    await capturePreview.click();
+    const directCapturePage = await capturePageOpened;
     await expect(
       directCapturePage.getByRole("heading", { name: "AWSM tall fixture" }),
     ).toBeVisible();
@@ -2851,13 +2849,24 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       }),
     ).toHaveAttribute("href", "http://127.0.0.1:4174/fixture");
     await directCapturePage.close();
+    const reopenedPopup = await extensionPopup(context, extensionId);
+    await expect(reopenedPopup.getByText("Archived: AWSM tall fixture")).toHaveCount(0);
+    await expect(reopenedPopup.getByRole("button", { name: "Archive this page" })).toBeVisible();
+    const libraryPageOpened = context.waitForEvent("page", {
+      predicate: (page) => page.url() === `chrome-extension://${extensionId}/library.html`,
+    });
+    await reopenedPopup.getByRole("link", { name: "Open library" }).click();
+    const openedLibrary = await libraryPageOpened;
+    await expect(openedLibrary.locator("header h1")).toBeVisible();
+    await openedLibrary.close();
+    const capturePopup = await extensionPopup(context, extensionId);
     await fixturePage.evaluate(() => {
       const redBand = document.querySelector<HTMLElement>(".red");
       if (redBand === null) throw new Error("The evolving fixture band is unavailable.");
       redBand.style.background = "#7b4fc4";
       redBand.textContent = "purple evolution landmark";
     });
-    await reopenedPopup.evaluate(async () => {
+    await capturePopup.evaluate(async () => {
       const extensionApi = (
         globalThis as unknown as {
           chrome: {
@@ -2898,7 +2907,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       );
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
     });
-    await reopenedPopup.close();
+    await capturePopup.close();
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 10_000));
     await fixturePage.evaluate(() => history.pushState({}, "", "/fixture?different=1"));
     const popupAfterUrlChange = await extensionPopup(context, extensionId);

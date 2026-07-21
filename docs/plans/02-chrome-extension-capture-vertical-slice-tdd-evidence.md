@@ -198,7 +198,9 @@ The packaged path extracts a selected Capture, undoes it, extracts again, merges
 
 - **RED:** the focused popup-state test failed before fragmentless active-URL matching existed. The prior popup `pagehide` approach could also lose its asynchronous dismissal when Chrome destroyed the popup document.
 - **GREEN:** the popup reports its visible Job over a named Runtime port; background port disconnect persists dismissal independently of the closing document. Background state suppresses and dismisses a recent Capture whenever the active tab is missing, invalid, or differs after fragment removal, while query parameters remain significant.
-- Explicit dismissal, preview navigation, and Open Library still persist the same additive operational Boolean and clear the port target before the popup closes.
+- Explicit dismissal, preview navigation, and Open Library still persist the same additive
+  operational Boolean and clear the port target before the popup closes. Navigation is initiated
+  synchronously before awaiting that persistence so popup teardown cannot cancel the destination.
 - Packaged Chrome proves closing a popup that actually rendered the preview prevents it from returning, and changing only the active page's query suppresses and persists dismissal of the stale preview.
 
 ## Drag Hotspot Refinement

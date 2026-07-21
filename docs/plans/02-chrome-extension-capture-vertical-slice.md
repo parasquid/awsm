@@ -873,7 +873,9 @@ Failures remain retryable alerts rather than recent-capture cards. Active captur
 - Capture-job boundary tests must fail before the additive dismissal flag is decoded.
 - A real-browser IndexedDB test must prove dismissal persists on the completed operational job.
 - Packaged-Chrome E2E must prove the title and thumbnail are shown, the close control is accessible, and the card remains absent after closing and reopening the popup.
-- Opening the Library must persist the same seen state before navigation, so returning to the popup cannot resurrect the preview.
+- Opening the Library initiates the destination synchronously within the user activation, then
+  dispatches the same seen-state persistence without awaiting it. Returning to the popup cannot
+  resurrect the preview.
 - URL-matching tests must prove fragments are ignored while query changes suppress and dismiss the stale preview.
 
 ## 14.2 Group repeated captures as page history
