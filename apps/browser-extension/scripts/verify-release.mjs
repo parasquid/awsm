@@ -13,6 +13,13 @@ const approvedPermissions = [
   "alarms",
 ];
 const approvedOptionalOrigins = ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"];
+const releaseExcludedFaultPrefixes = [
+  "storage-relief:",
+  "artifact-retrieval:",
+  "stale-discard:",
+  "server-switch-relay:",
+  "export-download:",
+];
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -58,6 +65,11 @@ for (const path of builtFiles) {
       !source.includes("awsm:test-fault-control"),
       `E2E fault controls found in ${relative(output.pathname, path)}.`,
     );
+    for (const prefix of releaseExcludedFaultPrefixes)
+      assert(
+        !source.includes(prefix),
+        `Release-excluded fault checkpoint found in ${relative(output.pathname, path)}.`,
+      );
   }
   if (![".html", ".css"].includes(extname(path))) continue;
   const source = await readFile(path, "utf8");

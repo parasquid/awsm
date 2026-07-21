@@ -103,6 +103,55 @@ main {
   border-top: 1px solid #c9c5b9;
   padding-top: 14px;
 }
+.storage-maintenance {
+  display: grid;
+  gap: 14px;
+  margin-top: 34px;
+  border: 1px solid #b7c2ba;
+  border-radius: 12px;
+  padding: 22px;
+  background: linear-gradient(145deg, #fff 0%, #f1f6f2 100%);
+  box-shadow: 0 8px 24px rgb(23 33 27 / 7%);
+}
+.storage-maintenance h2,
+.storage-maintenance h3,
+.storage-maintenance p {
+  margin: 0;
+}
+.storage-maintenance__estimate {
+  color: #294c3a;
+  font-weight: 700;
+}
+.storage-maintenance__action {
+  justify-self: start;
+  color: #fff;
+  background: #18533a;
+}
+.storage-maintenance__job {
+  display: grid;
+  gap: 8px;
+  border-left: 4px solid #315f8c;
+  border-radius: 7px;
+  padding: 13px 15px;
+  background: #f4f8fb;
+}
+.storage-maintenance__job progress {
+  width: min(100%, 36rem);
+  height: 10px;
+  accent-color: #18533a;
+}
+.storage-maintenance__vacuum {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  border-top: 1px solid #c9c5b9;
+  padding-top: 16px;
+}
+.remote-only {
+  color: #315f8c;
+  font-size: 13px;
+  font-weight: 700;
+}
 .deleted-section__summary {
   display: flex;
   align-items: center;

@@ -98,9 +98,10 @@ export interface AtomicRemoteReconciliation {
   readonly collectionProjection: StoredCollectionProjectionV1;
   readonly vaultNameProjection: StoredVaultNameProjectionV1;
   readonly nameCache: WorkspaceVaultNameCacheV1;
+  readonly installedArtifactObjectIds: readonly string[];
 }
 
-export interface AtomicStaleRecovery {
+export interface AtomicStaleDiscard {
   readonly job: SynchronizationJobV1;
   readonly expectedStaleGenerationId: string;
   readonly registration: import("./schema").StoredAccountVaultV1;
@@ -113,15 +114,6 @@ export interface AtomicStaleRecovery {
   readonly remoteCollectionProjection: StoredCollectionProjectionV1;
   readonly remoteVaultNameProjection: StoredVaultNameProjectionV1;
   readonly remoteNameCache: WorkspaceVaultNameCacheV1;
-  readonly fork: {
-    readonly records: VaultRecordsV1;
-    readonly events: readonly StoredEvent[];
-    readonly objects: readonly StoredObjectV1[];
-    readonly libraryProjections: readonly StoredProjectionV1[];
-    readonly collectionProjection: StoredCollectionProjectionV1;
-    readonly vaultNameProjection: StoredVaultNameProjectionV1;
-    readonly nameCache: WorkspaceVaultNameCacheV1;
-  };
 }
 
 function sameIds(actual: readonly string[], expected: readonly string[]): boolean {
@@ -1098,6 +1090,7 @@ export class IndexedDbWorkspaceRepository {
         STORES.collectionProjection,
         STORES.vaultNameProjection,
         STORES.vaultNameCache,
+        STORES.artifactAvailability,
       ],
       "readwrite",
     );
@@ -1149,13 +1142,18 @@ export class IndexedDbWorkspaceRepository {
         .objectStore(STORES.vaultNameProjection)
         .put(input.vaultNameProjection, vaultSingletonKey(vaultId, "active"));
       transaction.objectStore(STORES.vaultNameCache).put(input.nameCache, vaultId);
+      for (const artifactObjectId of input.installedArtifactObjectIds)
+        transaction
+          .objectStore(STORES.artifactAvailability)
+          .delete(vaultKey(vaultId, artifactObjectId));
       transaction
         .objectStore(STORES.vaultHead)
         .put(input.head, vaultSingletonKey(vaultId, "active"));
       transaction.objectStore(STORES.accountVault).put(input.registration, "active");
+      const { preparedArtifactObjectIds: _preparedArtifactObjectIds, ...completedJob } = input.job;
       transaction
         .objectStore(STORES.synchronizationJobs)
-        .put({ ...input.job, state: "Succeeded", stage: "Checkpoint" }, "active");
+        .put({ ...completedJob, state: "Succeeded", stage: "Checkpoint" }, "active");
       await transactionDone(transaction);
     } catch (error) {
       try {
@@ -1165,27 +1163,20 @@ export class IndexedDbWorkspaceRepository {
     }
   }
 
-  async commitStaleRecovery(input: AtomicStaleRecovery): Promise<void> {
+  async commitStaleDiscard(input: AtomicStaleDiscard): Promise<void> {
     const vaultId = input.originalRecords.metadata.vaultId;
-    const forkVaultId = input.fork.records.metadata.vaultId;
     if (
-      forkVaultId === vaultId ||
       input.job.state !== "Running" ||
-      input.job.stage !== "ActivateRecovery" ||
+      input.job.stage !== "ActivateServerReplacement" ||
       input.job.vaultId !== vaultId ||
-      input.job.recoveryForkVaultId !== forkVaultId ||
       input.registration.vaultId !== vaultId ||
       input.registration.remoteGenerationId !== input.remoteGeneration.generationId ||
       input.remoteHead.vaultId !== vaultId ||
       input.remoteHead.generationId !== input.remoteGeneration.generationId ||
       input.remoteEvents.some((event) => event.vaultId !== vaultId) ||
-      input.fork.events.some((event) => event.vaultId !== forkVaultId) ||
-      input.fork.records.head.vaultId !== forkVaultId ||
-      input.fork.records.metadata.manuallyLocked ||
-      input.fork.nameCache.vaultId !== forkVaultId ||
       input.remoteNameCache.vaultId !== vaultId
     )
-      throw storageError(new Error("Stale recovery records are inconsistent."));
+      throw storageError(new Error("Stale discard records are inconsistent."));
     const stores = [
       STORES.workspaceMetadata,
       STORES.accountVault,
@@ -1206,40 +1197,18 @@ export class IndexedDbWorkspaceRepository {
       STORES.commandOutcomes,
       STORES.vacuumJobs,
       STORES.exportJobs,
+      STORES.artifactAvailability,
+      STORES.storageReliefJobs,
+      STORES.storageReliefCheckpoints,
     ];
     const database = await this.databasePromise;
     const transaction = database.transaction(stores, "readwrite");
     try {
-      const collisionStores = [
-        STORES.vaultDirectory,
-        STORES.vaultNameCache,
-        STORES.vaultNameProjection,
-        STORES.vaultMetadata,
-        STORES.keySlots,
-        STORES.deviceKeys,
-        STORES.objects,
-        STORES.events,
-        STORES.libraryProjection,
-        STORES.collectionProjection,
-        STORES.vaultGenerations,
-        STORES.vaultHead,
-      ];
-      const [workspaceValue, jobValue, headValue, ...forkCollisions] = await Promise.all([
+      const [workspaceValue, jobValue, headValue] = await Promise.all([
         requestValue(transaction.objectStore(STORES.workspaceMetadata).get("local")),
         requestValue(transaction.objectStore(STORES.synchronizationJobs).get("active")),
         requestValue(
           transaction.objectStore(STORES.vaultHead).get(vaultSingletonKey(vaultId, "active")),
-        ),
-        ...collisionStores.map((storeName) =>
-          requestValue(
-            transaction
-              .objectStore(storeName)
-              .count(
-                storeName === STORES.vaultDirectory || storeName === STORES.vaultNameCache
-                  ? IDBKeyRange.only(forkVaultId)
-                  : vaultKeyRange(forkVaultId),
-              ),
-          ),
         ),
       ]);
       const workspace = decodeWorkspaceMetadata(workspaceValue);
@@ -1248,11 +1217,10 @@ export class IndexedDbWorkspaceRepository {
       if (
         workspace.activeVaultId !== vaultId ||
         storedJob?.jobId !== input.job.jobId ||
-        storedJob.stage !== "ActivateRecovery" ||
-        staleHead?.generationId !== input.expectedStaleGenerationId ||
-        forkCollisions.some((count) => count !== 0)
+        storedJob.stage !== "ActivateServerReplacement" ||
+        staleHead?.generationId !== input.expectedStaleGenerationId
       )
-        throw Object.assign(new Error("Stale recovery ownership changed."), {
+        throw Object.assign(new Error("Stale discard ownership changed."), {
           id: "VAULT_CONTEXT_CHANGED",
         });
 
@@ -1304,52 +1272,14 @@ export class IndexedDbWorkspaceRepository {
         .objectStore(STORES.vaultNameProjection)
         .put(input.remoteVaultNameProjection, vaultSingletonKey(vaultId, "active"));
       transaction.objectStore(STORES.vaultNameCache).put(input.remoteNameCache, vaultId);
-
-      transaction
-        .objectStore(STORES.vaultMetadata)
-        .add(input.fork.records.metadata, vaultSingletonKey(forkVaultId, "metadata"));
-      transaction
-        .objectStore(STORES.keySlots)
-        .add(input.fork.records.deviceSlot, vaultSingletonKey(forkVaultId, "device"));
-      transaction
-        .objectStore(STORES.deviceKeys)
-        .add(input.fork.records.deviceKey, vaultSingletonKey(forkVaultId, "device"));
-      transaction
-        .objectStore(STORES.vaultGenerations)
-        .add(
-          input.fork.records.generation,
-          vaultKey(forkVaultId, input.fork.records.generation.generationId),
-        );
-      transaction
-        .objectStore(STORES.vaultHead)
-        .add(input.fork.records.head, vaultSingletonKey(forkVaultId, "active"));
-      for (const event of input.fork.events)
-        transaction.objectStore(STORES.events).add(event, vaultKey(forkVaultId, event.eventId));
-      for (const object of input.fork.objects)
-        transaction.objectStore(STORES.objects).add(object, vaultKey(forkVaultId, object.objectId));
-      for (const projection of input.fork.libraryProjections)
-        transaction
-          .objectStore(STORES.libraryProjection)
-          .add(projection, vaultKey(forkVaultId, projection.bundleId));
-      transaction
-        .objectStore(STORES.collectionProjection)
-        .add(input.fork.collectionProjection, vaultSingletonKey(forkVaultId, "active"));
-      transaction
-        .objectStore(STORES.vaultNameProjection)
-        .add(input.fork.vaultNameProjection, vaultSingletonKey(forkVaultId, "active"));
-      transaction.objectStore(STORES.vaultNameCache).add(input.fork.nameCache, forkVaultId);
-      transaction.objectStore(STORES.vaultDirectory).add(
-        {
-          version: 1,
-          vaultId: forkVaultId,
-          createdAt: input.fork.records.metadata.createdAt,
-        } satisfies VaultDirectoryEntryV1,
-        forkVaultId,
-      );
+      transaction.objectStore(STORES.artifactAvailability).delete(vaultKeyRange(vaultId));
+      transaction.objectStore(STORES.storageReliefJobs).delete(vaultKeyRange(vaultId));
+      transaction.objectStore(STORES.storageReliefCheckpoints).delete(vaultKeyRange(vaultId));
       transaction.objectStore(STORES.accountVault).put(input.registration, "active");
+      const { preparedArtifactObjectIds: _preparedArtifactObjectIds, ...completedJob } = input.job;
       transaction
         .objectStore(STORES.synchronizationJobs)
-        .put({ ...input.job, state: "Succeeded", stage: "Checkpoint" }, "active");
+        .put({ ...completedJob, state: "Succeeded", stage: "Checkpoint" }, "active");
       await transactionDone(transaction);
     } catch (error) {
       try {

@@ -405,7 +405,7 @@ function render(state: AppState, transientError?: string): void {
         "warning",
       ),
     );
-    const resolve = element("a", "Preserve local copy and use server version");
+    const resolve = element("a", "Review and discard stale local Replica");
     resolve.href = `${browser.runtime.getURL("/library.html")}?resolveStale=1`;
     resolve.target = "_blank";
     resolve.addEventListener("click", (event) => {

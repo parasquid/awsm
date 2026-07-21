@@ -83,6 +83,60 @@ export function formatByteSize(bytes: number): string {
   return `${formatted} ${units[unitIndex]}`;
 }
 
+export function storageReliefConfirmation(
+  candidateArtifacts: number,
+  candidateBytes: number,
+): string {
+  const noun = candidateArtifacts === 1 ? "Artifact wrapper" : "Artifact wrappers";
+  return [
+    `Free up to ${formatByteSize(candidateBytes)} by removing ${String(candidateArtifacts)} encrypted ${noun} from this browser?`,
+    "AWSM will synchronize and verify each encrypted server copy first. Only verified copies are removed locally.",
+    "The server may then hold the only copy. Those payloads will be unavailable offline until AWSM retrieves them.",
+    "You can run this again later.",
+  ].join("\n\n");
+}
+
+export function signOutConfirmation(remoteOnlyArtifacts: number): string | undefined {
+  if (remoteOnlyArtifacts === 0) return undefined;
+  return [
+    `Sign out while ${String(remoteOnlyArtifacts)} remote-only ${remoteOnlyArtifacts === 1 ? "Artifact depends" : "Artifacts depend"} on this Account?`,
+    "Those payloads will be unavailable until you sign in to the same Account on this synchronization server again.",
+  ].join("\n\n");
+}
+
+export function remoteArtifactFailureMessage(
+  errorId: string | undefined,
+  surface: "Inspect" | "Download" | "Screenshot",
+): string {
+  if (errorId === "REMOTE_ARTIFACT_AUTHENTICATION_REQUIRED")
+    return surface === "Screenshot"
+      ? "Sign in to retrieve this screenshot."
+      : "Sign in to retrieve this Artifact.";
+  if (errorId === "REMOTE_ARTIFACT_OFFLINE")
+    return surface === "Download"
+      ? "Reconnect and try the download again."
+      : surface === "Screenshot"
+        ? "This screenshot is stored on the server. Reconnect and try again."
+        : "This Artifact is stored on the server. Reconnect and try again.";
+  if (errorId === "REMOTE_ARTIFACT_INTEGRITY_FAILED")
+    return surface === "Screenshot"
+      ? "Screenshot failed integrity verification."
+      : "The Artifact failed integrity verification.";
+  if (errorId === "REMOTE_ARTIFACT_NOT_FOUND")
+    return surface === "Screenshot"
+      ? "The server no longer has this screenshot."
+      : "The server no longer has this Artifact.";
+  if (errorId === "REMOTE_ARTIFACT_UNAVAILABLE")
+    return surface === "Download"
+      ? "The server copy is temporarily unavailable. Try the download again."
+      : "The server copy is temporarily unavailable. Try again.";
+  return surface === "Inspect"
+    ? "The Artifact could not be inspected. Try again."
+    : surface === "Download"
+      ? "The Artifact could not be saved. Try again."
+      : "Screenshot preview unavailable. Try again.";
+}
+
 export function libraryStateConfirmation(
   title: string,
   captureCount: number,

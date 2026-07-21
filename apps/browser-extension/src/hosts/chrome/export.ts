@@ -5,6 +5,12 @@ import {
   validateVaultPackage,
   writeVaultPackage,
 } from "../../runtime/export";
+import {
+  type ChromeDownloadListener,
+  type ChromeDownloadsAdapter,
+  exportDownloadFailure,
+  waitForChromeDownload,
+} from "./download-waiter";
 
 const TEMP_DIRECTORY = "awsm-vault-exports";
 
@@ -18,7 +24,51 @@ function temporaryName(packageId: string): string {
   return `${packageId}.awsm.tmp`;
 }
 
+function preparedDownloadUrl(value: unknown): string {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("url" in value) ||
+    typeof value.url !== "string" ||
+    !value.url.startsWith(`blob:chrome-extension://${browser.runtime.id}/`)
+  )
+    throw Object.assign(new Error("Export download preparation failed."), {
+      id: "EXPORT_DOWNLOAD_FAILED",
+    });
+  return value.url;
+}
+
+const downloadListeners = new Map<
+  ChromeDownloadListener,
+  Parameters<typeof browser.downloads.onChanged.addListener>[0]
+>();
+const downloadsAdapter: ChromeDownloadsAdapter = {
+  search: async (downloadId) =>
+    (await browser.downloads.search({ id: downloadId })).map((item) => ({
+      state: item.state,
+      ...(item.error === undefined ? {} : { error: item.error }),
+    })),
+  addChangedListener: (listener) => {
+    const bridge: Parameters<typeof browser.downloads.onChanged.addListener>[0] = (delta) =>
+      listener({
+        id: delta.id,
+        ...(delta.state?.current === undefined ? {} : { state: delta.state.current }),
+        ...(delta.error?.current === undefined ? {} : { error: delta.error.current }),
+      });
+    downloadListeners.set(listener, bridge);
+    browser.downloads.onChanged.addListener(bridge);
+  },
+  removeChangedListener: (listener) => {
+    const bridge = downloadListeners.get(listener);
+    if (bridge === undefined) return;
+    downloadListeners.delete(listener);
+    browser.downloads.onChanged.removeListener(bridge);
+  },
+};
+
 export class ChromeVaultExportHost {
+  constructor(private readonly beforeDownload?: () => Promise<void>) {}
+
   async writeAndValidate(
     packageId: string,
     prepared: PreparedVaultExport,
@@ -53,29 +103,48 @@ export class ChromeVaultExportHost {
       });
     }
     const name = temporaryName(packageId);
+    if (!/^awsm-vault-[0-9]{4}-[0-9]{2}-[0-9]{2}\.awsm$/u.test(filename))
+      throw Object.assign(new Error("Invalid Export filename."), {
+        id: "EXPORT_DOWNLOAD_FAILED",
+      });
+    let downloadId: number | undefined;
+    let cancellationIssued = false;
     const cancel = (): void => {
-      void browser.runtime
-        .sendMessage({
-          type: "awsm:cancel-vault-export-download",
-          temporaryName: name,
-        })
-        .catch(() => undefined);
+      if (downloadId !== undefined && !cancellationIssued) {
+        cancellationIssued = true;
+        void browser.downloads.cancel(downloadId).catch(() => undefined);
+      }
     };
     signal.addEventListener("abort", cancel, { once: true });
     try {
       if (signal.aborted) cancel();
-      const response: unknown = await browser.runtime.sendMessage({
-        type: "awsm:download-vault-export",
+      const prepared: unknown = await browser.runtime.sendMessage({
+        type: "awsm:prepare-vault-export-download",
         temporaryName: name,
-        filename,
       });
       signal.throwIfAborted();
-      if (response !== true)
-        throw Object.assign(new Error("Export download failed."), {
-          id: "EXPORT_DOWNLOAD_FAILED",
+      await this.beforeDownload?.();
+      try {
+        downloadId = await browser.downloads.download({
+          url: preparedDownloadUrl(prepared),
+          filename,
+          saveAs: import.meta.env.MODE !== "e2e",
         });
+      } catch (error) {
+        if (signal.aborted) throw new DOMException("Export download cancelled.", "AbortError");
+        throw exportDownloadFailure(error);
+      }
+      if (signal.aborted) cancel();
+      signal.throwIfAborted();
+      await waitForChromeDownload(downloadsAdapter, downloadId, signal);
     } finally {
       signal.removeEventListener("abort", cancel);
+      await browser.runtime
+        .sendMessage({
+          type: "awsm:release-vault-export-download",
+          temporaryName: name,
+        })
+        .catch(() => undefined);
       if (createdDocument) await browser.offscreen.closeDocument().catch(() => undefined);
     }
   }

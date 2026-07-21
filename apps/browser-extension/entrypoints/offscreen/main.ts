@@ -4,74 +4,48 @@ import type { ScreenshotPlan, ScreenshotTile } from "../../src/hosts/chrome/scre
 const SCREENSHOT_WEBP_QUALITY = 0.72;
 const THUMBNAIL_WEBP_QUALITY = 0.78;
 
-interface ExportDownloadRequest {
-  readonly type: "awsm:download-vault-export";
-  readonly temporaryName: string;
-  readonly filename: string;
-}
-
-interface CancelExportDownloadRequest {
-  readonly type: "awsm:cancel-vault-export-download";
+interface PrepareExportDownloadRequest {
+  readonly type: "awsm:prepare-vault-export-download";
   readonly temporaryName: string;
 }
 
-const activeExportDownloads = new Map<string, number>();
+interface ReleaseExportDownloadRequest {
+  readonly type: "awsm:release-vault-export-download";
+  readonly temporaryName: string;
+}
 
-function isExportDownloadRequest(value: unknown): value is ExportDownloadRequest {
+const activeExportUrls = new Map<string, string>();
+
+function isPrepareExportDownloadRequest(value: unknown): value is PrepareExportDownloadRequest {
   return (
     typeof value === "object" &&
     value !== null &&
     "type" in value &&
-    value.type === "awsm:download-vault-export" &&
+    value.type === "awsm:prepare-vault-export-download" &&
     "temporaryName" in value &&
-    typeof value.temporaryName === "string" &&
-    "filename" in value &&
-    typeof value.filename === "string"
+    typeof value.temporaryName === "string"
   );
 }
 
-async function downloadExport(request: ExportDownloadRequest): Promise<true> {
+async function prepareExportDownload(
+  request: PrepareExportDownloadRequest,
+): Promise<{ readonly url: string }> {
   if (!/^[0-9a-f-]{36}\.awsm\.tmp$/iu.test(request.temporaryName))
     throw new Error("Invalid temporary Export name.");
-  if (!/^awsm-vault-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}\.awsm$/iu.test(request.filename)) {
-    throw new Error("Invalid Export filename.");
-  }
   const root = await navigator.storage.getDirectory();
   const directory = await root.getDirectoryHandle("awsm-vault-exports");
   const handle = await directory.getFileHandle(request.temporaryName);
+  const previous = activeExportUrls.get(request.temporaryName);
+  if (previous !== undefined) URL.revokeObjectURL(previous);
   const url = URL.createObjectURL(await handle.getFile());
-  try {
-    const downloadId = await browser.downloads.download({
-      url,
-      filename: request.filename,
-      saveAs: true,
-    });
-    activeExportDownloads.set(request.temporaryName, downloadId);
-    await new Promise<void>((resolve, reject) => {
-      const listener: Parameters<typeof browser.downloads.onChanged.addListener>[0] = (
-        delta,
-      ): void => {
-        if (delta.id !== downloadId) return;
-        if (delta.state?.current === "complete") {
-          browser.downloads.onChanged.removeListener(listener);
-          resolve();
-        } else if (delta.state?.current === "interrupted" || delta.error?.current !== undefined) {
-          browser.downloads.onChanged.removeListener(listener);
-          reject(new Error("Vault Package download was interrupted."));
-        }
-      };
-      browser.downloads.onChanged.addListener(listener);
-    });
-    return true;
-  } finally {
-    activeExportDownloads.delete(request.temporaryName);
-    URL.revokeObjectURL(url);
-  }
+  activeExportUrls.set(request.temporaryName, url);
+  return { url };
 }
 
-async function cancelExportDownload(request: CancelExportDownloadRequest): Promise<true> {
-  const downloadId = activeExportDownloads.get(request.temporaryName);
-  if (downloadId !== undefined) await browser.downloads.cancel(downloadId);
+function releaseExportDownload(request: ReleaseExportDownloadRequest): true {
+  const url = activeExportUrls.get(request.temporaryName);
+  if (url !== undefined) URL.revokeObjectURL(url);
+  activeExportUrls.delete(request.temporaryName);
   return true;
 }
 
@@ -215,15 +189,15 @@ function attachScreenshotPort(port: Browser.runtime.Port): void {
 browser.runtime.onConnect.addListener(attachScreenshotPort);
 
 browser.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-  const operation = isExportDownloadRequest(message)
-    ? downloadExport(message)
+  const operation = isPrepareExportDownloadRequest(message)
+    ? prepareExportDownload(message)
     : typeof message === "object" &&
         message !== null &&
         "type" in message &&
-        message.type === "awsm:cancel-vault-export-download" &&
+        message.type === "awsm:release-vault-export-download" &&
         "temporaryName" in message &&
         typeof message.temporaryName === "string"
-      ? cancelExportDownload(message as CancelExportDownloadRequest)
+      ? Promise.resolve(releaseExportDownload(message as ReleaseExportDownloadRequest))
       : undefined;
   if (operation === undefined) return false;
   void operation.then(sendResponse, () => sendResponse(undefined));

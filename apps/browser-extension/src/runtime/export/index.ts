@@ -15,6 +15,7 @@ export {
   type ExportManifestV1,
   type ExportRecordType,
 } from "./contracts";
+export { vaultExportFilename } from "./filename";
 export {
   createExportKeyEnvelope,
   ExportAuthenticationError,

@@ -1,6 +1,6 @@
 import { browser } from "wxt/browser";
 import { wipe } from "../crypto/sodium";
-import type { RuntimeErrorId } from "../domain/contracts";
+import { RUNTIME_ERROR_IDS, type RuntimeErrorId } from "../domain/contracts";
 import {
   encodeStructuredContentSequence,
   normalizedTextFromBlocks,
@@ -10,6 +10,7 @@ import {
   IndexedDbDriver,
   IndexedDbImportRepository,
   IndexedDbServerSwitchRepository,
+  IndexedDbStorageReliefRepository,
   IndexedDbVaultRepository,
   IndexedDbWorkspaceRepository,
   type ServerSwitchReplicaPromotion,
@@ -26,8 +27,9 @@ import { CoordinationAccountHttp } from "../runtime/account/http";
 import { configureSyncServer, validateSyncServer } from "../runtime/account/server";
 import { AccountAuthenticationService } from "../runtime/account/service";
 import { AccountSessionManager } from "../runtime/account/session";
+import { ArtifactResolver } from "../runtime/artifact";
 import { CaptureRuntime, defaultPrepareRegistration } from "../runtime/capture/service";
-import { VaultExportService } from "../runtime/export";
+import { VaultExportService, vaultExportFilename } from "../runtime/export";
 import { noRuntimeFaultCheckpoint } from "../runtime/fault-checkpoint";
 import { VaultImportService } from "../runtime/import/service";
 import { prepareLibraryStateChange, selectLibraryItems } from "../runtime/library/lifecycle";
@@ -47,6 +49,11 @@ import {
   type VacuumRepository,
   VaultVacuumService,
 } from "../runtime/library/vacuum";
+import { StorageReliefCandidateEnumerator } from "../runtime/storage-relief/candidates";
+import { ActiveGenerationStorageReliefProver } from "../runtime/storage-relief/proof";
+import { StorageReliefJobRunner } from "../runtime/storage-relief/runner";
+import { StorageReliefService } from "../runtime/storage-relief/service";
+import { storageReliefJobView } from "../runtime/storage-relief/view";
 import { RemoteBootstrapRunner } from "../runtime/synchronization/bootstrap";
 import { CableHintSubscriber } from "../runtime/synchronization/cable";
 import { SynchronizationCoordinator } from "../runtime/synchronization/coordinator";
@@ -61,12 +68,12 @@ import {
 } from "../runtime/synchronization/enrollment";
 import { SynchronizationHttp } from "../runtime/synchronization/http";
 import { IncrementalPullRunner } from "../runtime/synchronization/pull";
-import { StaleReplicaRecoveryService } from "../runtime/synchronization/recovery";
-import { LocalRecoveryForkBuilder } from "../runtime/synchronization/recovery-fork";
-import { InterruptedStaleRecoveryReconciler } from "../runtime/synchronization/recovery-reconciliation";
+import { StaleReplicaDiscardService } from "../runtime/synchronization/recovery";
+import { InterruptedStaleDiscardReconciler } from "../runtime/synchronization/recovery-reconciliation";
 import { EnrollmentRunner } from "../runtime/synchronization/runner";
 import { ServerSwitchService } from "../runtime/synchronization/server-switch";
 import { classifyServerSwitch } from "../runtime/synchronization/server-switch-classifier";
+import { shouldFailUncommittedServerSwitch } from "../runtime/synchronization/server-switch-failure";
 import { ServerSwitchCandidateInspector } from "../runtime/synchronization/server-switch-inspection";
 import { serverSwitchRaceDisposition } from "../runtime/synchronization/server-switch-race";
 import { ServerSwitchRecoveryProver } from "../runtime/synchronization/server-switch-recovery";
@@ -96,6 +103,33 @@ const vaultRepository = new IndexedDbVaultRepository();
 const workspaceRepository = new IndexedDbWorkspaceRepository();
 const accountRepository = new IndexedDbAccountRepository();
 const serverSwitchRepository = new IndexedDbServerSwitchRepository();
+const storageReliefRepository = new IndexedDbStorageReliefRepository();
+const storageReliefControllers = new Map<string, AbortController>();
+const liveStorageReliefRepository = {
+  latestStorageReliefJob: (vaultId: string) =>
+    storageReliefRepository.latestStorageReliefJob(vaultId),
+  listStorageReliefCheckpoints: (vaultId: string, jobId: string) =>
+    storageReliefRepository.listStorageReliefCheckpoints(vaultId, jobId),
+  saveStorageReliefJob: async (
+    job: import("../drivers/indexeddb/storage-relief-schema").StorageReliefJobV1,
+  ) => {
+    await storageReliefRepository.saveStorageReliefJob(job);
+    await notifyAppStateChanged();
+  },
+  saveStorageReliefCheckpoint: async (
+    checkpoint: import("../drivers/indexeddb/storage-relief-schema").StorageReliefCheckpointV1,
+    updatedAt: string,
+  ) => {
+    await storageReliefRepository.saveStorageReliefCheckpoint(checkpoint, updatedAt);
+    await notifyAppStateChanged();
+  },
+  markArtifactRemoteOnly: async (
+    input: Parameters<IndexedDbStorageReliefRepository["markArtifactRemoteOnly"]>[0],
+  ) => {
+    await storageReliefRepository.markArtifactRemoteOnly(input);
+    await notifyAppStateChanged();
+  },
+};
 const liveServerSwitchRepository = {
   loadJob: () => serverSwitchRepository.loadJob(),
   saveJob: async (job: import("../drivers/indexeddb").ServerSwitchJobV1) => {
@@ -278,6 +312,10 @@ async function executeSynchronization(signal?: AbortSignal): Promise<void> {
         new IndexedDbDriver(databaseName, job.vaultId),
         artifactStore,
         new SynchronizationHttp(configuration.serverOrigin, await sessionManager(), fetch, signal),
+        undefined,
+        true,
+        undefined,
+        storageReliefRepository,
       ).run();
     }
     const afterUpload = await accountRepository.latestSynchronizationJob();
@@ -312,6 +350,12 @@ async function executeSynchronization(signal?: AbortSignal): Promise<void> {
         fetch,
         signal,
       );
+      const remoteArtifacts = new ArtifactResolver(
+        artifactStore,
+        storageReliefRepository,
+        transport,
+        { online: () => navigator.onLine },
+      );
       await new IncrementalPullRunner(
         accountRepository,
         active.driver,
@@ -321,6 +365,20 @@ async function executeSynchronization(signal?: AbortSignal): Promise<void> {
         new RemoteReplicaDownloader(transport, artifactStore),
         runtimeFaultCheckpoint,
         signal,
+        storageReliefRepository,
+        {
+          openEncrypted: async ({ vaultId, object, generationId }) =>
+            (
+              await remoteArtifacts.openEncrypted({
+                vaultId,
+                serverOrigin: configuration.serverOrigin,
+                object,
+                scope: { type: "ActiveGeneration", generationId },
+                retention: "Transient",
+                ...(signal === undefined ? {} : { signal }),
+              })
+            ).stream,
+        },
       ).run(active.vault.requireRootKey());
     }
   } catch (error) {
@@ -445,6 +503,139 @@ const synchronizationCoordinator = new SynchronizationCoordinator({
     await accountRepository.wakePull(latestCursor);
   },
 });
+
+async function storageReliefContext(expectedVaultId: string) {
+  const context = contexts.snapshot(expectedVaultId);
+  const [configuration, metadata, registration, authenticated, head] = await Promise.all([
+    accountRepository.loadConfiguration(),
+    accountRepository.loadMetadata(),
+    accountRepository.loadAccountVault(),
+    accountRepository.hasAuthenticatedSecrets(),
+    context.driver.getVaultHead(),
+  ]);
+  if (
+    configuration.mode !== "Configured" ||
+    metadata === undefined ||
+    registration?.vaultId !== context.vaultId ||
+    head === undefined
+  )
+    throw Object.assign(new Error("The synchronized Vault context is unavailable."), {
+      id: "VAULT_CONTEXT_CHANGED",
+    });
+  return { context, configuration, metadata, authenticated, head };
+}
+
+function storageReliefService(context: ReturnType<typeof contexts.snapshot>): StorageReliefService {
+  return new StorageReliefService(
+    {
+      getVaultHead: () => context.driver.getVaultHead(),
+      listRemoteOnlyArtifacts: (vaultId) =>
+        storageReliefRepository.listRemoteOnlyArtifacts(vaultId),
+      createStorageReliefJob: (input) => storageReliefRepository.createStorageReliefJob(input),
+    },
+    new StorageReliefCandidateEnumerator(context.driver, artifactStore, storageReliefRepository),
+    () => crypto.randomUUID(),
+    storageReliefCreationFaults,
+  );
+}
+
+async function runStorageRelief(vaultId: string): Promise<void> {
+  if (storageReliefControllers.has(vaultId)) return;
+  const controller = new AbortController();
+  storageReliefControllers.set(vaultId, controller);
+  const resumeSynchronization = await synchronizationCoordinator.suspend();
+  try {
+    const runner = new StorageReliefJobRunner(
+      liveStorageReliefRepository,
+      artifactStore,
+      {
+        current: async () => {
+          const current = await storageReliefContext(vaultId);
+          return {
+            vaultId,
+            accountId: current.metadata.accountId,
+            serverOrigin: current.configuration.serverOrigin,
+            unlocked: current.context.vault.isUnlocked(),
+            authenticated: current.authenticated,
+            head: current.head,
+          };
+        },
+        synchronize: async (signal) => {
+          await accountRepository.wakeSynchronization(vaultId);
+          await executeSynchronization(signal);
+          const job = await accountRepository.latestSynchronizationJob();
+          if (job?.state === "AuthenticationRequired")
+            throw Object.assign(new Error("Authentication is required."), {
+              id: "STORAGE_RELIEF_AUTHENTICATION_REQUIRED",
+            });
+          if (job?.state === "Conflict")
+            throw Object.assign(new Error("The local Replica is stale."), {
+              id: "SYNCHRONIZATION_CONFLICT",
+            });
+          if (job?.state === "Waiting" || job?.state === "Failed")
+            throw Object.assign(new Error("Synchronization did not complete."), {
+              id: job.errorId ?? "SYNCHRONIZATION_INTERRUPTED",
+            });
+        },
+        prove: async (signal) => {
+          const current = await storageReliefContext(vaultId);
+          if (!current.context.vault.isUnlocked())
+            throw Object.assign(new Error("The Vault is locked."), { id: "VAULT_LOCKED" });
+          const candidates = await new StorageReliefCandidateEnumerator(
+            current.context.driver,
+            artifactStore,
+            storageReliefRepository,
+          ).enumerate(vaultId, current.context.vault.requireRootKey());
+          return new ActiveGenerationStorageReliefProver(
+            new SynchronizationHttp(
+              current.configuration.serverOrigin,
+              await sessionManager(),
+              fetch,
+              signal,
+            ),
+          ).prove({
+            vaultId,
+            generationId: current.head.generationId,
+            generationNumber: current.head.generationNumber,
+            candidates: candidates.candidates,
+          });
+        },
+        recheckRemoteFence: async (signal) => {
+          const current = await storageReliefContext(vaultId);
+          const proof = await new ActiveGenerationStorageReliefProver(
+            new SynchronizationHttp(
+              current.configuration.serverOrigin,
+              await sessionManager(),
+              fetch,
+              signal,
+            ),
+          ).prove({
+            vaultId,
+            generationId: current.head.generationId,
+            generationNumber: current.head.generationNumber,
+            candidates: [],
+          });
+          return {
+            generationId: proof.generationId,
+            generationNumber: proof.generationNumber,
+          };
+        },
+      },
+      storageReliefFaults,
+    );
+    await runner.run(vaultId, new Date().toISOString(), controller.signal);
+    const result = await storageReliefRepository.latestStorageReliefJob(vaultId);
+    if (result?.state === "AuthenticationRequired") {
+      await (await sessionManager()).logout();
+      activeSessionManager = undefined;
+      activeSessionOrigin = undefined;
+    }
+  } finally {
+    storageReliefControllers.delete(vaultId);
+    resumeSynchronization();
+    await notifyAppStateChanged();
+  }
+}
 
 function runEnrollment(): Promise<void> {
   return synchronizationCoordinator.continue();
@@ -590,6 +781,7 @@ async function compareServerSwitch(accessToken?: string): Promise<void> {
         await wipe(accountEncryptionKey);
       }
     } else {
+      const candidateGenerationId = inspected.replica.generation.generationId;
       const metadata = await accountRepository.loadMetadata("server-switch-candidate");
       if (metadata === undefined)
         throw Object.assign(new Error("Candidate Account metadata is unavailable"), {
@@ -633,6 +825,19 @@ async function compareServerSwitch(accessToken?: string): Promise<void> {
         prepared,
         rootKey: context.vault.requireRootKey(),
         artifacts: artifactStore,
+        openArtifact: (object) =>
+          new ArtifactResolver(artifactStore, storageReliefRepository, transport, {
+            online: () => navigator.onLine,
+          }).openRemoteEncrypted({
+            vaultId: job.vaultId,
+            serverOrigin: job.candidateOrigin,
+            object,
+            scope: {
+              type: "ActiveGeneration",
+              generationId: candidateGenerationId,
+            },
+            retention: "Transient",
+          }),
       });
       if (inspected.registration !== undefined)
         await accountRepository.saveAccountVault(inspected.registration, "server-switch-candidate");
@@ -739,9 +944,10 @@ async function compareServerSwitch(accessToken?: string): Promise<void> {
           listStoredObjects: () => context.driver.listStoredObjects(),
           listStoredEvents: () => context.driver.listStoredEvents(),
         },
-        artifactStore,
+        sourceArtifactReader(context, freshHead.generationId, controller.signal),
         transport,
         runtimeFaultCheckpoint,
+        serverSwitchRelayFaults,
       ).publishLocal(records);
     if (classification.direction === "FastForwardCandidate")
       await new ServerSwitchRemoteApplicator(
@@ -751,9 +957,10 @@ async function compareServerSwitch(accessToken?: string): Promise<void> {
           listStoredObjects: () => context.driver.listStoredObjects(),
           listStoredEvents: () => context.driver.listStoredEvents(),
         },
-        artifactStore,
+        sourceArtifactReader(context, freshHead.generationId, controller.signal),
         transport,
         runtimeFaultCheckpoint,
+        serverSwitchRelayFaults,
       ).fastForwardCandidate(records);
     if (classification.direction === "Union")
       await new ServerSwitchRemoteApplicator(
@@ -763,9 +970,10 @@ async function compareServerSwitch(accessToken?: string): Promise<void> {
           listStoredObjects: () => context.driver.listStoredObjects(),
           listStoredEvents: () => context.driver.listStoredEvents(),
         },
-        artifactStore,
+        sourceArtifactReader(context, freshHead.generationId, controller.signal),
         transport,
         runtimeFaultCheckpoint,
+        serverSwitchRelayFaults,
       ).union(records);
     if (
       classification.direction === "PublishLocal" ||
@@ -778,6 +986,45 @@ async function compareServerSwitch(accessToken?: string): Promise<void> {
     localRootBytes.fill(0);
     if (serverSwitchController === controller) serverSwitchController = undefined;
   }
+}
+
+function sourceArtifactReader(
+  context: ReturnType<typeof contexts.snapshot>,
+  generationId: string,
+  signal?: AbortSignal,
+): Pick<typeof artifactStore, "openEncrypted"> {
+  return {
+    openEncrypted: async (vaultId, objectId) => {
+      const [configuration, object] = await Promise.all([
+        accountRepository.loadConfiguration(),
+        context.driver.getStoredObject(objectId),
+      ]);
+      if (configuration.mode !== "Configured" || object?.objectType !== "Artifact")
+        throw Object.assign(new Error("Source Artifact context is unavailable."), {
+          id: "SYNCHRONIZATION_INTEGRITY_FAILED",
+        });
+      return (
+        await new ArtifactResolver(
+          artifactStore,
+          storageReliefRepository,
+          new SynchronizationHttp(
+            configuration.serverOrigin,
+            await sessionManager(),
+            fetch,
+            signal,
+          ),
+          { online: () => navigator.onLine },
+        ).openEncrypted({
+          vaultId,
+          serverOrigin: configuration.serverOrigin,
+          object,
+          scope: { type: "ActiveGeneration", generationId },
+          retention: "Transient",
+          ...(signal === undefined ? {} : { signal }),
+        })
+      ).stream;
+    },
+  };
 }
 
 async function verifyAndPromoteUnchangedLocal(
@@ -862,6 +1109,18 @@ async function verifyAndPromoteUnchangedLocal(
       prepared,
       rootKey: context.vault.requireRootKey(),
       artifacts: artifactStore,
+      openArtifact: async (object) =>
+        (
+          await new ArtifactResolver(artifactStore, storageReliefRepository, transport, {
+            online: () => navigator.onLine,
+          }).openEncrypted({
+            vaultId: job.vaultId,
+            serverOrigin: job.candidateOrigin,
+            object,
+            scope: { type: "ActiveGeneration", generationId: currentHead.generationId },
+            retention: "Transient",
+          })
+        ).stream,
     });
     await promoteServerSwitch(job);
   } finally {
@@ -885,14 +1144,16 @@ async function applyCandidateReplica(
     throw Object.assign(new Error("Candidate local application context is incomplete"), {
       id: "SYNCHRONIZATION_INTEGRITY_FAILED",
     });
-  const [metadata, registration, localGeneration, localHead, events, objects] = await Promise.all([
-    accountRepository.loadMetadata("server-switch-candidate"),
-    accountRepository.loadAccountVault("server-switch-candidate"),
-    context.driver.getVaultGeneration(job.expectedLocalHead.generationId),
-    context.driver.getVaultHead(),
-    context.driver.listStoredEvents(),
-    context.driver.listStoredObjects(),
-  ]);
+  const [metadata, registration, localGeneration, localHead, events, objects, remoteOnly] =
+    await Promise.all([
+      accountRepository.loadMetadata("server-switch-candidate"),
+      accountRepository.loadAccountVault("server-switch-candidate"),
+      context.driver.getVaultGeneration(job.expectedLocalHead.generationId),
+      context.driver.getVaultHead(),
+      context.driver.listStoredEvents(),
+      context.driver.listStoredObjects(),
+      storageReliefRepository.listRemoteOnlyArtifacts(job.vaultId),
+    ]);
   if (
     metadata === undefined ||
     registration === undefined ||
@@ -903,6 +1164,13 @@ async function applyCandidateReplica(
     throw Object.assign(new Error("Local authority changed before candidate application"), {
       id: "VAULT_CONTEXT_CHANGED",
     });
+  const direction = job.direction;
+  const remoteOnlyIds = new Set(remoteOnly.map((entry) => entry.artifactObjectId));
+  const reusableObjects = objects.filter(
+    (object) =>
+      object.objectType !== "Artifact" ||
+      (direction === "Union" && !remoteOnlyIds.has(object.objectId)),
+  );
   const prepared = await new RemoteReplicaDownloader(transport, artifactStore).prepare(
     {
       version: 1,
@@ -927,7 +1195,11 @@ async function applyCandidateReplica(
       attachIdempotencyKey: job.attachIdempotencyKey,
     },
     context.vault.requireRootKey(),
-    { generation: localGeneration, events, objects },
+    {
+      generation: localGeneration,
+      events,
+      objects: reusableObjects,
+    },
   );
   const verified = await verifyPreparedRemoteReplica({
     vaultId: job.vaultId,
@@ -1005,6 +1277,7 @@ async function applyCandidateReplica(
     collectionProjection: projections.collectionProjection,
     vaultNameProjection: projections.vaultNameProjection,
     nameCache,
+    clearArtifactAvailability: job.direction === "FastForwardLocal",
   });
   await artifactStore
     .reconcile(
@@ -1149,7 +1422,7 @@ async function compareServerSwitchSafely(
       });
       return;
     }
-    if (job?.state === "Running" && job.stage === "Compare") {
+    if (shouldFailUncommittedServerSwitch(job)) {
       await accountRepository.eraseAuthenticated("server-switch-candidate");
       await accountRepository.eraseAccountVault("server-switch-candidate");
       await serverSwitchRepository.clearCheckpoints(job.jobId);
@@ -1167,7 +1440,66 @@ async function compareServerSwitchSafely(
 const testingFaultCheckpoint =
   import.meta.env.MODE === "e2e" ? new TestingFaultCheckpoint() : undefined;
 const runtimeFaultCheckpoint = testingFaultCheckpoint ?? noRuntimeFaultCheckpoint;
-const exportHost = new ChromeVaultExportHost();
+const serverSwitchRelayFaults =
+  testingFaultCheckpoint === undefined
+    ? undefined
+    : {
+        beforeSourceArtifactRead: () =>
+          testingFaultCheckpoint.reach("server-switch-relay:before-source-artifact-read"),
+        afterCandidateUploadPart: () =>
+          testingFaultCheckpoint.reach("server-switch-relay:after-candidate-upload-part"),
+      };
+const storageReliefCreationFaults =
+  testingFaultCheckpoint === undefined
+    ? undefined
+    : {
+        afterJobCreated: (signal?: AbortSignal) =>
+          testingFaultCheckpoint.reach("storage-relief:after-job-created", signal),
+        afterCandidateCheckpoint: (signal?: AbortSignal) =>
+          testingFaultCheckpoint.reach("storage-relief:after-candidate-checkpoint", signal),
+      };
+const storageReliefFaults =
+  testingFaultCheckpoint === undefined
+    ? undefined
+    : {
+        afterSynchronization: (signal?: AbortSignal) =>
+          testingFaultCheckpoint.reach("storage-relief:after-synchronization", signal),
+        afterVerifiedCheckpoint: (signal?: AbortSignal) =>
+          testingFaultCheckpoint.reach("storage-relief:after-verified-checkpoint", signal),
+        afterEvictingCheckpoint: (signal?: AbortSignal) =>
+          testingFaultCheckpoint.reach("storage-relief:after-evicting-checkpoint", signal),
+        afterWrapperRemoved: (signal?: AbortSignal) =>
+          testingFaultCheckpoint.reach("storage-relief:after-wrapper-removed", signal),
+        afterRemoteOnlyCommit: (signal?: AbortSignal) =>
+          testingFaultCheckpoint.reach("storage-relief:after-remote-only-commit", signal),
+      };
+const staleDiscardFaults =
+  testingFaultCheckpoint === undefined
+    ? undefined
+    : {
+        prepareServerReplacement: () =>
+          testingFaultCheckpoint.reach("stale-discard:prepare-server-replacement"),
+        serverReplacementPrepared: () =>
+          testingFaultCheckpoint.reach("stale-discard:server-replacement-prepared"),
+        beforeActivation: () => testingFaultCheckpoint.reach("stale-discard:before-activation"),
+        afterActivation: () => testingFaultCheckpoint.reach("stale-discard:after-activation"),
+      };
+const artifactRetrievalFaults =
+  testingFaultCheckpoint === undefined
+    ? undefined
+    : {
+        afterPartialLocalWrite: () =>
+          testingFaultCheckpoint.reach("artifact-retrieval:after-partial-local-write"),
+        afterLocalVerify: () =>
+          testingFaultCheckpoint.reach("artifact-retrieval:after-local-verify"),
+        beforeAvailabilityClear: () =>
+          testingFaultCheckpoint.reach("artifact-retrieval:before-availability-clear"),
+      };
+const exportDownloadFault =
+  testingFaultCheckpoint === undefined
+    ? undefined
+    : () => testingFaultCheckpoint.reach("export-download:before-download");
+const exportHost = new ChromeVaultExportHost(exportDownloadFault);
 const exportControllers = new Map<string, AbortController>();
 const ARTIFACT_MESSAGE_CHUNK_BYTES = 256 * 1024;
 interface ArtifactSession {
@@ -1261,9 +1593,14 @@ async function reconcileServerSwitchOnStartup(
         listStoredObjects: () => context.driver.listStoredObjects(),
         listStoredEvents: () => context.driver.listStoredEvents(),
       },
-      artifactStore,
+      sourceArtifactReader(
+        context,
+        job.expectedLocalHead.generationId,
+        serverSwitchController.signal,
+      ),
       transport,
       runtimeFaultCheckpoint,
+      serverSwitchRelayFaults,
     );
     if (job.direction === "PublishLocal") await applicator.publishLocal(records);
     else if (job.direction === "FastForwardCandidate")
@@ -1324,7 +1661,7 @@ const startup = contexts.initialize().then(async () => {
   await browser.alarms.create("awsm:synchronization-poll", {
     periodInMinutes: 1,
   });
-  if (await new InterruptedStaleRecoveryReconciler(accountRepository, artifactStore).execute())
+  if (await new InterruptedStaleDiscardReconciler(accountRepository, artifactStore).execute())
     await notifyAppStateChanged();
   const interruptedImport = await importRepository.latest();
   if (await importRepository.reconcileInterrupted(new Date().toISOString())) {
@@ -1382,6 +1719,11 @@ const startup = contexts.initialize().then(async () => {
     }
     await notifyAppStateChanged();
   }
+  const storageReliefJob = await storageReliefRepository.latestStorageReliefJob(context.vaultId);
+  if (storageReliefJob?.state === "Created" || storageReliefJob?.state === "Running")
+    void runStorageRelief(context.vaultId).catch((error) =>
+      testingFaultCheckpoint?.recordFailure(error),
+    );
   await synchronizationCoordinator.passivePoll();
 });
 
@@ -1389,11 +1731,14 @@ browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "awsm:synchronization-poll") void synchronizationCoordinator.passivePoll();
 });
 
+function isRuntimeErrorId(value: unknown): value is RuntimeErrorId {
+  return typeof value === "string" && (RUNTIME_ERROR_IDS as readonly string[]).includes(value);
+}
+
 function safeError(error: unknown): AppResponse {
-  const id =
-    error instanceof Error && "id" in error && typeof error.id === "string"
-      ? (error.id as RuntimeErrorId)
-      : "STORAGE_TRANSACTION_FAILED";
+  const candidate =
+    typeof error === "object" && error !== null && "id" in error ? error.id : undefined;
+  const id = isRuntimeErrorId(candidate) ? candidate : "STORAGE_TRANSACTION_FAILED";
   const messages: Partial<Record<RuntimeErrorId, string>> = {
     VAULT_LOCKED: "Unlock the Vault to continue.",
     UNSUPPORTED_URL: "Only regular HTTP and HTTPS pages can be captured.",
@@ -1427,6 +1772,9 @@ function safeError(error: unknown): AppResponse {
     SYNCHRONIZATION_INTEGRITY_FAILED: "Downloaded synchronization data could not be verified.",
     SYNCHRONIZATION_CONFLICT:
       "This stale Replica is read-only until you preserve it and use the server version.",
+    STORAGE_RELIEF_AUTHENTICATION_REQUIRED: "Sign in to continue freeing browser storage safely.",
+    STORAGE_RELIEF_ESTIMATE_CHANGED:
+      "Browser storage changed. Review the updated estimate and confirm again.",
     SERVER_SWITCH_CONFLICT:
       "AWSM could not prove a safe fast-forward. Your current synchronization server is unchanged.",
     SERVER_SWITCH_VAULT_MISMATCH:
@@ -1442,18 +1790,23 @@ function safeError(error: unknown): AppResponse {
 }
 
 async function state(): Promise<AppState> {
+  const activeVaultId = contexts.active()?.vaultId;
   const [
     accountConfiguration,
     accountMetadata,
     authenticated,
     synchronizationJob,
     serverSwitchJob,
+    storageReliefJob,
   ] = await Promise.all([
     accountRepository.loadConfiguration(),
     accountRepository.loadMetadata(),
     accountRepository.hasAuthenticatedSecrets(),
     accountRepository.latestSynchronizationJob(),
     serverSwitchRepository.loadJob(),
+    activeVaultId === undefined
+      ? Promise.resolve(undefined)
+      : storageReliefRepository.latestStorageReliefJob(activeVaultId),
   ]);
   const context = contexts.active();
   const records = context === undefined ? undefined : await vaultRepository.load(context.vaultId);
@@ -1477,6 +1830,7 @@ async function state(): Promise<AppState> {
         context.vault.requireRootKey(),
         records.metadata.vaultId,
         artifactStore,
+        storageReliefRepository,
       );
       const detail = await libraryService.detail(outcome.bundleId);
       const [activeTab] = await browser.tabs.query({
@@ -1595,6 +1949,16 @@ async function state(): Promise<AppState> {
     ...(recentCapture === undefined ? {} : { recentCapture }),
     ...(latestExportJob === undefined ? {} : { latestExportJob }),
     ...(latestImportJob === undefined ? {} : { latestImportJob }),
+    ...(storageReliefJob === undefined
+      ? {}
+      : { latestStorageReliefJob: storageReliefJobView(storageReliefJob) }),
+    ...(activeVaultId === undefined
+      ? {}
+      : {
+          remoteOnlyArtifactCount: (
+            await storageReliefRepository.listRemoteOnlyArtifacts(activeVaultId)
+          ).length,
+        }),
   };
 }
 
@@ -1656,11 +2020,6 @@ function validateExportPassphrase(passphrase: string): void {
   }
 }
 
-function exportFilename(createdAt: string, packageId: string): string {
-  const stamp = createdAt.replaceAll("-", "").replaceAll(":", "").replace(".000", "");
-  return `awsm-vault-${stamp}-${packageId.slice(0, 8)}.awsm`;
-}
-
 async function exportVault(
   expectedVaultId: string,
   passphrase: string,
@@ -1674,7 +2033,7 @@ async function exportVault(
   const createdAt = new Date().toISOString();
   const jobId = crypto.randomUUID();
   const packageId = crypto.randomUUID();
-  const filename = exportFilename(createdAt, packageId);
+  const filename = vaultExportFilename(createdAt);
   let job: import("../drivers/indexeddb/schema").ExportJobV1 = {
     version: 1,
     vaultId: context.vaultId,
@@ -1704,12 +2063,36 @@ async function exportVault(
   try {
     await save({ state: "Running", stage: "Snapshot" });
     await save({ stage: "Verify" });
-    const prepared = await new VaultExportService(
-      context.driver,
-      context.vault,
-      context.vaultId,
-      artifactStore,
-    ).prepare({
+    const prepared = await new VaultExportService(context.driver, context.vault, context.vaultId, {
+      openEncrypted: async (vaultId, _objectId, object) => {
+        const [configuration, registration, synchronizationJob] = await Promise.all([
+          accountRepository.loadConfiguration(),
+          accountRepository.loadAccountVault(),
+          accountRepository.latestSynchronizationJob(),
+        ]);
+        if (configuration.mode !== "Configured" || registration?.vaultId !== vaultId)
+          return artifactStore.openEncrypted(vaultId, object.objectId);
+        const scope =
+          synchronizationJob?.state === "Conflict" && synchronizationJob.vaultId === vaultId
+            ? { type: "RecoveryGeneration" as const, generationId: records.head.generationId }
+            : { type: "ActiveGeneration" as const, generationId: records.head.generationId };
+        return (
+          await new ArtifactResolver(
+            artifactStore,
+            storageReliefRepository,
+            new SynchronizationHttp(configuration.serverOrigin, await sessionManager(), fetch),
+            { online: () => navigator.onLine },
+          ).openEncrypted({
+            vaultId,
+            serverOrigin: configuration.serverOrigin,
+            object,
+            scope,
+            retention: "Transient",
+            signal: controller.signal,
+          })
+        ).stream;
+      },
+    }).prepare({
       packageId,
       createdAt,
       passphrase,
@@ -1795,7 +2178,46 @@ async function library(expectedVaultId: string): Promise<LibraryService> {
     context.driver,
     context.vault.requireRootKey(),
     records.metadata.vaultId,
-    artifactStore,
+    {
+      openPlaintext: async (input) => {
+        if (
+          !(await storageReliefRepository.isArtifactRemoteOnly(
+            input.vaultId,
+            input.object.objectId,
+          ))
+        )
+          return artifactStore.openPlaintext(input);
+        const [configuration, registration, head] = await Promise.all([
+          accountRepository.loadConfiguration(),
+          accountRepository.loadAccountVault(),
+          context.driver.getVaultHead(),
+        ]);
+        if (
+          configuration.mode !== "Configured" ||
+          registration?.vaultId !== input.vaultId ||
+          head === undefined
+        )
+          throw Object.assign(new Error("Sign in to retrieve this Artifact."), {
+            id: "REMOTE_ARTIFACT_AUTHENTICATION_REQUIRED",
+          });
+        return (
+          await new ArtifactResolver(
+            artifactStore,
+            storageReliefRepository,
+            new SynchronizationHttp(configuration.serverOrigin, await sessionManager(), fetch),
+            { online: () => navigator.onLine },
+            () => void notifyAppStateChanged(),
+            artifactRetrievalFaults,
+          ).openPlaintext({
+            ...input,
+            serverOrigin: configuration.serverOrigin,
+            scope: { type: "ActiveGeneration", generationId: head.generationId },
+            retention: "RestoreLocal",
+          })
+        ).stream;
+      },
+    },
+    storageReliefRepository,
   );
   const [projections, events] = await Promise.all([
     context.driver.listEncryptedProjections(),
@@ -2216,7 +2638,7 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       }
-      case "ResolveStaleReplica": {
+      case "DiscardStaleReplica": {
         const context = contexts.snapshot(request.expectedVaultId);
         const records = await vaultRepository.load(context.vaultId);
         if (records === undefined)
@@ -2228,40 +2650,36 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           throw Object.assign(new Error("The synchronization server is unavailable."), {
             id: "SERVER_INCOMPATIBLE",
           });
-        const workspaceState = await workspace.state({
-          unlockedVaultId: context.vaultId,
-        });
-        const sourceName = workspaceState.vaults.find(
-          (candidate) => candidate.vaultId === context.vaultId,
-        )?.name;
-        if (sourceName === undefined)
-          throw Object.assign(new Error("The stale Vault is unavailable."), {
-            id: "VAULT_CONTEXT_CHANGED",
-          });
         const transport = new SynchronizationHttp(
           configuration.serverOrigin,
           await sessionManager(),
         );
-        const result = await new StaleReplicaRecoveryService(
+        await new StaleReplicaDiscardService(
           accountRepository,
           workspaceRepository,
-          context.driver,
+          {
+            listStoredEvents: () => context.driver.listStoredEvents(),
+            listStoredObjects: async () => {
+              const [objects, remoteOnly] = await Promise.all([
+                context.driver.listStoredObjects(),
+                storageReliefRepository.listRemoteOnlyArtifacts(context.vaultId),
+              ]);
+              const absent = new Set(remoteOnly.map((entry) => entry.artifactObjectId));
+              return objects.filter(
+                (object) => object.objectType !== "Artifact" || !absent.has(object.objectId),
+              );
+            },
+            getVaultGeneration: (generationId) => context.driver.getVaultGeneration(generationId),
+          },
           records,
           context.vault.requireRootKey(),
-          new LocalRecoveryForkBuilder(
-            await library(context.vaultId),
-            sourceName,
-            new VaultService(vaultRepository),
-            artifactStore,
-            browser.runtime.getManifest().version,
-          ),
           new RemoteReplicaDownloader(transport, artifactStore),
           artifactStore,
-          runtimeFaultCheckpoint,
+          staleDiscardFaults,
         ).execute();
         await contexts.reloadFromAuthority();
         await notifyAppStateChanged();
-        return { ok: true, value: result };
+        return { ok: true, value: null };
       }
       case "LoginAccount":
         await assertNoApplyingServerSwitch();
@@ -2274,6 +2692,16 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         }
         await discoverAccountVault();
         await runEnrollment();
+        {
+          const current = contexts.active();
+          if (current !== undefined) {
+            const relief = await storageReliefRepository.latestStorageReliefJob(current.vaultId);
+            if (relief?.state === "AuthenticationRequired")
+              void runStorageRelief(current.vaultId).catch((error) =>
+                testingFaultCheckpoint?.recordFailure(error),
+              );
+          }
+        }
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       case "SignupAccount": {
@@ -2296,6 +2724,16 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         return { ok: true, value: await state() };
       case "LogoutAccount":
         await assertNoApplyingServerSwitch();
+        {
+          const current = contexts.active();
+          if (current !== undefined) {
+            storageReliefControllers.get(current.vaultId)?.abort(
+              Object.assign(new Error("Authentication is required."), {
+                id: "STORAGE_RELIEF_AUTHENTICATION_REQUIRED",
+              }),
+            );
+          }
+        }
         activeCable?.disconnect();
         activeCable = undefined;
         activeCableContext = undefined;
@@ -2331,12 +2769,22 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           await compareServerSwitchSafely(
             await serverSwitchSession(switchJob.candidateOrigin).accessToken(),
           );
+        const relief = await storageReliefRepository.latestStorageReliefJob(
+          request.expectedVaultId,
+        );
+        if (relief?.state === "WaitingForUnlock")
+          void runStorageRelief(request.expectedVaultId).catch((error) =>
+            testingFaultCheckpoint?.recordFailure(error),
+          );
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       }
       case "LockVault": {
         await cancelArtifactSessions();
         const context = contexts.snapshot(request.expectedVaultId);
+        storageReliefControllers
+          .get(context.vaultId)
+          ?.abort(Object.assign(new Error("The Vault is locked."), { id: "VAULT_LOCKED" }));
         serverSwitchController?.abort();
         serverSwitchController = undefined;
         await context.vault.lock();
@@ -2532,6 +2980,59 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           resumeSynchronization?.();
           if (synchronized) void synchronizationCoordinator.passivePoll();
         }
+      }
+      case "GetStorageReliefEstimate": {
+        const current = await storageReliefContext(request.expectedVaultId);
+        if (!current.context.vault.isUnlocked())
+          throw Object.assign(new Error("The Vault is locked."), { id: "VAULT_LOCKED" });
+        if (!current.authenticated)
+          throw Object.assign(new Error("Authentication is required."), {
+            id: "STORAGE_RELIEF_AUTHENTICATION_REQUIRED",
+          });
+        const estimate = await storageReliefService(current.context).estimate(
+          current.context.vaultId,
+          current.context.vault.requireRootKey(),
+        );
+        return {
+          ok: true,
+          value: {
+            candidateArtifacts: estimate.candidateArtifacts,
+            candidateBytes: estimate.candidateBytes,
+          },
+        };
+      }
+      case "StartStorageRelief": {
+        const current = await storageReliefContext(request.expectedVaultId);
+        if (!current.context.vault.isUnlocked())
+          throw Object.assign(new Error("The Vault is locked."), { id: "VAULT_LOCKED" });
+        if (!current.authenticated)
+          throw Object.assign(new Error("Authentication is required."), {
+            id: "STORAGE_RELIEF_AUTHENTICATION_REQUIRED",
+          });
+        const result = await storageReliefService(current.context).start({
+          vaultId: current.context.vaultId,
+          rootKey: current.context.vault.requireRootKey(),
+          accountId: current.metadata.accountId,
+          serverOrigin: current.configuration.serverOrigin,
+          candidateArtifacts: request.candidateArtifacts,
+          candidateBytes: request.candidateBytes,
+          now: new Date().toISOString(),
+        });
+        await notifyAppStateChanged();
+        void runStorageRelief(current.context.vaultId).catch((error) =>
+          testingFaultCheckpoint?.recordFailure(error),
+        );
+        return { ok: true, value: result };
+      }
+      case "CancelStorageRelief": {
+        contexts.snapshot(request.expectedVaultId);
+        await storageReliefRepository.requestStorageReliefCancellation(
+          request.expectedVaultId,
+          request.jobId,
+          new Date().toISOString(),
+        );
+        await notifyAppStateChanged();
+        return { ok: true, value: null };
       }
       case "GetVacuumEstimate":
         return {

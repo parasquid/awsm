@@ -32,6 +32,7 @@ export interface ServerSwitchReplicaPromotion {
   readonly collectionProjection: StoredCollectionProjectionV1;
   readonly vaultNameProjection: StoredVaultNameProjectionV1;
   readonly nameCache: WorkspaceVaultNameCacheV1;
+  readonly clearArtifactAvailability: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -588,6 +589,9 @@ export class IndexedDbAccountRepository {
                 STORES.collectionProjection,
                 STORES.vaultNameProjection,
                 STORES.vaultNameCache,
+                STORES.artifactAvailability,
+                STORES.storageReliefJobs,
+                STORES.storageReliefCheckpoints,
               ]),
         ],
         "readwrite",
@@ -652,6 +656,17 @@ export class IndexedDbAccountRepository {
             .objectStore(STORES.vaultNameProjection)
             .put(replica.vaultNameProjection, vaultSingletonKey(input.job.vaultId, "active"));
           transaction.objectStore(STORES.vaultNameCache).put(replica.nameCache, input.job.vaultId);
+          if (replica.clearArtifactAvailability) {
+            transaction
+              .objectStore(STORES.artifactAvailability)
+              .delete(vaultKeyRange(input.job.vaultId));
+            transaction
+              .objectStore(STORES.storageReliefJobs)
+              .delete(vaultKeyRange(input.job.vaultId));
+            transaction
+              .objectStore(STORES.storageReliefCheckpoints)
+              .delete(vaultKeyRange(input.job.vaultId));
+          }
           transaction
             .objectStore(STORES.vaultHead)
             .put(replica.head, vaultSingletonKey(input.job.vaultId, "active"));

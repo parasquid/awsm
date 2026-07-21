@@ -22,7 +22,14 @@ import {
   libraryGroupDestination,
   libraryStateConfirmation,
   mergeDropRequest,
+  remoteArtifactFailureMessage,
+  signOutConfirmation,
+  storageReliefConfirmation,
 } from "../../src/ui/library-view";
+import {
+  storageReliefAnnouncement,
+  storageReliefFocusTarget,
+} from "../../src/ui/storage-relief-accessibility";
 import { deepLinkVaultRoute, vaultManagementView } from "../../src/ui/vault-management-view";
 
 function requiredElement(selector: string): HTMLElement {
@@ -38,6 +45,7 @@ const libraryTitle = requiredElement("#library-title");
 const accountSettings = requiredElement("#account-settings") as HTMLButtonElement;
 let screenshotUrl: string | undefined;
 let detailController: AbortController | undefined;
+const artifactActionControllers = new Set<AbortController>();
 let activeGroups: readonly LibraryPageGroupMessage[] = [];
 let deletedGroups: readonly LibraryPageGroupMessage[] = [];
 let undoTimer: number | undefined;
@@ -54,8 +62,9 @@ let pageOwnedImportJobId: string | undefined;
 let abortPageOwnedImport: (() => void) | undefined;
 let closePageOwnedImport: (() => void) | undefined;
 let renderedState: AppState | undefined;
-let staleRecoveryDialogOpened = false;
+let staleDiscardDialogOpened = false;
 let libraryOperationError: string | undefined;
+let pendingStorageReliefFocus: "action" | "heading" | undefined;
 
 function expectedVaultId(): string {
   if (activeVaultId === undefined) throw new Error("No active Vault is selected.");
@@ -256,6 +265,8 @@ function showAccountSettings(): void {
     const logout = element("button", "Sign out");
     logout.type = "button";
     logout.addEventListener("click", () => {
+      const warning = signOutConfirmation(state.remoteOnlyArtifactCount ?? 0);
+      if (warning !== undefined && !window.confirm(warning)) return;
       logout.disabled = true;
       void sendRequest<AppState>({ type: "LogoutAccount" }).then((next) => {
         dialog.close();
@@ -762,7 +773,7 @@ function showExportVaultDialog(restoreFocus: HTMLElement): void {
   passphrase.focus();
 }
 
-function showStaleReplicaRecoveryDialog(restoreFocus: HTMLElement): void {
+function showStaleReplicaDiscardDialog(restoreFocus: HTMLElement): void {
   const state = renderedState;
   const active = state?.workspace.vaults.find((vault) => vault.active);
   if (state === undefined || active === undefined || !active.unlocked) return;
@@ -772,7 +783,7 @@ function showStaleReplicaRecoveryDialog(restoreFocus: HTMLElement): void {
     element("h3", "The server copy will replace this Vault"),
     element(
       "p",
-      "AWSM will first preserve the current local state as a new local-only Vault with fresh identifiers. It will then completely overwrite this stale synchronized Vault with the server-authoritative data.",
+      "AWSM will permanently discard unpublished local changes and replace this stale synchronized Vault with the server-authoritative data. No local recovery Vault will be created.",
     ),
     element(
       "p",
@@ -814,7 +825,7 @@ function showStaleReplicaRecoveryDialog(restoreFocus: HTMLElement): void {
   const feedback = element("p", "", "notice error");
   feedback.hidden = true;
   const actions = element("div", undefined, "actions");
-  const resolve = element("button", "Preserve local copy and use server data");
+  const resolve = element("button", "Discard stale local Replica and use server data");
   resolve.type = "submit";
   resolve.className = "danger-action";
   resolve.disabled = true;
@@ -897,16 +908,16 @@ function showStaleReplicaRecoveryDialog(restoreFocus: HTMLElement): void {
     exportButton.disabled = true;
     skipCheckbox.disabled = true;
     overwriteCheckbox.disabled = true;
-    resolve.textContent = "Preserving and replacing…";
+    resolve.textContent = "Verifying and replacing…";
     feedback.className = "notice";
     feedback.textContent =
-      "Keep this page open. AWSM is verifying the server copy before changing either Vault.";
+      "Keep this page open. AWSM is verifying the complete server copy before replacing this Replica.";
     feedback.hidden = false;
     const minimumBusyDisplay = new Promise<void>((resolveDelay) => {
       window.setTimeout(resolveDelay, 750);
     });
-    void sendRequest<{ readonly forkVaultId: string }>({
-      type: "ResolveStaleReplica",
+    void sendRequest<void>({
+      type: "DiscardStaleReplica",
       expectedVaultId: active.vaultId,
       exportDecision: exported ? "Exported" : "SkipConfirmed",
     }).then(
@@ -914,21 +925,20 @@ function showStaleReplicaRecoveryDialog(restoreFocus: HTMLElement): void {
         await minimumBusyDisplay;
         activating = false;
         dialog.close();
-        announcer.textContent =
-          "The synchronized Vault now matches the server. A local-only recovered copy was created.";
+        announcer.textContent = "The synchronized Vault now matches the server.";
         await initialize();
       },
       async (error) => {
         await minimumBusyDisplay;
         activating = false;
         cancel.disabled = false;
-        resolve.textContent = "Preserve local copy and use server data";
+        resolve.textContent = "Discard stale local Replica and use server data";
         updateResolve();
         feedback.className = "notice error";
         feedback.textContent =
           error instanceof AppClientError
             ? error.message
-            : "Recovery stopped safely before activation. Try again.";
+            : "Replacement stopped safely before activation. Try again.";
       },
     );
   });
@@ -1135,7 +1145,7 @@ function renderVaultBar(state: AppState): void {
     );
     const resolveStale = element("button", "Resolve stale Vault");
     resolveStale.disabled = !active.unlocked;
-    resolveStale.addEventListener("click", () => showStaleReplicaRecoveryDialog(resolveStale));
+    resolveStale.addEventListener("click", () => showStaleReplicaDiscardDialog(resolveStale));
     bar.append(resolveStale);
   }
   if (view.busyText !== undefined) bar.append(element("p", view.busyText, "muted"));
@@ -1281,9 +1291,13 @@ function clearMergeDropTargets(): void {
   }
 }
 
-function releaseScreenshot(): void {
+function releaseScreenshot(abortArtifactActions = true): void {
   detailController?.abort();
   detailController = undefined;
+  if (abortArtifactActions) {
+    for (const controller of artifactActionControllers) controller.abort();
+    artifactActionControllers.clear();
+  }
   if (screenshotUrl !== undefined) URL.revokeObjectURL(screenshotUrl);
   screenshotUrl = undefined;
 }
@@ -1738,25 +1752,189 @@ function vacuumControl(captureCount: number, reclaimableBytes: number): HTMLButt
   return vacuum;
 }
 
+interface StorageReliefEstimateMessage {
+  readonly candidateArtifacts: number;
+  readonly candidateBytes: number;
+}
+
+function storageReliefJobPanel(state: AppState): HTMLElement | undefined {
+  const job = state.latestStorageReliefJob;
+  if (job === undefined) return undefined;
+  const panel = element("div", undefined, "storage-maintenance__job");
+  const terminal = ["Succeeded", "Failed", "Cancelled"].includes(job.state);
+  const heading =
+    job.state === "Succeeded"
+      ? `Freed ${formatByteSize(job.freedBytes)}`
+      : job.state === "Cancelled"
+        ? "Storage cleanup cancelled"
+        : job.state === "Failed"
+          ? "Storage cleanup stopped safely"
+          : job.state === "WaitingForUnlock"
+            ? "Unlock the Vault to continue"
+            : job.state === "AuthenticationRequired"
+              ? "Sign in to continue"
+              : job.stage;
+  panel.append(
+    element("strong", heading),
+    element(
+      "p",
+      `${String(job.freedArtifacts)} of ${String(job.candidateArtifacts)} Artifacts freed · ${formatByteSize(job.freedBytes)} of ${formatByteSize(job.candidateBytes)}`,
+      "muted",
+    ),
+  );
+  if (job.skippedArtifacts > 0)
+    panel.append(
+      element(
+        "p",
+        `${String(job.skippedArtifacts)} ${job.skippedArtifacts === 1 ? "Artifact was" : "Artifacts were"} kept locally because AWSM could not prove the server copy.`,
+        "warning",
+      ),
+    );
+  if (job.errorId !== undefined)
+    panel.append(element("p", `Nothing unverified was removed (${job.errorId}).`, "notice error"));
+  if (!terminal) {
+    const progress = element("progress") as HTMLProgressElement;
+    progress.max = Math.max(1, job.candidateArtifacts);
+    progress.value = Math.max(job.verifiedArtifacts, job.freedArtifacts + job.skippedArtifacts);
+    progress.setAttribute("aria-label", "Storage cleanup progress");
+    panel.append(progress);
+    const cancel = element("button", job.cancellationRequested ? "Cancelling…" : "Cancel");
+    cancel.type = "button";
+    cancel.disabled = job.cancellationRequested;
+    cancel.addEventListener("click", () => {
+      cancel.disabled = true;
+      announcer.textContent = "Cancelling storage cleanup.";
+      void sendRequest<null>({
+        type: "CancelStorageRelief",
+        expectedVaultId: expectedVaultId(),
+        jobId: job.jobId,
+      }).catch(() => reconcile());
+    });
+    panel.append(cancel);
+  }
+  return panel;
+}
+
+function storageMaintenance(
+  state: AppState,
+  estimate: StorageReliefEstimateMessage | undefined,
+  vacuum: { readonly deletedCaptureCount: number; readonly reclaimableBytes: number },
+): HTMLElement {
+  const section = element("section", undefined, "storage-maintenance");
+  section.setAttribute("aria-labelledby", "storage-maintenance-title");
+  const title = element("h2", "Storage maintenance");
+  title.id = "storage-maintenance-title";
+  section.append(title);
+  const mode = state.account.configuration.mode;
+  if (mode !== "Configured") {
+    section.append(
+      element("p", "Connect this Vault to an Account to free browser storage.", "muted"),
+    );
+  } else if (state.account.accountState !== "Authenticated") {
+    section.append(element("p", "Sign in to calculate and safely free browser storage.", "muted"));
+  } else if (estimate === undefined) {
+    section.append(
+      element("p", "Storage availability could not be calculated. Try again.", "notice error"),
+    );
+  } else {
+    section.append(
+      element(
+        "p",
+        estimate.candidateArtifacts === 0
+          ? "No heavy Artifacts are currently stored in this browser"
+          : `Up to ${formatByteSize(estimate.candidateBytes)} can be freed · ${String(estimate.candidateArtifacts)} ${estimate.candidateArtifacts === 1 ? "Artifact" : "Artifacts"}`,
+        "storage-maintenance__estimate",
+      ),
+    );
+    const start = element("button", "Free up browser storage", "storage-maintenance__action");
+    start.type = "button";
+    const activeJob = state.latestStorageReliefJob;
+    start.disabled =
+      estimate.candidateArtifacts === 0 ||
+      activeJob?.state === "Running" ||
+      activeJob?.state === "WaitingForUnlock" ||
+      activeJob?.state === "AuthenticationRequired";
+    start.addEventListener("click", () => {
+      if (
+        !window.confirm(
+          storageReliefConfirmation(estimate.candidateArtifacts, estimate.candidateBytes),
+        )
+      )
+        return;
+      start.disabled = true;
+      announcer.textContent = "Storage cleanup started.";
+      void sendRequest({
+        type: "StartStorageRelief",
+        expectedVaultId: expectedVaultId(),
+        candidateArtifacts: estimate.candidateArtifacts,
+        candidateBytes: estimate.candidateBytes,
+      }).catch((error) => {
+        announcer.textContent =
+          error instanceof AppClientError && error.id === "STORAGE_RELIEF_ESTIMATE_CHANGED"
+            ? "Browser storage changed. Review the updated estimate and confirm again."
+            : "Storage cleanup could not be started.";
+        reconcile();
+      });
+    });
+    section.append(start);
+  }
+  const job = storageReliefJobPanel(state);
+  if (job !== undefined) section.append(job);
+  if (vacuum.deletedCaptureCount > 0) {
+    const divider = element("div", undefined, "storage-maintenance__vacuum");
+    divider.append(
+      element("h3", "Permanently remove Deleted captures"),
+      element("p", "Vault Vacuum rewrites local history and cannot be undone.", "muted"),
+      vacuumControl(vacuum.deletedCaptureCount, vacuum.reclaimableBytes),
+    );
+    section.append(divider);
+  }
+  return section;
+}
+
+function restoreStorageReliefFocus(): void {
+  if (pendingStorageReliefFocus === undefined) return;
+  const action = document.querySelector<HTMLButtonElement>(
+    ".storage-maintenance__action:not(:disabled)",
+  );
+  const heading = document.querySelector<HTMLElement>("#storage-maintenance-title");
+  const target = pendingStorageReliefFocus === "action" ? (action ?? heading) : heading;
+  pendingStorageReliefFocus = undefined;
+  if (target === null) return;
+  if (target === heading) target.tabIndex = -1;
+  target.focus();
+}
+
 async function loadList(expandedSection?: "Active" | "Deleted"): Promise<void> {
   if (expandedSection !== undefined) expandedLibrarySection = expandedSection;
   releaseScreenshot();
   app.setAttribute("aria-busy", "true");
   try {
-    const [loadedActiveGroups, loadedDeletedGroups, vacuumEstimate] = await Promise.all([
-      sendRequest<readonly LibraryPageGroupMessage[]>({
-        type: "ListLibrary",
-        expectedVaultId: expectedVaultId(),
-      }),
-      sendRequest<readonly LibraryPageGroupMessage[]>({
-        type: "ListDeleted",
-        expectedVaultId: expectedVaultId(),
-      }),
-      sendRequest<{
-        readonly deletedCaptureCount: number;
-        readonly reclaimableBytes: number;
-      }>({ type: "GetVacuumEstimate", expectedVaultId: expectedVaultId() }),
-    ]);
+    const state = renderedState ?? (await sendRequest<AppState>({ type: "GetState" }));
+    const canEstimate =
+      state.account.configuration.mode === "Configured" &&
+      state.account.accountState === "Authenticated";
+    const [loadedActiveGroups, loadedDeletedGroups, vacuumEstimate, reliefEstimate] =
+      await Promise.all([
+        sendRequest<readonly LibraryPageGroupMessage[]>({
+          type: "ListLibrary",
+          expectedVaultId: expectedVaultId(),
+        }),
+        sendRequest<readonly LibraryPageGroupMessage[]>({
+          type: "ListDeleted",
+          expectedVaultId: expectedVaultId(),
+        }),
+        sendRequest<{
+          readonly deletedCaptureCount: number;
+          readonly reclaimableBytes: number;
+        }>({ type: "GetVacuumEstimate", expectedVaultId: expectedVaultId() }),
+        canEstimate
+          ? sendRequest<StorageReliefEstimateMessage>({
+              type: "GetStorageReliefEstimate",
+              expectedVaultId: expectedVaultId(),
+            }).catch(() => undefined)
+          : Promise.resolve(undefined),
+      ]);
     activeGroups = loadedActiveGroups;
     deletedGroups = loadedDeletedGroups;
     const content = document.createDocumentFragment();
@@ -1793,14 +1971,14 @@ async function loadList(expandedSection?: "Active" | "Deleted"): Promise<void> {
           `${String(deletedCount)} deleted ${deletedCount === 1 ? "capture" : "captures"} · ${reclaimableSize} of encrypted Bundles retained · about ${reclaimableSize} reclaimable`,
           "muted",
         ),
-        vacuumControl(deletedCount, reclaimableBytes),
         groupGrid(loadedDeletedGroups, "Deleted"),
       );
     }
     deletedSection.append(deletedSummary, deletedContent);
-    content.append(deletedSection);
+    content.append(deletedSection, storageMaintenance(state, reliefEstimate, vacuumEstimate));
     app.replaceChildren(content);
     app.setAttribute("aria-busy", "false");
+    restoreStorageReliefFocus();
   } catch (error) {
     if (error instanceof AppClientError && error.id === "VAULT_CONTEXT_CHANGED") {
       await handleContextError(error);
@@ -2039,8 +2217,8 @@ async function showUnlock(): Promise<void> {
   }
 }
 
-async function loadDetail(bundleId: string): Promise<void> {
-  releaseScreenshot();
+async function loadDetail(bundleId: string, abortArtifactActions = true): Promise<void> {
+  releaseScreenshot(abortArtifactActions);
   const controller = new AbortController();
   detailController = controller;
   app.setAttribute("aria-busy", "true");
@@ -2182,89 +2360,110 @@ async function loadDetail(bundleId: string): Promise<void> {
         );
       if (artifact.warning !== undefined)
         summary.append(element("span", artifact.warning, "warning"));
+      if (artifact.availability === "RemoteOnly")
+        summary.append(element("span", "Stored on server · retrieves when opened", "remote-only"));
       const rowActions = element("div", undefined, "artifact-row__actions");
       if (artifact.canInspect) {
         const inspect = element("button", "Inspect");
         inspect.type = "button";
         inspect.addEventListener("click", () => {
+          const actionController = new AbortController();
+          artifactActionControllers.add(actionController);
           inspect.disabled = true;
           inspection.hidden = false;
           inspection.replaceChildren(element("p", "Loading Artifact…", "muted"));
+          if (artifact.availability === "RemoteOnly")
+            announcer.textContent = `Retrieving ${artifact.role.replaceAll("_", " ")} from the server.`;
           const chunks: Uint8Array[] = [];
-          void consumeArtifact(bundleId, artifact.role, controller.signal, (chunk) => {
+          void consumeArtifact(bundleId, artifact.role, actionController.signal, (chunk) => {
             chunks.push(Uint8Array.from(chunk));
-          }).then(
-            () => {
-              const bytes = bytesFromChunks(chunks);
-              inspection.replaceChildren(element("h3", artifact.role.replaceAll("_", " ")));
-              if (artifact.role === "TEXT_EXTRACTED") {
-                inspection.append(element("pre", new TextDecoder().decode(bytes)));
-              } else {
-                const appendTextAndLinks = (
-                  container: HTMLElement,
-                  text: string,
-                  links: readonly {
-                    readonly href: string;
-                    readonly text: string;
-                  }[],
-                ): void => {
-                  container.append(document.createTextNode(text));
-                  if (links.length === 0) return;
-                  const linkList = element("span", undefined, "artifact-inspection__links");
-                  linkList.append(document.createTextNode(" Links: "));
-                  links.forEach((link, index) => {
-                    const anchor = element("a", link.text || link.href);
-                    anchor.href = link.href;
-                    anchor.target = "_blank";
-                    anchor.rel = "noopener noreferrer";
-                    if (index > 0) linkList.append(document.createTextNode(", "));
-                    linkList.append(anchor);
-                  });
-                  container.append(linkList);
-                };
-                for (const block of decodeStructuredContentSequence(bytes)) {
-                  if (block.kind === "Heading") {
-                    const headingTags = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
-                    const heading = element(headingTags[block.level - 1] ?? "h6", block.text);
-                    appendTextAndLinks(heading, "", block.links);
-                    inspection.append(heading);
-                  } else if (block.kind === "Preformatted")
-                    inspection.append(element("pre", block.text));
-                  else if (block.kind === "Table") {
-                    const table = element("table");
-                    for (const cells of block.rows) {
-                      const tr = element("tr");
-                      for (const cell of cells) tr.append(element("td", cell));
-                      table.append(tr);
+          })
+            .then(
+              () => {
+                const bytes = bytesFromChunks(chunks);
+                inspection.replaceChildren(element("h3", artifact.role.replaceAll("_", " ")));
+                if (artifact.role === "TEXT_EXTRACTED") {
+                  inspection.append(element("pre", new TextDecoder().decode(bytes)));
+                } else {
+                  const appendTextAndLinks = (
+                    container: HTMLElement,
+                    text: string,
+                    links: readonly {
+                      readonly href: string;
+                      readonly text: string;
+                    }[],
+                  ): void => {
+                    container.append(document.createTextNode(text));
+                    if (links.length === 0) return;
+                    const linkList = element("span", undefined, "artifact-inspection__links");
+                    linkList.append(document.createTextNode(" Links: "));
+                    links.forEach((link, index) => {
+                      const anchor = element("a", link.text || link.href);
+                      anchor.href = link.href;
+                      anchor.target = "_blank";
+                      anchor.rel = "noopener noreferrer";
+                      if (index > 0) linkList.append(document.createTextNode(", "));
+                      linkList.append(anchor);
+                    });
+                    container.append(linkList);
+                  };
+                  for (const block of decodeStructuredContentSequence(bytes)) {
+                    if (block.kind === "Heading") {
+                      const headingTags = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
+                      const heading = element(headingTags[block.level - 1] ?? "h6", block.text);
+                      appendTextAndLinks(heading, "", block.links);
+                      inspection.append(heading);
+                    } else if (block.kind === "Preformatted")
+                      inspection.append(element("pre", block.text));
+                    else if (block.kind === "Table") {
+                      const table = element("table");
+                      for (const cells of block.rows) {
+                        const tr = element("tr");
+                        for (const cell of cells) tr.append(element("td", cell));
+                        table.append(tr);
+                      }
+                      inspection.append(table);
+                    } else if (block.kind === "Quote") {
+                      const quote = element("blockquote");
+                      appendTextAndLinks(quote, block.text, block.links);
+                      inspection.append(quote);
+                    } else if (block.kind === "ListItem") {
+                      const list = element(block.ordered ? "ol" : "ul");
+                      list.style.marginInlineStart = `${String(Math.min(block.depth, 8) * 1.25)}rem`;
+                      const item = element("li");
+                      appendTextAndLinks(item, block.text, block.links);
+                      list.append(item);
+                      inspection.append(list);
+                    } else {
+                      const paragraph = element("p");
+                      appendTextAndLinks(paragraph, block.text, block.links);
+                      inspection.append(paragraph);
                     }
-                    inspection.append(table);
-                  } else if (block.kind === "Quote") {
-                    const quote = element("blockquote");
-                    appendTextAndLinks(quote, block.text, block.links);
-                    inspection.append(quote);
-                  } else if (block.kind === "ListItem") {
-                    const list = element(block.ordered ? "ol" : "ul");
-                    list.style.marginInlineStart = `${String(Math.min(block.depth, 8) * 1.25)}rem`;
-                    const item = element("li");
-                    appendTextAndLinks(item, block.text, block.links);
-                    list.append(item);
-                    inspection.append(list);
-                  } else {
-                    const paragraph = element("p");
-                    appendTextAndLinks(paragraph, block.text, block.links);
-                    inspection.append(paragraph);
                   }
                 }
-              }
-              inspect.disabled = false;
-            },
-            () => {
-              inspection.replaceChildren(
-                element("p", "The Artifact could not be inspected.", "notice error"),
-              );
-              inspect.disabled = false;
-            },
-          );
+                inspect.disabled = false;
+                if (artifact.availability === "RemoteOnly")
+                  announcer.textContent = `Retrieved ${artifact.role.replaceAll("_", " ")} from the server.`;
+              },
+              (error) => {
+                inspection.replaceChildren(
+                  element(
+                    "p",
+                    remoteArtifactFailureMessage(
+                      error instanceof AppClientError ? error.id : undefined,
+                      "Inspect",
+                    ),
+                    "notice error",
+                  ),
+                );
+                inspect.disabled = false;
+                announcer.textContent = remoteArtifactFailureMessage(
+                  error instanceof AppClientError ? error.id : undefined,
+                  "Inspect",
+                );
+              },
+            )
+            .finally(() => artifactActionControllers.delete(actionController));
         });
         rowActions.append(inspect);
       }
@@ -2272,16 +2471,27 @@ async function loadDetail(bundleId: string): Promise<void> {
         const download = element("button", "Download");
         download.type = "button";
         download.addEventListener("click", () => {
+          const actionController = new AbortController();
+          artifactActionControllers.add(actionController);
           download.disabled = true;
-          void downloadArtifact(bundleId, artifact.role, controller.signal).then(
-            () => {
-              download.disabled = false;
-            },
-            () => {
-              download.disabled = false;
-              announcer.textContent = "The Artifact could not be saved.";
-            },
-          );
+          if (artifact.availability === "RemoteOnly")
+            announcer.textContent = `Retrieving ${artifact.role.replaceAll("_", " ")} from the server.`;
+          void downloadArtifact(bundleId, artifact.role, actionController.signal)
+            .then(
+              () => {
+                download.disabled = false;
+                if (artifact.availability === "RemoteOnly")
+                  announcer.textContent = `Retrieved ${artifact.role.replaceAll("_", " ")} from the server.`;
+              },
+              (error) => {
+                download.disabled = false;
+                announcer.textContent = remoteArtifactFailureMessage(
+                  error instanceof AppClientError ? error.id : undefined,
+                  "Download",
+                );
+              },
+            )
+            .finally(() => artifactActionControllers.delete(actionController));
         });
         rowActions.append(download);
       }
@@ -2313,7 +2523,17 @@ async function loadDetail(bundleId: string): Promise<void> {
           image.alt = `Full-page screenshot of ${detail.item.title}`;
           preview.replaceChildren(image);
         },
-        () => preview.replaceChildren(element("p", "Screenshot preview unavailable.", "warning")),
+        (error) =>
+          preview.replaceChildren(
+            element(
+              "p",
+              remoteArtifactFailureMessage(
+                error instanceof AppClientError ? error.id : undefined,
+                "Screenshot",
+              ),
+              "warning",
+            ),
+          ),
       );
     }
     app.replaceChildren(section);
@@ -2328,7 +2548,7 @@ async function loadDetail(bundleId: string): Promise<void> {
   }
 }
 
-window.addEventListener("pagehide", releaseScreenshot);
+window.addEventListener("pagehide", () => releaseScreenshot());
 window.addEventListener("pagehide", () => cancelPageOwnedImport?.());
 const requestedBundleId = new URLSearchParams(window.location.search).get("bundleId");
 const requestedVaultId = new URLSearchParams(window.location.search).get("vaultId");
@@ -2336,6 +2556,14 @@ const requestedVaultId = new URLSearchParams(window.location.search).get("vaultI
 async function initialize(): Promise<void> {
   try {
     const state = await sendRequest<AppState>({ type: "GetState" });
+    const reliefAnnouncement = storageReliefAnnouncement(
+      renderedState?.latestStorageReliefJob,
+      state.latestStorageReliefJob,
+    );
+    pendingStorageReliefFocus ??= storageReliefFocusTarget(
+      renderedState?.latestStorageReliefJob,
+      state.latestStorageReliefJob,
+    );
     if (
       pageOwnedImportJobId !== undefined &&
       state.latestImportJob?.jobId === pageOwnedImportJobId &&
@@ -2345,6 +2573,7 @@ async function initialize(): Promise<void> {
       closePageOwnedImport?.();
     }
     renderVaultBar(state);
+    if (reliefAnnouncement !== undefined) announcer.textContent = reliefAnnouncement;
     const active = state.workspace.vaults.find((vault) => vault.active);
     if (active === undefined) {
       const create = element("button", "Create new Vault");
@@ -2409,18 +2638,18 @@ async function initialize(): Promise<void> {
       return;
     }
     if (
-      !staleRecoveryDialogOpened &&
+      !staleDiscardDialogOpened &&
       state.account.staleResolutionRequired === true &&
       new URLSearchParams(window.location.search).get("resolveStale") === "1"
     ) {
-      staleRecoveryDialogOpened = true;
+      staleDiscardDialogOpened = true;
       const trigger = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
         (button) => button.textContent === "Resolve stale Vault",
       );
-      if (trigger !== undefined) showStaleReplicaRecoveryDialog(trigger);
+      if (trigger !== undefined) showStaleReplicaDiscardDialog(trigger);
     }
     if (requestedBundleId === null) await loadList();
-    else await loadDetail(requestedBundleId);
+    else await loadDetail(requestedBundleId, false);
     if (libraryOperationError !== undefined) announcer.textContent = libraryOperationError;
   } catch (error) {
     renderError(
@@ -2458,13 +2687,12 @@ browser.runtime.onMessage.addListener((message: unknown) => {
     "type" in message &&
     message.type === "AppStateChanged"
   ) {
-    releaseScreenshot();
+    releaseScreenshot(false);
     activeGroups = [];
     deletedGroups = [];
     editingVaultId = undefined;
     app.replaceChildren(element("p", "Refreshing Vault state…", "muted"));
     app.setAttribute("aria-busy", "true");
-    announcer.textContent = "Vault state changed. Library data is refreshing.";
     reconcile();
   }
   return undefined;

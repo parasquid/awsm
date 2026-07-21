@@ -16,7 +16,7 @@ import type {
   StoredObjectV1,
   StoredProjectionV1,
 } from "../../drivers/indexeddb";
-import type { ArtifactStore } from "../artifact";
+import type { OpenPlaintextArtifactInput } from "../artifact";
 import {
   decodeLibraryCollectionState,
   groupCollectionItems,
@@ -44,9 +44,23 @@ export interface ArtifactDetailItem {
   readonly byteLength?: number;
   readonly acquiredAt?: string;
   readonly warning?: CaptureWarningId;
+  readonly availability?: "Local" | "RemoteOnly";
   readonly canPreview: boolean;
   readonly canInspect: boolean;
   readonly canDownload: boolean;
+}
+
+export interface LibraryArtifactAvailability {
+  isArtifactRemoteOnly(vaultId: string, artifactObjectId: string): Promise<boolean>;
+}
+
+export interface LibraryArtifactReader {
+  openPlaintext(
+    input: Pick<
+      OpenPlaintextArtifactInput,
+      "vaultId" | "object" | "reference" | "rootKey" | "signal"
+    >,
+  ): Promise<ReadableStream<Uint8Array>>;
 }
 
 export interface OpenArtifactResult {
@@ -103,18 +117,21 @@ export class LibraryService {
   readonly repository: LibraryRepository;
   readonly rootKey: CryptoKey;
   readonly vaultId: string;
-  readonly artifactStore: ArtifactStore;
+  readonly artifactStore: LibraryArtifactReader;
+  readonly availability: LibraryArtifactAvailability;
 
   constructor(
     repository: LibraryRepository,
     rootKey: CryptoKey,
     vaultId: string,
-    artifactStore: ArtifactStore,
+    artifactStore: LibraryArtifactReader,
+    availability: LibraryArtifactAvailability,
   ) {
     this.repository = repository;
     this.rootKey = rootKey;
     this.vaultId = vaultId;
     this.artifactStore = artifactStore;
+    this.availability = availability;
   }
 
   async list(): Promise<readonly LibraryItemV1[]> {
@@ -179,32 +196,44 @@ export class LibraryService {
       return {
         item,
         metadata: descriptor.metadata,
-        artifacts: ROLES.map((role) => {
-          const definition = ROLE_DEFINITION[role];
-          const reference = references.get(role);
-          const warning = roleWarning(role, item.warnings);
-          const state =
-            reference !== undefined ? "Present" : warning === undefined ? "NotProduced" : "Failed";
-          return {
-            role,
-            state,
-            kind: definition.kind,
-            mimeType: definition.mimeType,
-            ...(reference === undefined
-              ? {}
-              : {
-                  byteLength: reference.plaintextByteLength,
-                  acquiredAt: reference.acquiredAt,
-                }),
-            ...(warning === undefined ? {} : { warning }),
-            canPreview:
-              reference !== undefined && (role === "SCREENSHOT_FULL" || role === "THUMBNAIL"),
-            canInspect:
-              reference !== undefined &&
-              (role === "TEXT_EXTRACTED" || role === "CONTENT_STRUCTURED"),
-            canDownload: reference !== undefined,
-          };
-        }),
+        artifacts: await Promise.all(
+          ROLES.map(async (role) => {
+            const definition = ROLE_DEFINITION[role];
+            const reference = references.get(role);
+            const warning = roleWarning(role, item.warnings);
+            const state =
+              reference !== undefined
+                ? "Present"
+                : warning === undefined
+                  ? "NotProduced"
+                  : "Failed";
+            return {
+              role,
+              state,
+              kind: definition.kind,
+              mimeType: definition.mimeType,
+              ...(reference === undefined
+                ? {}
+                : {
+                    byteLength: reference.plaintextByteLength,
+                    acquiredAt: reference.acquiredAt,
+                    availability: (await this.availability.isArtifactRemoteOnly(
+                      this.vaultId,
+                      reference.artifactObjectId,
+                    ))
+                      ? ("RemoteOnly" as const)
+                      : ("Local" as const),
+                  }),
+              ...(warning === undefined ? {} : { warning }),
+              canPreview:
+                reference !== undefined && (role === "SCREENSHOT_FULL" || role === "THUMBNAIL"),
+              canInspect:
+                reference !== undefined &&
+                (role === "TEXT_EXTRACTED" || role === "CONTENT_STRUCTURED"),
+              canDownload: reference !== undefined,
+            };
+          }),
+        ),
       };
     } catch {
       throw new LibraryError("BUNDLE_INVALID", "The archived capture is missing or corrupt.");
@@ -228,7 +257,8 @@ export class LibraryService {
           rootKey: this.rootKey,
         }),
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && "id" in error) throw error;
       throw new LibraryError("BUNDLE_INVALID", "The Artifact is missing or corrupt.");
     }
   }

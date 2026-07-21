@@ -8,10 +8,16 @@ import type {
 import type { ExportJobV1, ImportJobV1 } from "../drivers/indexeddb/schema";
 import type { ArtifactDetailItem } from "../runtime/library/service";
 import type { WorkspaceState } from "../runtime/vault/workspace-service";
+import {
+  isStorageReliefRequest,
+  type StorageReliefJobView,
+  type StorageReliefRequest,
+} from "./storage-relief-protocol";
 
 type ExpectedVault = { readonly expectedVaultId: string };
 
 export type AppRequest =
+  | StorageReliefRequest
   | { readonly type: "GetState" }
   | { readonly type: "WakeSynchronization" }
   | { readonly type: "ChooseLocalOnly" }
@@ -31,7 +37,7 @@ export type AppRequest =
   | { readonly type: "RetryServerSwitch"; readonly jobId: string }
   | { readonly type: "RetrySynchronization" }
   | ({
-      readonly type: "ResolveStaleReplica";
+      readonly type: "DiscardStaleReplica";
       readonly exportDecision: "Exported" | "SkipConfirmed";
     } & ExpectedVault)
   | { readonly type: "LoginAccount"; readonly email: string; readonly password: string }
@@ -119,7 +125,7 @@ const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "CancelServerSwitch",
   "RetryServerSwitch",
   "RetrySynchronization",
-  "ResolveStaleReplica",
+  "DiscardStaleReplica",
   "LoginAccount",
   "SignupAccount",
   "LogoutAccount",
@@ -153,6 +159,9 @@ const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "OpenArtifact",
   "ReadArtifactChunk",
   "CancelArtifactSession",
+  "GetStorageReliefEstimate",
+  "StartStorageRelief",
+  "CancelStorageRelief",
 ]);
 
 export function isAppRequest(value: unknown): value is AppRequest {
@@ -163,6 +172,12 @@ export function isAppRequest(value: unknown): value is AppRequest {
     typeof value.type === "string" &&
     APP_REQUEST_TYPES.has(value.type as AppRequest["type"]);
   if (!recognized) return false;
+  if (
+    value.type === "GetStorageReliefEstimate" ||
+    value.type === "StartStorageRelief" ||
+    value.type === "CancelStorageRelief"
+  )
+    return isStorageReliefRequest(value);
   if (
     value.type === "LoginAccount" &&
     (Object.keys(value).some((key) => key !== "type" && key !== "email" && key !== "password") ||
@@ -243,7 +258,7 @@ export function isAppRequest(value: unknown): value is AppRequest {
   if (value.type === "RetrySynchronization" && Object.keys(value).some((key) => key !== "type"))
     return false;
   if (
-    value.type === "ResolveStaleReplica" &&
+    value.type === "DiscardStaleReplica" &&
     (Object.keys(value).some(
       (key) => key !== "type" && key !== "expectedVaultId" && key !== "exportDecision",
     ) ||
@@ -346,6 +361,8 @@ export interface AppState {
   readonly recentCapture?: RecentCapture;
   readonly latestExportJob?: ExportJobV1;
   readonly latestImportJob?: ImportJobV1;
+  readonly latestStorageReliefJob?: StorageReliefJobView;
+  readonly remoteOnlyArtifactCount?: number;
 }
 
 export interface ServerSwitchView {
@@ -457,6 +474,7 @@ export type AppValue =
   | { readonly forkVaultId: string }
   | { readonly deletedCaptureCount: number; readonly reclaimedBytes: number }
   | { readonly deletedCaptureCount: number; readonly reclaimableBytes: number }
+  | { readonly candidateArtifacts: number; readonly candidateBytes: number }
   | null;
 
 export type AppResponse =

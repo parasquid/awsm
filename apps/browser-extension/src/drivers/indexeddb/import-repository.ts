@@ -5,6 +5,7 @@ import { decodeCaptureJob, decodeExportJob, decodeImportJob } from "./decode";
 import { storageError } from "./errors";
 import { vaultKeyRange } from "./keys";
 import { type ImportJobStage, type ImportJobV1, STORES } from "./schema";
+import { hasActiveStorageRelief } from "./storage-relief-lease";
 
 function active(job: ImportJobV1): boolean {
   return job.state === "Created" || job.state === "Running";
@@ -42,6 +43,7 @@ export class IndexedDbImportRepository {
         STORES.captureJobs,
         STORES.exportJobs,
         STORES.vacuumJobs,
+        STORES.storageReliefJobs,
       ],
       "readwrite",
     );
@@ -58,7 +60,7 @@ export class IndexedDbImportRepository {
       )) as { readonly activeVaultId?: string } | undefined;
       const activeVaultId = workspace?.activeVaultId;
       if (activeVaultId !== undefined) {
-        const [captures, exports, vacuumCount] = await Promise.all([
+        const [captures, exports, vacuumCount, storageRelief] = await Promise.all([
           requestValue(
             transaction.objectStore(STORES.captureJobs).getAll(vaultKeyRange(activeVaultId)),
           ),
@@ -68,9 +70,11 @@ export class IndexedDbImportRepository {
           requestValue(
             transaction.objectStore(STORES.vacuumJobs).count(vaultKeyRange(activeVaultId)),
           ),
+          hasActiveStorageRelief(transaction, activeVaultId),
         ]);
         if (
           vacuumCount !== 0 ||
+          storageRelief ||
           captures
             .map(decodeCaptureJob)
             .some((job) => job.state === "Created" || job.state === "Running") ||

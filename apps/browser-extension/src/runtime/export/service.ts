@@ -6,7 +6,6 @@ import type {
   StoredVaultGenerationV1,
   StoredVaultHeadV1,
 } from "../../drivers/indexeddb/schema";
-import type { ArtifactStore } from "../artifact";
 import { verifyVaultGeneration } from "../vault/generation";
 import type { VaultService } from "../vault/service";
 import type { VaultPackageEntry } from "./container";
@@ -28,6 +27,14 @@ export interface PreparedVaultExport {
   readonly manifest: ExportManifestV1;
   readonly entries: AsyncIterable<VaultPackageEntry>;
   assertSnapshotCurrent(): Promise<void>;
+}
+
+export interface ExportArtifactReader {
+  openEncrypted(
+    vaultId: string,
+    objectId: string,
+    object: Extract<StoredObjectV1, { readonly objectType: "Artifact" }>,
+  ): Promise<ReadableStream<Uint8Array>>;
 }
 
 function exactUnion(left: readonly string[], right: readonly string[]): readonly string[] {
@@ -73,7 +80,7 @@ export class VaultExportService {
     private readonly source: VaultExportSource,
     private readonly vault: VaultService,
     private readonly vaultId: string,
-    private readonly artifactStore: ArtifactStore,
+    private readonly artifactStore: ExportArtifactReader,
   ) {}
 
   async prepare(input: {
@@ -123,7 +130,7 @@ export class VaultExportService {
       ),
       await descriptor("head.cbor", "VaultHead", this.vaultId, headBytes),
     );
-    const artifactObjects = [];
+    const artifactObjects: Extract<StoredObjectV1, { readonly objectType: "Artifact" }>[] = [];
     const omissions = [];
     for (const objectId of objectIds) {
       const object = await this.source.getStoredObject(objectId);
@@ -210,7 +217,11 @@ export class VaultExportService {
         }
         throw new Error("Authoritative Export record is missing");
       },
-      openArtifact: (objectId) => this.artifactStore.openEncrypted(this.vaultId, objectId),
+      openArtifact: async (objectId) => {
+        const object = artifactObjects.find((candidate) => candidate.objectId === objectId);
+        if (object === undefined) throw new Error("Artifact Object missing");
+        return this.artifactStore.openEncrypted(this.vaultId, objectId, object);
+      },
     });
     const keyEnvelope = await this.vault.createExportKeyEnvelope({
       packageId: input.packageId,
@@ -252,7 +263,14 @@ export class VaultExportService {
             if (artifactMatch?.[1] !== undefined) {
               yield {
                 path,
-                bytes: await artifactStore.openEncrypted(vaultId, artifactMatch[1]),
+                bytes: await artifactStore.openEncrypted(
+                  vaultId,
+                  artifactMatch[1],
+                  artifactObjects.find((candidate) => candidate.objectId === artifactMatch[1]) ??
+                    (() => {
+                      throw new Error("Artifact Object changed");
+                    })(),
+                ),
               };
               continue;
             }
