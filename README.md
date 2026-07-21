@@ -244,3 +244,10 @@ Every architectural decision should reinforce this principle.
 This repository documents the design and implementation of AWSM.
 
 The implementation will proceed incrementally through well-defined phases, beginning with a minimal viable product focused on web page archival and expanding toward a general-purpose, privacy-preserving knowledge platform.
+
+---
+
+# License
+
+AWSM is free software licensed under the GNU Affero General Public License, version 3 or
+any later version. See [`LICENSE`](LICENSE) for the full terms.

@@ -1,6 +1,7 @@
 {
   "name": "awsm",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "packageManager": "pnpm@11.13.1",
   "scripts": {
     "build": "corepack pnpm --filter @awsm/browser-extension build",
