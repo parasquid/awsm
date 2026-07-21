@@ -36,7 +36,8 @@ For a guided walkthrough, continue with [Try a Capture](#try-a-capture) and
 see [How OpenAI tools were used](#how-openai-tools-were-used).
 
 **Supported platform:** Chrome 116 or newer on a desktop operating system supported by Chrome. AWSM
-is not currently packaged or tested as a Firefox, Safari, mobile, or standalone web application.
+must be used in a normal Chrome profile; Incognito is not supported. AWSM is not currently packaged
+or tested as a Firefox, Safari, mobile, or standalone web application.
 
 ## What works today
 
@@ -70,6 +71,9 @@ present those future capabilities as current behavior.
 - Chrome 116 or newer
 - Node.js 22
 - Corepack
+
+Use a normal Chrome profile. Do not enable **Allow in Incognito** for AWSM; Incognito is not a
+supported storage or capture environment.
 
 Clone the repository, install the pinned dependencies, and build the extension:
 

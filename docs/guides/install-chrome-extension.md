@@ -6,6 +6,9 @@ AWSM is pre-release software. It is not available from the Chrome Web Store and 
 automatically. Installation requires Chrome 116 or newer. While the AWSM repository is private, you
 also need access to it on GitHub to download a Release.
 
+Install and use AWSM in a normal Chrome profile. Incognito is not supported; do not enable
+**Allow in Incognito** for the extension.
+
 Vault content and browser-local state remain on your device unless you configure encrypted
 synchronization with a compatible Coordination Server. The server receives opaque encrypted data,
 not plaintext Vault content.
@@ -105,6 +108,8 @@ pre-release version are compatible.
   not a GitHub **Source code** archive.
 - **Chrome shows a developer-mode warning:** This is expected for an unpacked extension that is not
   installed from the Chrome Web Store.
+- **AWSM does not work correctly in Incognito:** Incognito is not supported. Disable **Allow in
+  Incognito** on `chrome://extensions` and use AWSM in a normal Chrome profile.
 - **The extension became disabled:** Restore the permanent installation directory if its files were
   moved or deleted, then reload AWSM from `chrome://extensions`.
 - **AWSM appears as a separate installation:** Loading from a different path can produce a different

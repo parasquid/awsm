@@ -66,6 +66,32 @@ canonical Vault, Account, synchronization, or cryptographic contracts.
 
 ---
 
+## Incognito Capture Contract
+
+**Status:** Discovery
+
+Define whether and how the Chrome Host may capture a page from an Incognito tab. The decision must
+not treat Incognito as an ordinary window: users need an explicit contract for whether a Capture is
+permanently encrypted into a regular Vault or retained in an isolated Incognito Workspace whose
+content may disappear when the Incognito session ends.
+
+Evaluate Chrome's spanning and split Incognito modes, including packaged Library routing, separate
+background and offscreen contexts, IndexedDB and origin-private Artifact storage, Vault key access,
+Account state, and lifecycle boundaries. A permanent regular-Vault design must detect the Incognito
+source, obtain clear confirmation before persistence, and open Vault surfaces in a normal Chrome
+window. An isolated design must define whether transfer, Export, or promotion into a permanent Vault
+is possible without silently weakening Incognito expectations. Until one design is approved and
+implemented, the extension should enforce its unsupported status rather than relying only on
+documentation.
+
+Required evidence includes packaged-Chrome journeys for MHTML, full-page screenshot, extracted
+text, structured content, cancellation, failure, locking, worker termination, and Incognito-window
+closure. Tests must prove the chosen persistence boundary, prevent cross-profile Vault-context
+confusion, and verify that plaintext or temporary Capture data does not enter unintended storage or
+diagnostics.
+
+---
+
 ## Zero-Knowledge Synchronized Web Client
 
 **Status:** Candidate
