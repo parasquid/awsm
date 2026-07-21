@@ -11,6 +11,11 @@ import { noRuntimeFaultCheckpoint, type RuntimeFaultCheckpoint } from "../fault-
 import type { VaultRecordsV1 } from "../vault/contracts";
 import { UploadRunner } from "./upload";
 
+export interface ServerSwitchRelayFaults {
+  readonly beforeSourceArtifactRead?: () => Promise<void>;
+  readonly afterCandidateUploadPart?: () => Promise<void>;
+}
+
 interface SwitchState {
   loadJob(): Promise<ServerSwitchJobV1 | undefined>;
   saveJob(job: ServerSwitchJobV1): Promise<void>;
@@ -82,6 +87,7 @@ export class ServerSwitchRemoteApplicator {
     private readonly artifacts: Pick<ArtifactStore, "openEncrypted">,
     private readonly transport: SwitchTransport,
     private readonly faultCheckpoint: RuntimeFaultCheckpoint = noRuntimeFaultCheckpoint,
+    private readonly relayFaults?: ServerSwitchRelayFaults,
   ) {}
 
   async publishLocal(records: VaultRecordsV1, now = new Date().toISOString()): Promise<void> {
@@ -360,6 +366,15 @@ export class ServerSwitchRemoteApplicator {
           await this.state.saveJob(job);
           await this.faultCheckpoint.reach("server-switch:after-first-union-event");
         }
+      },
+      undefined,
+      {
+        ...(this.relayFaults?.beforeSourceArtifactRead === undefined
+          ? {}
+          : { beforeArtifactRead: this.relayFaults.beforeSourceArtifactRead }),
+        ...(this.relayFaults?.afterCandidateUploadPart === undefined
+          ? {}
+          : { afterUploadPart: this.relayFaults.afterCandidateUploadPart }),
       },
     ).run(initialJob.updatedAt);
     return job;

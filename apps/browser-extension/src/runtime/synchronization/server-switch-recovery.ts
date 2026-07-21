@@ -146,7 +146,11 @@ export class ServerSwitchRecoveryProver {
           attachIdempotencyKey: crypto.randomUUID(),
         },
         input.rootKey,
-        input.expected,
+        {
+          generation: input.expected.generation,
+          events: input.expected.events,
+          objects: input.expected.objects.filter((object) => object.objectType !== "Artifact"),
+        },
         { recoveryGenerationId: input.expected.generation.generationId },
       );
       const verified = await verifyPreparedRemoteReplica({
