@@ -26,6 +26,7 @@ jobs:
     env:
       RAILS_ENV: test
       TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/coordination_server_test
+      AWSM_SYNTHETIC_ACCOUNT_SECRET: test-only-synthetic-account-secret
       AWSM_OPENAPI_PATH: ${{ github.workspace }}/docs/specifications/protocol/http-api.openapi.yaml
     steps:
       - uses: actions/checkout@v6
