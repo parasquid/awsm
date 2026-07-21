@@ -33,7 +33,7 @@
 ### RED
 
 - Added a real Chromium scenario requiring a single Workspace-scoped Import lease to reject a
-  second Import plus Capture acquisition, atomic registration, Vacuum, Export, and manual Lock.
+  second Import plus Capture acquisition, atomic registration, Vacuum, Export, and locked-state handling.
 - Command: `corepack pnpm test:integration`
 - Expected failure: `IndexedDbImportRepository` and transaction-level Import fencing do not exist.
 

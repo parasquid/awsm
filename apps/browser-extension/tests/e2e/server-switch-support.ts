@@ -711,27 +711,7 @@ export async function applyUnionWithVisuals(
     path: testInfo.outputPath("server-switch-union-narrow.png"),
   });
   await visual.close();
-  await appRequest(page, {
-    type: "LockVault",
-    expectedVaultId: client.vaultId,
-  });
-  const locked = await client.context.newPage();
-  await locked.goto(`chrome-extension://${client.extensionId}/library.html`);
-  await locked.getByRole("button", { name: "Settings" }).click();
-  await expect(locked.getByText("Unlock this Vault to continue the server change.")).toBeVisible();
-  await locked.screenshot({
-    path: testInfo.outputPath("server-switch-locked-desktop.png"),
-  });
-  await locked.setViewportSize({ width: 420, height: 800 });
-  await locked.screenshot({
-    path: testInfo.outputPath("server-switch-locked-narrow.png"),
-  });
-  await locked.close();
   await faultControl(page, "release");
   await switching.catch(() => undefined);
-  await appRequest(page, {
-    type: "UnlockDevice",
-    expectedVaultId: client.vaultId,
-  });
   await waitForSynchronizedState(page, candidateOrigin);
 }

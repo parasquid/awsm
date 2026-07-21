@@ -3,7 +3,10 @@ import { AppClientError, sendRequest } from "../../src/app/client";
 import type { AppState } from "../../src/app/protocol";
 import { serverPermissionPattern } from "../../src/runtime/account/server";
 import { popupView } from "../../src/ui/popup-view";
-import { vaultManagementView } from "../../src/ui/vault-management-view";
+import {
+  RECENT_CAPTURE_DURATION_MS,
+  recentCaptureTimerProgress,
+} from "../../src/ui/recent-capture-timer";
 
 function requiredElement(selector: string): HTMLElement {
   const node = document.querySelector<HTMLElement>(selector);
@@ -18,6 +21,17 @@ let visibleRecentCaptureJobId: string | undefined;
 let renderedState: AppState | undefined;
 let suggestedVaultName: string | undefined;
 let captureRequestPending = false;
+let recentTimerInterval: number | undefined;
+let recentTimerState:
+  | {
+      readonly jobId: string;
+      readonly startedAt: number;
+      pausedAt: number | undefined;
+      pausedTotalMs: number;
+      hovered: boolean;
+      focused: boolean;
+    }
+  | undefined;
 
 function expectedVaultId(): string {
   const vaultId = renderedState?.workspace.activeVaultId;
@@ -46,9 +60,7 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function request(
-  type: "GetState" | "WakeSynchronization" | "UnlockDevice" | "LockVault",
-): Promise<AppState> {
+function request(type: "GetState" | "WakeSynchronization" | "UnlockDevice"): Promise<AppState> {
   return type === "GetState" || type === "WakeSynchronization"
     ? sendRequest<AppState>({ type })
     : sendRequest<AppState>({ type, expectedVaultId: expectedVaultId() });
@@ -146,130 +158,6 @@ function createVaultForm(state: AppState, secondary: boolean): HTMLFormElement {
   return form;
 }
 
-function showCreateDialog(state: AppState, restoreFocus: HTMLElement): void {
-  const dialog = element("dialog") as HTMLDialogElement;
-  const title = element("h2", "Create another Vault");
-  title.id = `dialog-title-${crypto.randomUUID()}`;
-  dialog.setAttribute("aria-labelledby", title.id);
-  dialog.append(title);
-  dialog.append(
-    element("p", "Creating another Vault locks the current Vault."),
-    createVaultForm(state, true),
-  );
-  dialog.addEventListener(
-    "close",
-    () => {
-      dialog.remove();
-      restoreFocus.focus();
-    },
-    { once: true },
-  );
-  document.body.append(dialog);
-  dialog.showModal();
-  const input = dialog.querySelector<HTMLInputElement>('input[name="vault-name"]');
-  if (suggestedVaultName === undefined) void regenerateVaultName(input ?? undefined);
-  else input?.select();
-}
-
-function vaultControls(state: AppState): HTMLElement | undefined {
-  const view = vaultManagementView(state.workspace);
-  const managementDisabled = view.managementDisabled || captureRequestPending;
-  const active = state.workspace.vaults.find((vault) => vault.active);
-  if (active === undefined) return undefined;
-  const section = element("section", undefined, "vault-control");
-  const summary = element("p");
-  summary.append(
-    document.createTextNode("Vault · "),
-    element("strong", active.name),
-    document.createTextNode(` · ${active.unlocked ? "Unlocked" : "Locked"}`),
-  );
-  section.append(summary);
-  if (view.busyText !== undefined) section.append(status(view.busyText));
-  else if (captureRequestPending) section.append(status("Capture in progress"));
-  const actions = element("div", undefined, "actions");
-  const switcher = element("button", "Switch Vault");
-  switcher.type = "button";
-  switcher.disabled = managementDisabled;
-  switcher.addEventListener("click", () => {
-    const dialog = element("dialog") as HTMLDialogElement;
-    const form = element("form");
-    const title = element("h2", "Switch Vault");
-    title.id = `dialog-title-${crypto.randomUUID()}`;
-    dialog.setAttribute("aria-labelledby", title.id);
-    form.append(title, element("p", "Switching locks the current Vault."));
-    let selectedVaultId = active.vaultId;
-    for (const option of view.options) {
-      const label = element("label", undefined, "picker__option");
-      const radio = element("input");
-      radio.type = "radio";
-      radio.name = "vault";
-      radio.value = option.vaultId;
-      radio.checked = option.current;
-      if (option.current) radio.autofocus = true;
-      radio.addEventListener("change", () => {
-        selectedVaultId = option.vaultId;
-      });
-      label.append(
-        radio,
-        element(
-          "span",
-          `${option.label}${option.current ? " · Current" : ""} · Created ${option.createdAt.slice(0, 10)}`,
-        ),
-      );
-      form.append(label);
-    }
-    const dialogActions = element("div", undefined, "actions");
-    const choose = element("button", "Switch");
-    choose.type = "submit";
-    const create = element("button", "Create another Vault");
-    create.type = "button";
-    let createAfterClose = false;
-    create.addEventListener("click", () => {
-      createAfterClose = true;
-      dialog.close();
-    });
-    const cancel = element("button", "Cancel");
-    cancel.type = "button";
-    cancel.addEventListener("click", () => dialog.close());
-    dialogActions.append(choose, create, cancel);
-    form.append(dialogActions);
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      choose.disabled = true;
-      void sendRequest<AppState>({
-        type: "SelectActiveVault",
-        expectedActiveVaultId: active.vaultId,
-        vaultId: selectedVaultId,
-      }).then(
-        (next) => {
-          dialog.close();
-          announcer.textContent = `Selected ${next.workspace.vaults.find((vault) => vault.active)?.name ?? "Vault"}. Unlock it to continue.`;
-          render(next);
-        },
-        (cause) => {
-          dialog.close();
-          void refresh(errorText(cause));
-        },
-      );
-    });
-    dialog.append(form);
-    dialog.addEventListener(
-      "close",
-      () => {
-        dialog.remove();
-        if (createAfterClose) showCreateDialog(state, switcher);
-        else switcher.focus();
-      },
-      { once: true },
-    );
-    document.body.append(dialog);
-    dialog.showModal();
-  });
-  actions.append(switcher);
-  section.append(actions);
-  return section;
-}
-
 async function refresh(error?: string): Promise<void> {
   try {
     render(await request("GetState"), error);
@@ -280,8 +168,11 @@ async function refresh(error?: string): Promise<void> {
 }
 
 function render(state: AppState, transientError?: string): void {
+  if (recentTimerInterval !== undefined) window.clearInterval(recentTimerInterval);
+  recentTimerInterval = undefined;
   renderedState = state;
   const view = popupView(state);
+  if (view.screen !== "ready" || view.recentCapture === undefined) recentTimerState = undefined;
   visibleRecentCaptureJobId = view.screen === "ready" ? view.recentCapture?.jobId : undefined;
   popupLifetime.postMessage({
     vaultId: state.workspace.activeVaultId ?? null,
@@ -303,8 +194,9 @@ function render(state: AppState, transientError?: string): void {
                 : "Archive this page",
     ),
   );
-  const controls = vaultControls(state);
-  if (controls !== undefined) content.append(controls);
+  const activeVault = state.workspace.vaults.find((vault) => vault.active);
+  if (activeVault !== undefined)
+    content.append(element("p", `Vault · ${activeVault.name}`, "vault-context"));
   if (transientError !== undefined) content.append(status(transientError, "error"));
 
   if (view.screen === "server-choice") {
@@ -322,6 +214,8 @@ function render(state: AppState, transientError?: string): void {
         refresh(errorText(cause)),
       );
     });
+    const selfHosted = element("details", undefined, "self-hosted");
+    selfHosted.append(element("summary", "Use a self-hosted server"));
     const customForm = element("form");
     const customLabel = element("label", "Self-hosted server origin");
     const custom = element("input");
@@ -348,7 +242,8 @@ function render(state: AppState, transientError?: string): void {
         refresh(errorText(cause)),
       );
     });
-    content.append(hosted, customForm, localOnly);
+    selfHosted.append(customForm);
+    content.append(hosted, selfHosted, localOnly);
   } else if (view.screen === "login") {
     content.append(element("p", `Sign in to synchronize through ${view.serverOrigin}.`));
     const login = element("form");
@@ -465,16 +360,11 @@ function render(state: AppState, transientError?: string): void {
       });
       const title = element("p", undefined, "recent-capture__title");
       title.append(document.createTextNode("Archived: "), element("strong", recentCapture.title));
-      const dismiss = element("button", "×", "recent-capture__dismiss");
-      dismiss.type = "button";
-      dismiss.setAttribute("aria-label", `Dismiss recent capture: ${recentCapture.title}`);
-      dismiss.addEventListener("click", () => {
-        dismiss.disabled = true;
-        void dismissSeenCapture(recentCapture.jobId).then(
-          (next) => render(next),
-          (cause) => refresh(errorText(cause)),
-        );
-      });
+      const progress = element("div", undefined, "recent-capture__progress");
+      progress.setAttribute("role", "progressbar");
+      progress.setAttribute("aria-label", "Time until recent capture preview closes");
+      progress.setAttribute("aria-valuemin", "0");
+      progress.setAttribute("aria-valuemax", String(RECENT_CAPTURE_DURATION_MS));
       card.append(title);
       if (recentCapture.screenshotBase64 !== undefined) {
         const thumbnail = element("img", undefined, "recent-capture__thumbnail");
@@ -485,8 +375,62 @@ function render(state: AppState, transientError?: string): void {
       if (recentCapture.warnings.length > 0) {
         card.append(status("The full-page screenshot was unavailable.", "warning"));
       }
-      cardGroup.append(card, dismiss);
+      cardGroup.append(card, progress);
       content.append(cardGroup);
+      if (recentTimerState?.jobId !== recentCapture.jobId) {
+        recentTimerState = {
+          jobId: recentCapture.jobId,
+          startedAt: performance.now(),
+          pausedAt: undefined,
+          pausedTotalMs: 0,
+          hovered: false,
+          focused: false,
+        };
+      }
+      const setPaused = (kind: "hovered" | "focused", paused: boolean): void => {
+        const timer = recentTimerState;
+        if (timer === undefined || timer.jobId !== recentCapture.jobId) return;
+        timer[kind] = paused;
+        const shouldPause = timer.hovered || timer.focused;
+        if (shouldPause && timer.pausedAt === undefined) timer.pausedAt = performance.now();
+        else if (!shouldPause && timer.pausedAt !== undefined) {
+          timer.pausedTotalMs += performance.now() - timer.pausedAt;
+          timer.pausedAt = undefined;
+        }
+      };
+      cardGroup.addEventListener("mouseenter", () => setPaused("hovered", true));
+      cardGroup.addEventListener("mouseleave", () => setPaused("hovered", false));
+      cardGroup.addEventListener("focusin", () => setPaused("focused", true));
+      cardGroup.addEventListener("focusout", (event) => {
+        if (!(event.relatedTarget instanceof Node) || !cardGroup.contains(event.relatedTarget))
+          setPaused("focused", false);
+      });
+      const updateTimer = (): void => {
+        const timer = recentTimerState;
+        if (timer === undefined || timer.jobId !== recentCapture.jobId) return;
+        const now = performance.now();
+        const pausedMs = timer.pausedAt === undefined ? 0 : now - timer.pausedAt;
+        const state = recentCaptureTimerProgress({
+          elapsedMs: now - timer.startedAt - timer.pausedTotalMs - pausedMs,
+          paused: timer.pausedAt !== undefined,
+        });
+        progress.style.setProperty("--recent-progress", String(state.ratio));
+        progress.setAttribute("aria-valuenow", String(state.elapsedMs));
+        progress.setAttribute(
+          "aria-valuetext",
+          `${timer.pausedAt === undefined ? "" : "Paused, "}${Math.ceil(state.remainingMs / 1_000)} seconds remaining`,
+        );
+        if (!state.expired) return;
+        if (recentTimerInterval !== undefined) window.clearInterval(recentTimerInterval);
+        recentTimerInterval = undefined;
+        recentTimerState = undefined;
+        void dismissSeenCapture(recentCapture.jobId).then(
+          (next) => render(next),
+          (cause) => refresh(errorText(cause)),
+        );
+      };
+      updateTimer();
+      recentTimerInterval = window.setInterval(updateTimer, 100);
     } else if (view.notice === "capture-succeeded") {
       content.append(status("Page archived in your Vault.", "success"));
     } else if (view.notice === "screenshot-warning") {
@@ -495,6 +439,7 @@ function render(state: AppState, transientError?: string): void {
       content.append(status(`Capture failed (${view.notice}). Retry when ready.`, "error"));
     }
     const capture = element("button", "Archive this page", "primary");
+    capture.disabled = captureRequestPending;
     capture.addEventListener("click", () => {
       capture.disabled = true;
       captureRequestPending = true;
@@ -533,10 +478,8 @@ function render(state: AppState, transientError?: string): void {
       }
       void dismissSeenCapture(view.recentCapture.jobId).then(open, open);
     });
-    const lock = element("button", "Lock Vault", "quiet");
-    lock.addEventListener("click", () => void request("LockVault").then((next) => render(next)));
     const actions = element("div", undefined, "actions");
-    actions.append(capture, library, lock);
+    actions.append(capture, library);
     content.append(actions);
   }
   app.replaceChildren(content);

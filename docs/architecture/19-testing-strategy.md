@@ -240,7 +240,7 @@ Vault Vacuum tests MUST cover delete/restore replay, retained offline Bundle aut
 
 Collection-management tests MUST begin with failing tests and cover exact fragmentless URL routing, query-sensitive automatic grouping, deterministic tie-breaking, merge redirects and cycles, Move/Extract assignment, compensating Undo, stale-state rejection, atomic Event/Projection commits, Projection rebuild, and Vacuum preservation. Packaged-browser tests MUST exercise accessible controls and native drag and drop, including Deleted-member behavior, known URLs, tail visit-original routing, and the ten-second single-operation Undo presentation.
 
-Multiple-Vault tests MUST begin with failing tests and cover independent Root Keys, Vault-prefixed storage isolation, stale-context rejection, atomic Create/Select/Rename, manual locking on selection, Vault-scoped Capture Jobs and recovery, encrypted locked-name caches, deterministic name replay, duplicate-name disambiguation, Projection rebuild, Vacuum isolation, and packaged-browser keyboard workflows across popup and Library.
+Multiple-Vault tests MUST begin with failing tests and cover independent Root Keys, Vault-prefixed storage isolation, stale-context rejection, atomic Create/Select/Rename, automatic locking on selection, Vault-scoped Capture Jobs and recovery, encrypted locked-name caches, deterministic name replay, duplicate-name disambiguation, Projection rebuild, Vacuum isolation, and packaged-browser keyboard workflows across popup and Library. The shipped interface does not expose a manual Lock action.
 
 Long-lived UI tests MUST keep multiple surfaces open and prove that successful mutations reconcile
 every affected surface without reload. Coverage MUST include lock/unlock, active Vault and name

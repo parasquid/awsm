@@ -189,6 +189,13 @@ describe("Library Artifact detail", () => {
     });
     expect(detail.artifacts.find((artifact) => artifact.role === "SCREENSHOT_FULL")).toMatchObject({
       availability: "RemoteOnly",
+      canDownload: false,
+      canInspect: false,
+      canPreview: true,
+    });
+    expect(detail.artifacts.find((artifact) => artifact.role === "TEXT_EXTRACTED")).toMatchObject({
+      canDownload: false,
+      canInspect: true,
     });
     expect(detail.artifacts.find((artifact) => artifact.role === "THUMBNAIL")).not.toHaveProperty(
       "availability",

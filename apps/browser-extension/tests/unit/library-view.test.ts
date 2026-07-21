@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  artifactPresentation,
   captureDropRequest,
   collectionLayerBundleIds,
   dragImageHotspot,
@@ -38,11 +39,27 @@ describe("Library collection navigation", () => {
 
   it("explains the complete proof-before-delete storage-relief boundary", () => {
     expect(storageReliefConfirmation(2, 3_250_586)).toBe(
-      "Free up to 3.1 MiB by removing 2 encrypted Artifact wrappers from this browser?\n\n" +
-        "AWSM will synchronize and verify each encrypted server copy first. Only verified copies are removed locally.\n\n" +
-        "The server may then hold the only copy. Those payloads will be unavailable offline until AWSM retrieves them.\n\n" +
-        "You can run this again later.",
+      "Remove up to 3.1 MiB from this device?\n\n" +
+        "AWSM will verify each encrypted server copy before removing its local copy.\n\n" +
+        "These 2 MHTML archives and screenshots will require your Account and a connection until retrieved again.",
     );
+  });
+
+  it("maps internal Artifact roles to user-facing labels and actions", () => {
+    expect(artifactPresentation("PRIMARY")).toEqual({ label: "MHTML", action: "Download" });
+    expect(artifactPresentation("SCREENSHOT_FULL")).toEqual({
+      label: "Screenshot",
+      action: "Preview",
+    });
+    expect(artifactPresentation("THUMBNAIL")).toEqual({ label: "Thumbnail", action: "None" });
+    expect(artifactPresentation("TEXT_EXTRACTED")).toEqual({
+      label: "Extracted text",
+      action: "Inspect",
+    });
+    expect(artifactPresentation("CONTENT_STRUCTURED")).toEqual({
+      label: "Structured content",
+      action: "Inspect",
+    });
   });
 
   it("warns before signing out when remote-only payloads depend on Account access", () => {

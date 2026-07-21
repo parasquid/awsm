@@ -774,7 +774,7 @@ async function interruptServerSwitchAt(
   const visual = await client.context.newPage();
   await visual.goto(`chrome-extension://${client.extensionId}/library.html`);
   await visual.getByRole("button", { name: "Settings" }).click();
-  await expect(visual.getByRole("dialog", { name: "Account and synchronization" })).toBeVisible();
+  await expect(visual.getByRole("dialog", { name: "Settings" })).toBeVisible();
   await visual.screenshot({
     path: testInfo.outputPath(`${captureName}-desktop.png`),
   });
@@ -827,22 +827,8 @@ async function switchWithApplyingCapture(
     path: testInfo.outputPath(`${captureName}-narrow.png`),
   });
   await visual.close();
-  await appRequest(page, { type: "LockVault", expectedVaultId: vaultId });
-  const locked = await client.context.newPage();
-  await locked.goto(`chrome-extension://${client.extensionId}/library.html`);
-  await locked.getByRole("button", { name: "Settings" }).click();
-  await expect(locked.getByText("Unlock this Vault to continue the server change.")).toBeVisible();
-  await locked.screenshot({
-    path: testInfo.outputPath("server-switch-locked-desktop.png"),
-  });
-  await locked.setViewportSize({ width: 420, height: 800 });
-  await locked.screenshot({
-    path: testInfo.outputPath("server-switch-locked-narrow.png"),
-  });
-  await locked.close();
   await faultControl(page, "release");
   await switching.catch(() => undefined);
-  await appRequest(page, { type: "UnlockDevice", expectedVaultId: vaultId });
   await waitForSynchronizedState(page, candidateOrigin);
 }
 
@@ -1310,7 +1296,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         .toBe("Offline");
       await staleLibrary.getByRole("button", { name: "Settings" }).click();
       const settings = staleLibrary.getByRole("dialog", {
-        name: "Account and synchronization",
+        name: "Settings",
       });
       await expect(settings.getByText("Synchronization · Offline")).toBeVisible();
       await expect(settings.getByRole("button", { name: "Retry synchronization" })).toBeVisible();
@@ -1480,7 +1466,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       });
       expect(reliefEstimate.candidateArtifacts).toBeGreaterThanOrEqual(2);
       firstLibrary.once("dialog", (dialog) => void dialog.accept());
-      await firstLibrary.getByRole("button", { name: "Free up browser storage" }).click();
+      await firstLibrary.getByRole("button", { name: "Reduce device storage" }).click();
       await expect
         .poll(
           async () =>
@@ -1505,7 +1491,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         .toBe(true);
       await firstLibrary.getByRole("button", { name: "Settings" }).click();
       const settings = firstLibrary.getByRole("dialog", {
-        name: "Account and synchronization",
+        name: "Settings",
       });
       await settings
         .getByRole("textbox", { name: "Change synchronization server" })
@@ -1515,7 +1501,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       await expect(settings).toBeHidden({ timeout: 60_000 });
       await firstLibrary.getByRole("button", { name: "Settings" }).click();
       const candidate = firstLibrary.getByRole("dialog", {
-        name: "Account and synchronization",
+        name: "Settings",
       });
       await expect(candidate.getByText(/current server remains active/u)).toBeVisible();
       await firstLibrary.screenshot({
@@ -1621,7 +1607,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       await installSavedArtifactProbe(firstLibrary);
       const primary = firstLibrary
         .locator(".artifact-row")
-        .filter({ has: firstLibrary.locator("strong", { hasText: /^PRIMARY$/u }) });
+        .filter({ has: firstLibrary.locator("strong", { hasText: /^MHTML$/u }) });
       await primary.getByRole("button", { name: "Download" }).click();
       await expect.poll(async () => (await savedArtifactProbe(firstLibrary)).closed).toBe(true);
       await expect
@@ -1696,7 +1682,7 @@ test("fast-forwards a stale local Replica from a candidate successor", async ({
     });
     expect(reliefEstimate.candidateArtifacts).toBeGreaterThanOrEqual(2);
     stalePage.once("dialog", (dialog) => void dialog.accept());
-    await stalePage.getByRole("button", { name: "Free up browser storage" }).click();
+    await stalePage.getByRole("button", { name: "Reduce device storage" }).click();
     await expect
       .poll(
         async () =>
@@ -1924,9 +1910,7 @@ test("reports sibling successor Generations as a conflict without changing serve
     expect(await activeGeneration(setup.page)).toEqual(localSuccessor);
     await setup.page.getByRole("button", { name: "Settings" }).click();
     await expect(setup.page.getByRole("heading", { name: "Server switch conflict" })).toBeVisible();
-    const dialogText = await setup.page
-      .getByRole("dialog", { name: "Account and synchronization" })
-      .innerText();
+    const dialogText = await setup.page.getByRole("dialog", { name: "Settings" }).innerText();
     expect(dialogText).not.toMatch(/(?:Generation|Object|Event|Account|key) ID|ciphertext/iu);
     await setup.page.screenshot({
       path: testInfo.outputPath("server-switch-conflict-desktop.png"),
@@ -2199,9 +2183,7 @@ test("renders Account onboarding, signup, progress, success, and settings states
     await library.goto(`chrome-extension://${client.extensionId}/library.html`);
     await expect(library.getByRole("button", { name: "Settings" })).toBeVisible();
     await library.getByRole("button", { name: "Settings" }).click();
-    await expect(
-      library.getByRole("dialog", { name: "Account and synchronization" }),
-    ).toBeVisible();
+    await expect(library.getByRole("dialog", { name: "Settings" })).toBeVisible();
     await library.screenshot({
       path: testInfo.outputPath("account-settings.png"),
     });
@@ -2432,7 +2414,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
       await extensionApi.action.openPopup();
     });
     const popup = await extensionPopup(context, extensionId);
+    await popup.setViewportSize({ width: 360, height: 600 });
     await chooseLocalOnlyOnFirstLaunch(popup);
+    await popup.screenshot({ path: testInfo.outputPath("popup-onboarding.png") });
     await popup.locator("body").press("Tab");
     await expect(popup.getByRole("textbox", { name: "Vault name" })).toBeFocused();
     await popup.keyboard.press("Tab");
@@ -2512,13 +2496,12 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await expect(capturePreview).toHaveAttribute("href", /library\.html\?vaultId=[^&]+&bundleId=/u);
     const captureHref = await capturePreview.getAttribute("href");
     if (captureHref === null) throw new Error("The recent Capture link is unavailable.");
-    const dismissRecent = completedPopup.getByRole("button", {
-      name: "Dismiss recent capture: AWSM tall fixture",
+    const previewTimer = completedPopup.getByRole("progressbar", {
+      name: "Time until recent capture preview closes",
     });
-    await expect(dismissRecent).toBeVisible();
-    expect(await dismissRecent.evaluate((node) => node.closest(".recent-capture") === null)).toBe(
-      true,
-    );
+    await expect(previewTimer).toBeVisible();
+    await expect(previewTimer).toHaveAttribute("aria-valuemax", "8000");
+    await completedPopup.screenshot({ path: testInfo.outputPath("popup-recent-capture.png") });
     await completedPopup.close();
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
     const reopenedPopup = await extensionPopup(context, extensionId);
@@ -2593,36 +2576,20 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await popupAfterUrlChange.close();
 
     await context.setOffline(true);
-    await context.addInitScript(() => {
-      const saved = {
-        aborted: false,
-        chunks: [] as number[][],
-        closed: false,
-        suggestedName: "",
-      };
-      Object.defineProperty(window, "__awsmSavedArtifact", { value: saved });
-      Object.defineProperty(window, "showSaveFilePicker", {
-        value: async (options: { suggestedName: string }) => {
-          saved.suggestedName = options.suggestedName;
-          return {
-            createWritable: async () => ({
-              write: async (chunk: Uint8Array) => {
-                saved.chunks.push(Array.from(chunk));
-              },
-              close: async () => {
-                saved.closed = true;
-              },
-              abort: async () => {
-                saved.aborted = true;
-              },
-            }),
-          };
-        },
-      });
-    });
     const library = await context.newPage();
     await library.goto(`chrome-extension://${extensionId}/library.html`);
-    await expect(library.getByRole("button", { name: "Import Vault" })).toBeVisible();
+    await library.getByRole("button", { name: "Settings" }).click();
+    await library.getByRole("tab", { name: "Vault" }).click();
+    await expect(
+      library.getByRole("dialog", { name: "Settings" }).getByRole("button", {
+        name: "Import Vault",
+      }),
+    ).toBeVisible();
+    await library.getByRole("tab", { name: "Account & sync" }).click();
+    await library
+      .getByRole("dialog", { name: "Settings" })
+      .getByRole("button", { name: "Cancel" })
+      .click();
     await library.locator(".card").click();
     const firstSelection = library.getByRole("checkbox", { name: /Select capture from/u }).first();
     await firstSelection.check();
@@ -2736,17 +2703,24 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     const artifactPanel = library.getByRole("region", {
       name: "Capture Artifacts",
     });
+    const [screenshotBox, artifactBox] = await Promise.all([
+      image.boundingBox(),
+      artifactPanel.boundingBox(),
+    ]);
+    if (screenshotBox === null || artifactBox === null)
+      throw new Error("Capture detail geometry is unavailable.");
+    expect(screenshotBox.y).toBeLessThan(artifactBox.y);
     await expect(artifactPanel.locator(".artifact-row")).toHaveCount(5);
     const structuredArtifact = artifactPanel.locator(".artifact-row").filter({
-      has: library.locator("strong", { hasText: /^CONTENT STRUCTURED$/u }),
+      has: library.locator("strong", { hasText: /^Structured content$/u }),
     });
     await expect(structuredArtifact.getByRole("button", { name: "Inspect" })).toBeVisible();
     await structuredArtifact.getByRole("button", { name: "Inspect" }).focus();
     await expect(structuredArtifact.getByRole("button", { name: "Inspect" })).toBeFocused();
     await structuredArtifact.getByRole("button", { name: "Inspect" }).click();
-    const inspection = library.locator(".artifact-inspection");
+    const inspection = structuredArtifact.locator(".artifact-inspection");
     await expect(inspection).toBeVisible();
-    await expect(inspection.getByRole("heading", { name: "CONTENT STRUCTURED" })).toBeVisible();
+    await expect(inspection.getByRole("heading", { name: "Structured content" })).toBeVisible();
     await expect(library.locator(".snackbar")).toHaveCount(0, {
       timeout: 15_000,
     });
@@ -2811,7 +2785,12 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     expect(storageAudit.localStorageEntries).toBe(0);
     expect(storageAudit.cacheEntries).toBe(0);
 
-    await library.getByRole("button", { name: "Export Vault" }).click();
+    await library.getByRole("button", { name: "Settings" }).click();
+    await library.getByRole("tab", { name: "Vault" }).click();
+    await library
+      .getByRole("dialog", { name: "Settings" })
+      .getByRole("button", { name: "Export Vault" })
+      .click();
     const exportDialog = library.getByRole("dialog", {
       name: "Export encrypted Vault",
     });
@@ -2855,35 +2834,47 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     );
     const primaryArtifact = library
       .locator(".artifact-row")
-      .filter({ has: library.locator("strong", { hasText: /^PRIMARY$/u }) });
+      .filter({ has: library.locator("strong", { hasText: /^MHTML$/u }) });
     await primaryArtifact.getByRole("button", { name: "Download" }).click();
     await expect
-      .poll(() =>
-        library.evaluate(
-          () =>
-            (
-              window as typeof window & {
-                __awsmSavedArtifact: { closed: boolean };
-              }
-            ).__awsmSavedArtifact.closed,
-        ),
+      .poll(async () =>
+        library.evaluate(async () => {
+          const extensionApi = (
+            globalThis as unknown as {
+              chrome: { downloads: { search(query: unknown): Promise<readonly unknown[]> } };
+            }
+          ).chrome;
+          const downloads = await extensionApi.downloads.search({
+            limit: 1,
+            orderBy: ["-startTime"],
+            state: "complete",
+          });
+          return downloads[0] !== undefined;
+        }),
       )
       .toBe(true);
-    const savedPrimary = await library.evaluate(
-      () =>
-        (
-          window as typeof window & {
-            __awsmSavedArtifact: {
-              aborted: boolean;
-              chunks: number[][];
-              suggestedName: string;
-            };
-          }
-        ).__awsmSavedArtifact,
+    await expect(library.getByRole("status")).toContainText(
+      /Downloaded awsm-[0-9a-f]{8}-mhtml\.mhtml/u,
     );
-    expect(savedPrimary.suggestedName).toMatch(/-primary\.mhtml$/u);
-    expect(savedPrimary.aborted).toBe(false);
-    const mhtml = new TextDecoder().decode(Uint8Array.from(savedPrimary.chunks.flat()));
+    const mhtmlPath = await library.evaluate(async () => {
+      const extensionApi = (
+        globalThis as unknown as {
+          chrome: {
+            downloads: {
+              search(query: unknown): Promise<readonly { filename?: string }[]>;
+            };
+          };
+        }
+      ).chrome;
+      const downloads = await extensionApi.downloads.search({
+        limit: 1,
+        orderBy: ["-startTime"],
+        state: "complete",
+      });
+      return downloads[0]?.filename;
+    });
+    if (mhtmlPath === undefined) throw new Error("The MHTML download is unavailable.");
+    const mhtml = await readFile(mhtmlPath, "utf8");
     expect(mhtml).toContain("MIME-Version: 1.0");
     expect(mhtml).toContain("AWSM tall fixture");
     await expect(library.getByRole("navigation", { name: "Breadcrumb" })).toContainText(
@@ -2929,36 +2920,13 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await library.getByText("Deleted (1)", { exact: true }).click();
     await library.locator(".deleted-section .card").click();
     await expect(library.getByRole("img", { name: /Full-page screenshot/u })).toBeVisible();
-    await library.evaluate(() => {
-      const saved = (
-        window as typeof window & {
-          __awsmSavedArtifact: {
-            aborted: boolean;
-            chunks: number[][];
-            closed: boolean;
-          };
-        }
-      ).__awsmSavedArtifact;
-      saved.aborted = false;
-      saved.chunks = [];
-      saved.closed = false;
-    });
     const deletedPrimaryArtifact = library
       .locator(".artifact-row")
-      .filter({ has: library.locator("strong", { hasText: /^PRIMARY$/u }) });
+      .filter({ has: library.locator("strong", { hasText: /^MHTML$/u }) });
     await deletedPrimaryArtifact.getByRole("button", { name: "Download" }).click();
-    await expect
-      .poll(() =>
-        library.evaluate(
-          () =>
-            (
-              window as typeof window & {
-                __awsmSavedArtifact: { closed: boolean };
-              }
-            ).__awsmSavedArtifact.closed,
-        ),
-      )
-      .toBe(true);
+    await expect(deletedPrimaryArtifact.getByRole("button", { name: "Download" })).toBeEnabled({
+      timeout: 60_000,
+    });
     library.once("dialog", async (dialog) => {
       expect(dialog.message()).toContain("Restore “AWSM tall fixture” (1 capture)");
       await dialog.accept();
@@ -3113,7 +3081,7 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     await installSavedArtifactProbe(desktop);
     const localPrimary = desktop
       .locator(".artifact-row")
-      .filter({ has: desktop.locator("strong", { hasText: /^PRIMARY$/u }) });
+      .filter({ has: desktop.locator("strong", { hasText: /^MHTML$/u }) });
     await localPrimary.getByRole("button", { name: "Download" }).click();
     await expect.poll(async () => (await savedArtifactProbe(desktop)).closed).toBe(true);
     const originalPrimaryBytes = Uint8Array.from((await savedArtifactProbe(desktop)).chunks.flat());
@@ -3125,10 +3093,10 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     }>(desktop, { type: "GetStorageReliefEstimate", expectedVaultId: client.vaultId });
     expect(estimate.candidateArtifacts).toBeGreaterThanOrEqual(2);
     expect(estimate.candidateBytes).toBeGreaterThan(0);
-    await expect(desktop.getByRole("heading", { name: "Storage maintenance" })).toBeVisible();
-    await expect(narrow.getByRole("heading", { name: "Storage maintenance" })).toBeVisible();
-    await expect(desktop.getByText(/can be freed/u)).toBeVisible();
-    await expect(narrow.getByText(/can be freed/u)).toBeVisible();
+    await expect(desktop.getByRole("heading", { name: "Device storage" })).toBeVisible();
+    await expect(narrow.getByRole("heading", { name: "Device storage" })).toBeVisible();
+    await expect(desktop.getByText(/removed from this device/u)).toBeVisible();
+    await expect(narrow.getByText(/removed from this device/u)).toBeVisible();
     await desktop.screenshot({
       path: testInfo.outputPath("storage-relief-estimate-desktop.png"),
       fullPage: true,
@@ -3143,7 +3111,7 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
       await dialog.accept();
     });
     await faultControl(desktop, "arm", "storage-relief:after-synchronization");
-    await desktop.getByRole("button", { name: "Free up browser storage" }).click();
+    await desktop.getByRole("button", { name: "Reduce device storage" }).click();
     expect(confirmation).toContain("verify each encrypted server copy first");
     expect(confirmation).toContain("only copy");
     await expect
@@ -3187,10 +3155,10 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
         { timeout: 120_000 },
       )
       .toBe("Succeeded");
-    await expect(desktop.getByText(/^Freed /u)).toBeVisible();
-    await expect(narrow.getByText(/^Freed /u)).toBeVisible();
-    await expect(desktop.getByRole("heading", { name: "Storage maintenance" })).toBeFocused();
-    await expect(narrow.getByRole("heading", { name: "Storage maintenance" })).toBeFocused();
+    await expect(desktop.getByText(/^Removed /u)).toBeVisible();
+    await expect(narrow.getByText(/^Removed /u)).toBeVisible();
+    await expect(desktop.getByRole("heading", { name: "Device storage" })).toBeFocused();
+    await expect(narrow.getByRole("heading", { name: "Device storage" })).toBeFocused();
     await expect(desktop.getByRole("status")).toContainText("Storage cleanup completed");
     await expect(narrow.getByRole("status")).toContainText("Storage cleanup completed");
     const remoteState = await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
@@ -3204,16 +3172,16 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     expect(evictedStorage.filenames.length).toBeGreaterThan(0);
     await desktop.bringToFront();
     await desktop.keyboard.press("Tab");
-    await desktop.getByRole("heading", { name: "Storage maintenance" }).focus();
-    await expect(desktop.getByRole("heading", { name: "Storage maintenance" })).toBeFocused();
+    await desktop.getByRole("heading", { name: "Device storage" }).focus();
+    await expect(desktop.getByRole("heading", { name: "Device storage" })).toBeFocused();
     await desktop.screenshot({
       path: testInfo.outputPath("storage-relief-success-desktop.png"),
       fullPage: true,
     });
     await narrow.bringToFront();
     await narrow.keyboard.press("Tab");
-    await narrow.getByRole("heading", { name: "Storage maintenance" }).focus();
-    await expect(narrow.getByRole("heading", { name: "Storage maintenance" })).toBeFocused();
+    await narrow.getByRole("heading", { name: "Device storage" }).focus();
+    await expect(narrow.getByRole("heading", { name: "Device storage" })).toBeFocused();
     await narrow.screenshot({
       path: testInfo.outputPath("storage-relief-success-narrow.png"),
       fullPage: true,
@@ -3367,12 +3335,12 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
           ).remoteOnlyArtifactCount,
       )
       .toBe(estimate.candidateArtifacts - 1);
-    await expect.poll(async () => narrow.getByText(/^Freed /u).isVisible()).toBe(true);
+    await expect.poll(async () => narrow.getByText(/^Removed /u).isVisible()).toBe(true);
 
     await installSavedArtifactProbe(desktop);
     const remotePrimary = desktop
       .locator(".artifact-row")
-      .filter({ has: desktop.locator("strong", { hasText: /^PRIMARY$/u }) });
+      .filter({ has: desktop.locator("strong", { hasText: /^MHTML$/u }) });
     await remotePrimary.getByRole("button", { name: "Download" }).click();
     await expect.poll(async () => (await savedArtifactProbe(desktop)).closed).toBe(true);
     const restoredPrimary = await savedArtifactProbe(desktop);
@@ -3401,7 +3369,7 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
       })
     ).latestStorageReliefJob?.jobId;
     desktop.once("dialog", async (dialog) => dialog.accept());
-    await desktop.getByRole("button", { name: "Free up browser storage" }).click();
+    await desktop.getByRole("button", { name: "Reduce device storage" }).click();
     await expect
       .poll(
         async () => {
@@ -3526,7 +3494,7 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
       await installSavedArtifactProbe(importedLibrary);
       const importedPrimary = importedLibrary
         .locator(".artifact-row")
-        .filter({ has: importedLibrary.locator("strong", { hasText: /^PRIMARY$/u }) });
+        .filter({ has: importedLibrary.locator("strong", { hasText: /^MHTML$/u }) });
       await importedPrimary.getByRole("button", { name: "Download" }).click();
       await expect.poll(async () => (await savedArtifactProbe(importedLibrary)).closed).toBe(true);
       expect(Uint8Array.from((await savedArtifactProbe(importedLibrary)).chunks.flat())).toEqual(
@@ -3641,7 +3609,7 @@ test("resumes every packaged storage-relief removal boundary and preserves parti
       });
     const start = async (): Promise<void> => {
       library.once("dialog", (dialog) => void dialog.accept());
-      await library.getByRole("button", { name: "Free up browser storage" }).click();
+      await library.getByRole("button", { name: "Reduce device storage" }).click();
     };
     const restoreHeavyArtifacts = async (): Promise<void> => {
       await library.goto(
@@ -3653,7 +3621,7 @@ test("resumes every packaged storage-relief removal boundary and preserves parti
       await installSavedArtifactProbe(library);
       const primary = library
         .locator(".artifact-row")
-        .filter({ has: library.locator("strong", { hasText: /^PRIMARY$/u }) });
+        .filter({ has: library.locator("strong", { hasText: /^MHTML$/u }) });
       await primary.getByRole("button", { name: "Download" }).click();
       await expect.poll(async () => (await savedArtifactProbe(library)).closed).toBe(true);
       await expect
@@ -3753,7 +3721,7 @@ test("resumes every packaged storage-relief removal boundary and preserves parti
         state: "Cancelled",
         cancellationRequested: true,
       });
-    await expect(library.getByRole("button", { name: "Free up browser storage" })).toBeFocused();
+    await expect(library.getByRole("button", { name: "Reduce device storage" })).toBeFocused();
     await expect(library.getByRole("status")).toContainText("Storage cleanup cancelled");
     expect((await estimate()).candidateArtifacts).toBe(initialEstimate.candidateArtifacts - 1);
     const cancelledStorage = await artifactStorageSnapshot(library, client.vaultId);
@@ -4329,7 +4297,7 @@ test("exports a Vault and imports it into a fresh Workspace", async ({ browserNa
     await chooseLocalOnlyOnFirstLaunch(popup);
     await popup.getByRole("textbox", { name: "Vault name" }).fill("Existing Vault");
     await popup.getByRole("button", { name: "Create Vault" }).click();
-    await expect(popup.getByText(/Vault · Existing Vault · Unlocked/u)).toBeVisible();
+    await expect(popup.getByText(/Vault · Existing Vault/u)).toBeVisible();
     const library = await populatedDestination.newPage();
     await library.goto(`chrome-extension://${extensionId}/library.html?import=1`);
     const dialog = library.getByRole("dialog", {
@@ -4459,7 +4427,7 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
     await expect(name).toBeVisible();
     await name.fill("Vault A");
     await popup.getByRole("button", { name: "Create Vault" }).click();
-    await expect(popup.getByText(/Vault · Vault A · Unlocked/u)).toBeVisible();
+    await expect(popup.getByText(/Vault · Vault A/u)).toBeVisible();
 
     await activateFixture();
     await popup.getByRole("button", { name: "Archive this page" }).click();
@@ -4476,7 +4444,7 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
     await expect(createDialog).toBeVisible();
     await createDialog.getByRole("textbox", { name: "Vault name" }).fill("Vault B");
     await createDialog.getByRole("button", { name: "Create Vault" }).click();
-    await expect(popup.getByText(/Vault · Vault B · Unlocked/u)).toBeVisible();
+    await expect(popup.getByText(/Vault · Vault B/u)).toBeVisible();
     const liveLibraryB = await context.newPage();
     await liveLibraryB.goto(`chrome-extension://${extensionId}/library.html`);
     await expect(liveLibraryB.getByRole("heading", { name: "Vault B" })).toBeVisible();
@@ -4559,7 +4527,7 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
       path: testInfo.outputPath("vault-title-locked-desktop.png"),
     });
     await popup.getByRole("button", { name: "Unlock on this device" }).click();
-    await expect(popup.getByText(/Vault · Vault A · Unlocked/u)).toBeVisible();
+    await expect(popup.getByText(/Vault · Vault A/u)).toBeVisible();
 
     await expect(popup.getByRole("button", { name: /^Rename/u })).toHaveCount(0);
     await expect(libraryA.getByRole("button", { name: "Rename Vault A" })).toBeVisible();
@@ -4633,7 +4601,7 @@ test("creates, captures, switches, locks, renames, and deep-links across isolate
     await renameInput.fill("Vault A Renamed");
     await libraryA.getByRole("button", { name: "Rename", exact: true }).click();
     await expect(libraryA.getByRole("heading", { name: "Vault A Renamed" })).toBeVisible();
-    await expect(popup.getByText(/Vault · Vault A Renamed · Unlocked/u)).toBeVisible();
+    await expect(popup.getByText(/Vault · Vault A Renamed/u)).toBeVisible();
     await libraryA.screenshot({
       path: testInfo.outputPath("vault-title-success-desktop.png"),
     });

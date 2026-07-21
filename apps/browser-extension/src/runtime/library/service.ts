@@ -230,7 +230,7 @@ export class LibraryService {
               canInspect:
                 reference !== undefined &&
                 (role === "TEXT_EXTRACTED" || role === "CONTENT_STRUCTURED"),
-              canDownload: reference !== undefined,
+              canDownload: reference !== undefined && role === "PRIMARY",
             };
           }),
         ),

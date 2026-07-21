@@ -73,7 +73,6 @@ export type AppRequest =
       readonly name: string;
     }
   | ({ readonly type: "UnlockDevice" } & ExpectedVault)
-  | ({ readonly type: "LockVault" } & ExpectedVault)
   | ({ readonly type: "DismissRecentCapture"; readonly jobId: string } & ExpectedVault)
   | ({ readonly type: "CaptureActivePage"; readonly tabId?: number } & ExpectedVault)
   | ({ readonly type: "ListLibrary" } & ExpectedVault)
@@ -111,6 +110,7 @@ export type AppRequest =
       readonly bundleId: string;
       readonly role: ArtifactRole;
     } & ExpectedVault)
+  | ({ readonly type: "DownloadMhtml"; readonly bundleId: string } & ExpectedVault)
   | ({ readonly type: "ReadArtifactChunk"; readonly sessionId: string } & ExpectedVault)
   | ({ readonly type: "CancelArtifactSession"; readonly sessionId: string } & ExpectedVault);
 
@@ -135,7 +135,6 @@ const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "SelectActiveVault",
   "RenameVault",
   "UnlockDevice",
-  "LockVault",
   "DismissRecentCapture",
   "CaptureActivePage",
   "ListLibrary",
@@ -157,6 +156,7 @@ const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "CancelVaultImport",
   "GetLibraryDetail",
   "OpenArtifact",
+  "DownloadMhtml",
   "ReadArtifactChunk",
   "CancelArtifactSession",
   "GetStorageReliefEstimate",
@@ -340,6 +340,11 @@ export function isAppRequest(value: unknown): value is AppRequest {
   )
     return false;
   if (
+    value.type === "DownloadMhtml" &&
+    (!("bundleId" in value) || typeof value.bundleId !== "string")
+  )
+    return false;
+  if (
     (value.type === "ReadArtifactChunk" || value.type === "CancelArtifactSession") &&
     (!("sessionId" in value) || typeof value.sessionId !== "string")
   )
@@ -468,6 +473,7 @@ export type AppValue =
   | ArtifactChunkMessage
   | { readonly name: string }
   | { readonly bundleId: string }
+  | { readonly filename: string }
   | { readonly jobId: string; readonly filename: string }
   | { readonly jobId: string }
   | { readonly jobId: string; readonly vaultId: string }

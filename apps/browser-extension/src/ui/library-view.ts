@@ -1,3 +1,5 @@
+import type { ArtifactRole } from "../domain/artifact-graph";
+
 interface CaptureIdentity {
   readonly bundleId: string;
 }
@@ -87,13 +89,31 @@ export function storageReliefConfirmation(
   candidateArtifacts: number,
   candidateBytes: number,
 ): string {
-  const noun = candidateArtifacts === 1 ? "Artifact wrapper" : "Artifact wrappers";
   return [
-    `Free up to ${formatByteSize(candidateBytes)} by removing ${String(candidateArtifacts)} encrypted ${noun} from this browser?`,
-    "AWSM will synchronize and verify each encrypted server copy first. Only verified copies are removed locally.",
-    "The server may then hold the only copy. Those payloads will be unavailable offline until AWSM retrieves them.",
-    "You can run this again later.",
+    `Remove up to ${formatByteSize(candidateBytes)} from this device?`,
+    "AWSM will verify each encrypted server copy before removing its local copy.",
+    `These ${String(candidateArtifacts)} MHTML archives and screenshots will require your Account and a connection until retrieved again.`,
   ].join("\n\n");
+}
+
+export type ArtifactPresentationAction = "Download" | "Preview" | "Inspect" | "None";
+
+export function artifactPresentation(role: ArtifactRole): {
+  readonly label: string;
+  readonly action: ArtifactPresentationAction;
+} {
+  switch (role) {
+    case "PRIMARY":
+      return { label: "MHTML", action: "Download" };
+    case "SCREENSHOT_FULL":
+      return { label: "Screenshot", action: "Preview" };
+    case "THUMBNAIL":
+      return { label: "Thumbnail", action: "None" };
+    case "TEXT_EXTRACTED":
+      return { label: "Extracted text", action: "Inspect" };
+    case "CONTENT_STRUCTURED":
+      return { label: "Structured content", action: "Inspect" };
+  }
 }
 
 export function signOutConfirmation(remoteOnlyArtifacts: number): string | undefined {

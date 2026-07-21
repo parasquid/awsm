@@ -15,6 +15,7 @@ import { decodeStructuredContentSequence } from "../../src/domain/structured-con
 import { ChromeVaultImportHost } from "../../src/hosts/chrome/import";
 import { serverPermissionPattern } from "../../src/runtime/account/server";
 import {
+  artifactPresentation,
   captureDropRequest,
   collectionLayerBundleIds,
   dragImageHotspot,
@@ -52,7 +53,6 @@ let undoTimer: number | undefined;
 let undoNotice: HTMLElement | undefined;
 let draggedCollectionId: string | undefined;
 let activeVaultId: string | undefined;
-let editingVaultId: string | undefined;
 let vaultMutationDisabled = false;
 let expandedLibrarySection: "Active" | "Deleted" = "Active";
 const importHost = new ChromeVaultImportHost();
@@ -89,10 +89,61 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+function installSettingsTabs(form: HTMLFormElement): void {
+  const headings = [...form.querySelectorAll(":scope > h3")];
+  const accountHeading = headings.find((heading) => heading.textContent === "Account & sync");
+  if (accountHeading === undefined) return;
+  const accountStart = [...form.children].indexOf(accountHeading);
+  if (accountStart <= 0) return;
+  const vaultPanel = element("section", undefined, "settings-panel");
+  const accountPanel = element("section", undefined, "settings-panel");
+  vaultPanel.id = "settings-vault-panel";
+  accountPanel.id = "settings-account-panel";
+  vaultPanel.setAttribute("role", "tabpanel");
+  accountPanel.setAttribute("role", "tabpanel");
+  for (const child of [...form.children].slice(0, accountStart)) vaultPanel.append(child);
+  for (const child of [...form.children]) accountPanel.append(child);
+  accountPanel.hidden = true;
+
+  const tabs = element("div", undefined, "settings-tabs");
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "Settings sections");
+  const vaultTab = element("button", "Vault", "settings-tab");
+  const accountTab = element("button", "Account & sync", "settings-tab");
+  const activate = (selected: HTMLButtonElement): void => {
+    const showVault = selected === vaultTab;
+    vaultTab.setAttribute("aria-selected", String(showVault));
+    accountTab.setAttribute("aria-selected", String(!showVault));
+    vaultTab.tabIndex = showVault ? 0 : -1;
+    accountTab.tabIndex = showVault ? -1 : 0;
+    vaultPanel.hidden = !showVault;
+    accountPanel.hidden = showVault;
+  };
+  for (const [tab, panel] of [
+    [vaultTab, vaultPanel],
+    [accountTab, accountPanel],
+  ] as const) {
+    tab.type = "button";
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", panel.id);
+    tab.addEventListener("click", () => activate(tab));
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const target = tab === vaultTab ? accountTab : vaultTab;
+      activate(target);
+      target.focus();
+    });
+  }
+  activate(accountTab);
+  tabs.append(vaultTab, accountTab);
+  form.append(tabs, vaultPanel, accountPanel);
+}
+
 function showAccountSettings(): void {
   const state = renderedState;
   if (state === undefined) return;
-  const { dialog, form } = dialogShell("Account and synchronization");
+  const { dialog, form } = dialogShell("Settings");
   const account = state.account;
   const server =
     account.configuration.mode === "Configured"
@@ -100,6 +151,76 @@ function showAccountSettings(): void {
       : account.configuration.mode === "LocalOnly"
         ? "Local only"
         : "Not chosen";
+  const active = state.workspace.vaults.find((vault) => vault.active);
+  if (active !== undefined) {
+    form.append(element("h3", "Vault"));
+    const vaultSummary = element("div", undefined, "settings-vault");
+    vaultSummary.append(element("p", active.name, "settings-vault__name"));
+    const renameLabel = element("label", "Vault name");
+    const renameInput = element("input");
+    renameInput.value = active.name;
+    renameInput.maxLength = 64;
+    renameLabel.append(renameInput);
+    const rename = element("button", "Rename");
+    rename.type = "button";
+    rename.addEventListener("click", () => {
+      rename.disabled = true;
+      void sendRequest<AppState>({
+        type: "RenameVault",
+        expectedActiveVaultId: active.vaultId,
+        vaultId: active.vaultId,
+        name: renameInput.value,
+      }).then(
+        (next) => {
+          dialog.close();
+          renderVaultBar(next);
+        },
+        () => {
+          rename.disabled = false;
+        },
+      );
+    });
+    vaultSummary.append(renameLabel, rename);
+    for (const option of state.workspace.vaults.filter((vault) => !vault.active)) {
+      const switchVault = element("button", `Switch to ${option.name}`);
+      switchVault.type = "button";
+      switchVault.addEventListener("click", () => {
+        switchVault.disabled = true;
+        void sendRequest<AppState>({
+          type: "SelectActiveVault",
+          expectedActiveVaultId: active.vaultId,
+          vaultId: option.vaultId,
+        }).then(async (next) => {
+          dialog.close();
+          renderVaultBar(next);
+          await showUnlock();
+        });
+      });
+      vaultSummary.append(switchVault);
+    }
+    const vaultActions = element("div", undefined, "actions settings-actions");
+    const create = element("button", "Create another Vault");
+    create.type = "button";
+    create.addEventListener("click", () => {
+      dialog.close();
+      void showCreateVaultDialog(accountSettings);
+    });
+    const importVault = element("button", "Import Vault");
+    importVault.type = "button";
+    importVault.addEventListener("click", () => {
+      dialog.close();
+      showImportVaultDialog(accountSettings);
+    });
+    const exportVault = element("button", "Export Vault");
+    exportVault.type = "button";
+    exportVault.disabled = !active.unlocked;
+    exportVault.addEventListener("click", () => {
+      dialog.close();
+      showExportVaultDialog(accountSettings);
+    });
+    vaultActions.append(create, importVault, exportVault);
+    form.append(vaultSummary, vaultActions, element("h3", "Account & sync"));
+  }
   form.append(
     element("p", `Server · ${server}`, "muted"),
     element("p", `Account · ${account.email ?? "Not signed in"}`, "muted"),
@@ -230,6 +351,7 @@ function showAccountSettings(): void {
     form.append(element("button", "Close"));
     (form.lastElementChild as HTMLButtonElement).type = "button";
     form.lastElementChild?.addEventListener("click", () => dialog.close());
+    installSettingsTabs(form);
     dialog.addEventListener("close", () => accountSettings.focus(), { once: true });
     dialog.showModal();
     return;
@@ -356,6 +478,7 @@ function showAccountSettings(): void {
         },
       );
   });
+  installSettingsTabs(form);
   dialog.addEventListener("close", () => accountSettings.focus(), { once: true });
   dialog.showModal();
 }
@@ -950,94 +1073,11 @@ function showStaleReplicaDiscardDialog(restoreFocus: HTMLElement): void {
   passphrase.focus();
 }
 
-function renderLibraryTitle(state: AppState, restoreFocus = false): void {
-  const view = vaultManagementView(state.workspace);
+function renderLibraryTitle(state: AppState): void {
   const active = state.workspace.vaults.find((vault) => vault.active);
   const heading = element("h1");
-  if (active === undefined) {
-    heading.textContent = "Your local library";
-    libraryTitle.replaceChildren(heading);
-    return;
-  }
-  if (!active.unlocked || view.managementDisabled) {
-    heading.textContent = active.name;
-    libraryTitle.replaceChildren(heading);
-    return;
-  }
-  const rename = element("button", active.name, "vault-title-button");
-  rename.type = "button";
-  rename.setAttribute("aria-label", `Rename ${active.name}`);
-  rename.addEventListener("click", () => {
-    if (editingVaultId !== undefined) return;
-    editingVaultId = active.vaultId;
-    const form = element("form", undefined, "library-title-edit");
-    const label = element("label", "Vault name", "sr-only");
-    const input = element("input");
-    input.id = `vault-name-${active.vaultId}`;
-    label.htmlFor = input.id;
-    input.value = active.name;
-    input.required = true;
-    input.maxLength = 64;
-    const submit = element("button", "Rename");
-    submit.type = "submit";
-    let submitting = false;
-    const finish = (restoreTitleFocus = false): void => {
-      editingVaultId = undefined;
-      renderLibraryTitle(state, restoreTitleFocus);
-    };
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        finish(true);
-      }
-    });
-    form.append(label, input, submit);
-    form.addEventListener("focusout", (event) => {
-      const next = event.relatedTarget;
-      if (!submitting && (!(next instanceof Node) || !form.contains(next))) finish();
-    });
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      submitting = true;
-      submit.disabled = true;
-      submit.textContent = "Renaming…";
-      void sendRequest<AppState>({
-        type: "RenameVault",
-        expectedActiveVaultId: active.vaultId,
-        vaultId: active.vaultId,
-        name: input.value,
-      }).then(
-        (next) => {
-          editingVaultId = undefined;
-          renderVaultBar(next);
-          const renamed = next.workspace.vaults.find((vault) => vault.active)?.name ?? active.name;
-          announcer.textContent = `Vault renamed to ${renamed}`;
-          libraryTitle.querySelector<HTMLButtonElement>(".vault-title-button")?.focus();
-        },
-        async (error) => {
-          if (error instanceof AppClientError && error.id === "VAULT_CONTEXT_CHANGED") {
-            editingVaultId = undefined;
-            await handleContextError(error);
-            return;
-          }
-          submitting = false;
-          submit.disabled = false;
-          submit.textContent = "Rename";
-          const message =
-            error instanceof AppClientError ? error.message : "The Vault could not be renamed.";
-          form.querySelector(".error")?.remove();
-          form.append(element("p", message, "notice error"));
-          input.focus();
-        },
-      );
-    });
-    libraryTitle.replaceChildren(form);
-    input.focus();
-    input.select();
-  });
-  heading.append(rename);
+  heading.textContent = active?.name ?? "Your local library";
   libraryTitle.replaceChildren(heading);
-  if (restoreFocus) rename.focus();
 }
 
 function appendImportJobStatus(bar: HTMLElement, state: AppState, currentVaultId?: string): void {
@@ -1115,14 +1155,7 @@ function renderVaultBar(state: AppState): void {
   const view = vaultManagementView(state.workspace);
   vaultMutationDisabled = view.managementDisabled;
   const active = state.workspace.vaults.find((vault) => vault.active);
-  if (
-    active === undefined ||
-    (editingVaultId !== undefined &&
-      (editingVaultId !== active.vaultId || !active.unlocked || view.managementDisabled))
-  ) {
-    editingVaultId = undefined;
-  }
-  if (editingVaultId === undefined) renderLibraryTitle(state);
+  renderLibraryTitle(state);
   if (active === undefined) {
     if (state.latestImportJob !== undefined) {
       const bar = element("section", undefined, "vault-control");
@@ -1149,82 +1182,6 @@ function renderVaultBar(state: AppState): void {
     bar.append(resolveStale);
   }
   if (view.busyText !== undefined) bar.append(element("p", view.busyText, "muted"));
-  const actions = element("div", undefined, "actions");
-  const switcher = element("button", "Switch Vault");
-  switcher.disabled = view.managementDisabled;
-  switcher.addEventListener("click", () => {
-    const { dialog, form } = dialogShell("Switch Vault");
-    form.append(element("p", "Switching locks the current Vault.", "muted"));
-    let selectedVaultId = active.vaultId;
-    for (const option of view.options) {
-      const label = element("label", undefined, "picker__option");
-      const radio = element("input");
-      radio.type = "radio";
-      radio.name = "vault";
-      radio.checked = option.current;
-      radio.autofocus = option.current;
-      radio.addEventListener("change", () => {
-        selectedVaultId = option.vaultId;
-      });
-      label.append(
-        radio,
-        element(
-          "span",
-          `${option.label}${option.current ? " · Current" : ""} · Created ${option.createdAt.slice(0, 10)}`,
-        ),
-      );
-      form.append(label);
-    }
-    const controls = element("div", undefined, "actions");
-    const choose = element("button", "Switch");
-    choose.type = "submit";
-    const cancel = element("button", "Cancel");
-    cancel.type = "button";
-    cancel.addEventListener("click", () => dialog.close());
-    controls.append(choose, cancel);
-    form.append(controls);
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      choose.disabled = true;
-      void sendRequest<AppState>({
-        type: "SelectActiveVault",
-        expectedActiveVaultId: active.vaultId,
-        vaultId: selectedVaultId,
-      }).then(
-        async (next) => {
-          dialog.close();
-          renderVaultBar(next);
-          announcer.textContent = `Selected ${next.workspace.vaults.find((vault) => vault.active)?.name ?? "Vault"}. Unlock it to continue.`;
-          await showUnlock();
-        },
-        async (error) => {
-          dialog.close();
-          await handleContextError(error);
-        },
-      );
-    });
-    dialog.addEventListener("close", () => switcher.focus(), { once: true });
-    dialog.showModal();
-  });
-  actions.append(switcher);
-  const create = element("button", "Create another Vault");
-  create.disabled = view.managementDisabled;
-  create.addEventListener("click", () => {
-    create.disabled = true;
-    void showCreateVaultDialog(create).finally(() => {
-      create.disabled = view.managementDisabled;
-    });
-  });
-  actions.append(create);
-  const importButton = element("button", "Import Vault");
-  importButton.dataset.importVault = "true";
-  importButton.disabled = view.managementDisabled;
-  importButton.addEventListener("click", () => showImportVaultDialog(importButton));
-  actions.append(importButton);
-  const exportButton = element("button", "Export Vault");
-  exportButton.disabled = !active.unlocked || view.managementDisabled;
-  exportButton.addEventListener("click", () => showExportVaultDialog(exportButton));
-  actions.append(exportButton);
   const exportJob =
     state.latestExportJob?.vaultId === active.vaultId ? state.latestExportJob : undefined;
   if (exportJob !== undefined) {
@@ -1252,8 +1209,7 @@ function renderVaultBar(state: AppState): void {
     }
   }
   appendImportJobStatus(bar, state, active.vaultId);
-  bar.append(actions);
-  pageHeader.after(bar);
+  if (bar.childElementCount > 1) pageHeader.after(bar);
 }
 
 async function handleContextError(error: unknown): Promise<void> {
@@ -1335,50 +1291,6 @@ async function consumeArtifact(
       expectedVaultId: vaultId,
       sessionId: opened.sessionId,
     }).catch(() => undefined);
-  }
-}
-
-async function downloadArtifact(
-  bundleId: string,
-  role: ArtifactRole,
-  signal: AbortSignal,
-): Promise<void> {
-  interface ArtifactWritable {
-    write(chunk: Uint8Array): Promise<void>;
-    close(): Promise<void>;
-    abort(): Promise<void>;
-  }
-  const picker = (
-    window as typeof window & {
-      showSaveFilePicker?: (options: {
-        readonly suggestedName: string;
-      }) => Promise<{ createWritable(): Promise<ArtifactWritable> }>;
-    }
-  ).showSaveFilePicker;
-  if (picker === undefined) throw new Error("Streaming file save is unavailable");
-  let writer: ArtifactWritable | undefined;
-  let succeeded = false;
-  try {
-    const extension =
-      role === "PRIMARY"
-        ? "mhtml"
-        : role === "TEXT_EXTRACTED"
-          ? "txt"
-          : role === "CONTENT_STRUCTURED"
-            ? "cborseq"
-            : "webp";
-    const handle = await picker({
-      suggestedName: `awsm-${bundleId.slice(0, 8)}-${role.toLowerCase().replaceAll("_", "-")}.${extension}`,
-    });
-    writer = await handle.createWritable();
-    const writable = writer;
-    await consumeArtifact(bundleId, role, signal, (chunk) => writable.write(chunk));
-    succeeded = true;
-  } finally {
-    if (writer !== undefined) {
-      if (succeeded) await writer.close().catch(() => undefined);
-      else await writer.abort().catch(() => undefined);
-    }
   }
 }
 
@@ -1764,7 +1676,7 @@ function storageReliefJobPanel(state: AppState): HTMLElement | undefined {
   const terminal = ["Succeeded", "Failed", "Cancelled"].includes(job.state);
   const heading =
     job.state === "Succeeded"
-      ? `Freed ${formatByteSize(job.freedBytes)}`
+      ? `Removed ${formatByteSize(job.freedBytes)} from this device`
       : job.state === "Cancelled"
         ? "Storage cleanup cancelled"
         : job.state === "Failed"
@@ -1778,7 +1690,7 @@ function storageReliefJobPanel(state: AppState): HTMLElement | undefined {
     element("strong", heading),
     element(
       "p",
-      `${String(job.freedArtifacts)} of ${String(job.candidateArtifacts)} Artifacts freed · ${formatByteSize(job.freedBytes)} of ${formatByteSize(job.candidateBytes)}`,
+      `${String(job.freedArtifacts)} of ${String(job.candidateArtifacts)} files removed · ${formatByteSize(job.freedBytes)} of ${formatByteSize(job.candidateBytes)}`,
       "muted",
     ),
   );
@@ -1822,16 +1734,16 @@ function storageMaintenance(
 ): HTMLElement {
   const section = element("section", undefined, "storage-maintenance");
   section.setAttribute("aria-labelledby", "storage-maintenance-title");
-  const title = element("h2", "Storage maintenance");
+  const title = element("h2", "Device storage");
   title.id = "storage-maintenance-title";
   section.append(title);
   const mode = state.account.configuration.mode;
   if (mode !== "Configured") {
     section.append(
-      element("p", "Connect this Vault to an Account to free browser storage.", "muted"),
+      element("p", "Connect this Vault to an Account to reduce storage on this device.", "muted"),
     );
   } else if (state.account.accountState !== "Authenticated") {
-    section.append(element("p", "Sign in to calculate and safely free browser storage.", "muted"));
+    section.append(element("p", "Sign in to calculate removable device storage safely.", "muted"));
   } else if (estimate === undefined) {
     section.append(
       element("p", "Storage availability could not be calculated. Try again.", "notice error"),
@@ -1841,12 +1753,17 @@ function storageMaintenance(
       element(
         "p",
         estimate.candidateArtifacts === 0
-          ? "No heavy Artifacts are currently stored in this browser"
-          : `Up to ${formatByteSize(estimate.candidateBytes)} can be freed · ${String(estimate.candidateArtifacts)} ${estimate.candidateArtifacts === 1 ? "Artifact" : "Artifacts"}`,
+          ? "No large MHTML archives or screenshots can currently be removed"
+          : `Up to ${formatByteSize(estimate.candidateBytes)} can be removed from this device · ${String(estimate.candidateArtifacts)} ${estimate.candidateArtifacts === 1 ? "file" : "files"}`,
         "storage-maintenance__estimate",
       ),
+      element(
+        "p",
+        "Remove verified local copies of large MHTML archives and screenshots. Encrypted copies stay on your server and are retrieved when you open them. They are unavailable offline until retrieved.",
+        "muted",
+      ),
     );
-    const start = element("button", "Free up browser storage", "storage-maintenance__action");
+    const start = element("button", "Reduce device storage", "storage-maintenance__action");
     start.type = "button";
     const activeJob = state.latestStorageReliefJob;
     start.disabled =
@@ -2326,11 +2243,6 @@ async function loadDetail(bundleId: string, abortArtifactActions = true): Promis
     section.append(metadata);
     if (detail.item.warnings.length > 0)
       section.append(element("p", `Warnings: ${detail.item.warnings.join(", ")}`, "warning"));
-    const artifactPanel = element("section", undefined, "artifact-panel");
-    artifactPanel.setAttribute("aria-label", "Capture Artifacts");
-    artifactPanel.append(element("h3", "Artifacts"));
-    const inspection = element("section", undefined, "artifact-inspection");
-    inspection.hidden = true;
     const bytesFromChunks = (chunks: readonly Uint8Array[]): Uint8Array => {
       const output = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
       let offset = 0;
@@ -2340,11 +2252,66 @@ async function loadDetail(bundleId: string, abortArtifactActions = true): Promis
       }
       return output;
     };
+    const screenshot = detail.artifacts.find(
+      (artifact) => artifact.role === "SCREENSHOT_FULL" && artifact.state === "Present",
+    );
+    if (screenshot !== undefined) {
+      const preview = element("section", undefined, "artifact-preview");
+      preview.setAttribute("aria-label", "Full screenshot preview");
+      section.append(preview);
+      const loadScreenshot = (): void => {
+        preview.replaceChildren(
+          element(
+            "p",
+            screenshot.availability === "RemoteOnly"
+              ? "Retrieving screenshot from server…"
+              : "Loading screenshot…",
+            "muted",
+          ),
+        );
+        const chunks: Uint8Array[] = [];
+        void consumeArtifact(bundleId, "SCREENSHOT_FULL", controller.signal, (chunk) => {
+          chunks.push(Uint8Array.from(chunk));
+        }).then(
+          () => {
+            if (controller.signal.aborted) return;
+            screenshotUrl = URL.createObjectURL(
+              new Blob([Uint8Array.from(bytesFromChunks(chunks)).buffer], {
+                type: "image/webp",
+              }),
+            );
+            const image = element("img");
+            image.src = screenshotUrl;
+            image.alt = `Full-page screenshot of ${detail.item.title}`;
+            preview.replaceChildren(image);
+          },
+          (error) => {
+            const notice = element(
+              "p",
+              remoteArtifactFailureMessage(
+                error instanceof AppClientError ? error.id : undefined,
+                "Screenshot",
+              ),
+              "warning",
+            );
+            const retry = element("button", "Retry screenshot");
+            retry.type = "button";
+            retry.addEventListener("click", loadScreenshot);
+            preview.replaceChildren(notice, retry);
+          },
+        );
+      };
+      loadScreenshot();
+    }
+    const artifactPanel = element("section", undefined, "artifact-panel");
+    artifactPanel.setAttribute("aria-label", "Capture Artifacts");
+    artifactPanel.append(element("h3", "Artifacts"));
     for (const artifact of detail.artifacts) {
+      const presentation = artifactPresentation(artifact.role);
       const row = element("article", undefined, "artifact-row");
       const summary = element("div", undefined, "artifact-row__summary");
       summary.append(
-        element("strong", artifact.role.replaceAll("_", " ")),
+        element("strong", presentation.label),
         element("span", artifact.mimeType, "muted"),
         element(
           "span",
@@ -2361,27 +2328,43 @@ async function loadDetail(bundleId: string, abortArtifactActions = true): Promis
       if (artifact.warning !== undefined)
         summary.append(element("span", artifact.warning, "warning"));
       if (artifact.availability === "RemoteOnly")
-        summary.append(element("span", "Stored on server · retrieves when opened", "remote-only"));
+        summary.append(element("span", "Stored on server · retrieved when opened", "remote-only"));
+      else if (artifact.availability === "Local")
+        summary.append(element("span", "On this device", "local-artifact"));
       const rowActions = element("div", undefined, "artifact-row__actions");
       if (artifact.canInspect) {
         const inspect = element("button", "Inspect");
         inspect.type = "button";
+        const inspection = element("section", undefined, "artifact-inspection");
+        inspection.hidden = true;
+        let actionController: AbortController | undefined;
         inspect.addEventListener("click", () => {
-          const actionController = new AbortController();
-          artifactActionControllers.add(actionController);
+          if (!inspection.hidden) {
+            actionController?.abort();
+            actionController = undefined;
+            inspection.hidden = true;
+            inspect.textContent = "Inspect";
+            inspect.setAttribute("aria-expanded", "false");
+            return;
+          }
+          const currentController = new AbortController();
+          actionController = currentController;
+          artifactActionControllers.add(currentController);
           inspect.disabled = true;
+          inspect.setAttribute("aria-expanded", "true");
+          inspect.textContent = "Hide";
           inspection.hidden = false;
           inspection.replaceChildren(element("p", "Loading Artifact…", "muted"));
           if (artifact.availability === "RemoteOnly")
-            announcer.textContent = `Retrieving ${artifact.role.replaceAll("_", " ")} from the server.`;
+            announcer.textContent = `Retrieving ${presentation.label} from the server.`;
           const chunks: Uint8Array[] = [];
-          void consumeArtifact(bundleId, artifact.role, actionController.signal, (chunk) => {
+          void consumeArtifact(bundleId, artifact.role, currentController.signal, (chunk) => {
             chunks.push(Uint8Array.from(chunk));
           })
             .then(
               () => {
                 const bytes = bytesFromChunks(chunks);
-                inspection.replaceChildren(element("h3", artifact.role.replaceAll("_", " ")));
+                inspection.replaceChildren(element("h3", presentation.label));
                 if (artifact.role === "TEXT_EXTRACTED") {
                   inspection.append(element("pre", new TextDecoder().decode(bytes)));
                 } else {
@@ -2443,7 +2426,7 @@ async function loadDetail(bundleId: string, abortArtifactActions = true): Promis
                 }
                 inspect.disabled = false;
                 if (artifact.availability === "RemoteOnly")
-                  announcer.textContent = `Retrieved ${artifact.role.replaceAll("_", " ")} from the server.`;
+                  announcer.textContent = `Retrieved ${presentation.label} from the server.`;
               },
               (error) => {
                 inspection.replaceChildren(
@@ -2463,79 +2446,48 @@ async function loadDetail(bundleId: string, abortArtifactActions = true): Promis
                 );
               },
             )
-            .finally(() => artifactActionControllers.delete(actionController));
+            .finally(() => artifactActionControllers.delete(currentController));
         });
+        inspect.setAttribute("aria-expanded", "false");
         rowActions.append(inspect);
+        row.append(summary, rowActions, inspection);
+      } else {
+        row.append(summary, rowActions);
       }
       if (artifact.canDownload) {
         const download = element("button", "Download");
         download.type = "button";
         download.addEventListener("click", () => {
-          const actionController = new AbortController();
-          artifactActionControllers.add(actionController);
           download.disabled = true;
+          download.textContent =
+            artifact.availability === "RemoteOnly" ? "Preparing MHTML…" : "Downloading MHTML…";
           if (artifact.availability === "RemoteOnly")
-            announcer.textContent = `Retrieving ${artifact.role.replaceAll("_", " ")} from the server.`;
-          void downloadArtifact(bundleId, artifact.role, actionController.signal)
-            .then(
-              () => {
-                download.disabled = false;
-                if (artifact.availability === "RemoteOnly")
-                  announcer.textContent = `Retrieved ${artifact.role.replaceAll("_", " ")} from the server.`;
-              },
-              (error) => {
-                download.disabled = false;
-                announcer.textContent = remoteArtifactFailureMessage(
-                  error instanceof AppClientError ? error.id : undefined,
-                  "Download",
-                );
-              },
-            )
-            .finally(() => artifactActionControllers.delete(actionController));
+            announcer.textContent = "Retrieving MHTML from the server.";
+          void sendRequest<{ readonly filename: string }>({
+            type: "DownloadMhtml",
+            expectedVaultId: expectedVaultId(),
+            bundleId,
+          }).then(
+            (result) => {
+              download.disabled = false;
+              download.textContent = "Download";
+              announcer.textContent = `Downloaded ${result.filename}.`;
+            },
+            (error) => {
+              download.disabled = false;
+              download.textContent = "Retry download";
+              announcer.textContent = remoteArtifactFailureMessage(
+                error instanceof AppClientError ? error.id : undefined,
+                "Download",
+              );
+            },
+          );
         });
         rowActions.append(download);
       }
-      row.append(summary, rowActions);
       artifactPanel.append(row);
     }
-    section.append(artifactPanel, inspection);
-    const screenshot = detail.artifacts.find(
-      (artifact) => artifact.role === "SCREENSHOT_FULL" && artifact.state === "Present",
-    );
-    if (screenshot !== undefined) {
-      const preview = element("section", undefined, "artifact-preview");
-      preview.setAttribute("aria-label", "Full screenshot preview");
-      preview.append(element("p", "Loading screenshot…", "muted"));
-      section.append(preview);
-      const chunks: Uint8Array[] = [];
-      void consumeArtifact(bundleId, "SCREENSHOT_FULL", controller.signal, (chunk) => {
-        chunks.push(Uint8Array.from(chunk));
-      }).then(
-        () => {
-          if (controller.signal.aborted) return;
-          screenshotUrl = URL.createObjectURL(
-            new Blob([Uint8Array.from(bytesFromChunks(chunks)).buffer], {
-              type: "image/webp",
-            }),
-          );
-          const image = element("img");
-          image.src = screenshotUrl;
-          image.alt = `Full-page screenshot of ${detail.item.title}`;
-          preview.replaceChildren(image);
-        },
-        (error) =>
-          preview.replaceChildren(
-            element(
-              "p",
-              remoteArtifactFailureMessage(
-                error instanceof AppClientError ? error.id : undefined,
-                "Screenshot",
-              ),
-              "warning",
-            ),
-          ),
-      );
-    }
+    section.append(artifactPanel);
     app.replaceChildren(section);
     app.setAttribute("aria-busy", "false");
     announcer.textContent = `Opened ${detail.item.title}`;
@@ -2690,7 +2642,6 @@ browser.runtime.onMessage.addListener((message: unknown) => {
     releaseScreenshot(false);
     activeGroups = [];
     deletedGroups = [];
-    editingVaultId = undefined;
     app.replaceChildren(element("p", "Refreshing Vault state…", "muted"));
     app.setAttribute("aria-busy", "true");
     reconcile();

@@ -14,7 +14,13 @@ interface ReleaseExportDownloadRequest {
   readonly temporaryName: string;
 }
 
+interface MhtmlDownloadRequest {
+  readonly type: "awsm:prepare-mhtml-download" | "awsm:release-mhtml-download";
+  readonly temporaryName: string;
+}
+
 const activeExportUrls = new Map<string, string>();
+const activeMhtmlUrls = new Map<string, string>();
 
 function isPrepareExportDownloadRequest(value: unknown): value is PrepareExportDownloadRequest {
   return (
@@ -47,6 +53,38 @@ function releaseExportDownload(request: ReleaseExportDownloadRequest): true {
   if (url !== undefined) URL.revokeObjectURL(url);
   activeExportUrls.delete(request.temporaryName);
   return true;
+}
+
+function isMhtmlDownloadRequest(value: unknown): value is MhtmlDownloadRequest {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    (value.type === "awsm:prepare-mhtml-download" ||
+      value.type === "awsm:release-mhtml-download") &&
+    "temporaryName" in value &&
+    typeof value.temporaryName === "string"
+  );
+}
+
+async function mhtmlDownload(
+  request: MhtmlDownloadRequest,
+): Promise<{ readonly url: string } | true> {
+  if (!/^[0-9a-f-]{36}\.mhtml\.tmp$/iu.test(request.temporaryName))
+    throw new Error("Invalid temporary MHTML name.");
+  const previous = activeMhtmlUrls.get(request.temporaryName);
+  if (request.type === "awsm:release-mhtml-download") {
+    if (previous !== undefined) URL.revokeObjectURL(previous);
+    activeMhtmlUrls.delete(request.temporaryName);
+    return true;
+  }
+  const root = await navigator.storage.getDirectory();
+  const directory = await root.getDirectoryHandle("awsm-artifact-downloads");
+  const handle = await directory.getFileHandle(request.temporaryName);
+  if (previous !== undefined) URL.revokeObjectURL(previous);
+  const url = URL.createObjectURL(await handle.getFile());
+  activeMhtmlUrls.set(request.temporaryName, url);
+  return { url };
 }
 
 function base64ToBytes(value: string): Uint8Array {
@@ -189,16 +227,18 @@ function attachScreenshotPort(port: Browser.runtime.Port): void {
 browser.runtime.onConnect.addListener(attachScreenshotPort);
 
 browser.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-  const operation = isPrepareExportDownloadRequest(message)
-    ? prepareExportDownload(message)
-    : typeof message === "object" &&
-        message !== null &&
-        "type" in message &&
-        message.type === "awsm:release-vault-export-download" &&
-        "temporaryName" in message &&
-        typeof message.temporaryName === "string"
-      ? Promise.resolve(releaseExportDownload(message as ReleaseExportDownloadRequest))
-      : undefined;
+  const operation = isMhtmlDownloadRequest(message)
+    ? mhtmlDownload(message)
+    : isPrepareExportDownloadRequest(message)
+      ? prepareExportDownload(message)
+      : typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "awsm:release-vault-export-download" &&
+          "temporaryName" in message &&
+          typeof message.temporaryName === "string"
+        ? Promise.resolve(releaseExportDownload(message as ReleaseExportDownloadRequest))
+        : undefined;
   if (operation === undefined) return false;
   void operation.then(sendResponse, () => sendResponse(undefined));
   return true;

@@ -3,9 +3,24 @@
   font:
     16px / 1.5 ui-sans-serif,
     system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
     sans-serif;
-  color: #17211b;
-  background: #f4f1e8;
+  color: #171a1f;
+  background: #f6f7f9;
+  --surface: #fff;
+  --surface-subtle: #eef1f4;
+  --muted: #66707a;
+  --border: #d9dee5;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --success: #15803d;
+  --warning: #b45309;
+  --danger: #b42318;
+}
+* {
+  box-sizing: border-box;
 }
 body {
   margin: 0;
@@ -21,21 +36,18 @@ header {
   grid-template-columns: minmax(0, 1fr) auto;
   column-gap: 16px;
   padding: 34px 0 18px;
-  border-bottom: 1px solid #c9c5b9;
+  border-bottom: 1px solid var(--border);
 }
 #library-title {
   display: flex;
   min-height: calc(clamp(28px, 5vw, 44px) * 1.15 + 4px);
   align-items: center;
 }
-h1,
-h2 {
-  font-family: ui-serif, Georgia, serif;
-}
 h1 {
   margin: 2px 0;
   font-size: clamp(28px, 5vw, 44px);
   line-height: 1.15;
+  letter-spacing: -0.03em;
 }
 .vault-title-button {
   display: inline;
@@ -65,7 +77,7 @@ h1 {
 }
 .eyebrow {
   margin: 0;
-  color: #526259;
+  color: var(--muted);
   font-size: 12px;
   font-weight: 750;
   letter-spacing: 0.14em;
@@ -107,11 +119,11 @@ main {
   display: grid;
   gap: 14px;
   margin-top: 34px;
-  border: 1px solid #b7c2ba;
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 22px;
-  background: linear-gradient(145deg, #fff 0%, #f1f6f2 100%);
-  box-shadow: 0 8px 24px rgb(23 33 27 / 7%);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(23 26 31 / 6%);
 }
 .storage-maintenance h2,
 .storage-maintenance h3,
@@ -119,13 +131,14 @@ main {
   margin: 0;
 }
 .storage-maintenance__estimate {
-  color: #294c3a;
+  color: #323842;
   font-weight: 700;
 }
 .storage-maintenance__action {
   justify-self: start;
   color: #fff;
-  background: #18533a;
+  border-color: var(--primary);
+  background: var(--primary);
 }
 .storage-maintenance__job {
   display: grid;
@@ -148,7 +161,12 @@ main {
   padding-top: 16px;
 }
 .remote-only {
-  color: #315f8c;
+  color: var(--primary-hover);
+  font-size: 13px;
+  font-weight: 700;
+}
+.local-artifact {
+  color: var(--success);
   font-size: 13px;
   font-weight: 700;
 }
@@ -184,14 +202,26 @@ main {
 .library-card,
 .detail,
 .notice {
-  border: 1px solid #c9c5b9;
-  border-radius: 10px;
-  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
   padding: 18px;
 }
 .library-card {
   overflow: hidden;
   padding: 0;
+}
+.library-card {
+  box-shadow: 0 8px 24px rgb(23 26 31 / 5%);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+.library-card:hover {
+  border-color: #b6bec8;
+  box-shadow: 0 12px 32px rgb(23 26 31 / 9%);
+  transform: translateY(-1px);
 }
 .library-card[draggable="true"] {
   cursor: grab;
@@ -253,13 +283,10 @@ main {
   transform: translate(8px, 5px);
 }
 .card strong {
-  font:
-    650 20px / 1.25 ui-serif,
-    Georgia,
-    serif;
+  font: 680 20px / 1.25 inherit;
 }
 .muted {
-  color: #5e6a63;
+  color: var(--muted);
   font-size: 14px;
   overflow-wrap: anywhere;
 }
@@ -305,15 +332,29 @@ main {
   gap: 12px;
   margin-top: 22px;
 }
+.artifact-preview {
+  min-height: 180px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--surface-subtle);
+}
+.artifact-preview img {
+  width: 100%;
+  margin: 0 auto;
+  border-radius: 8px;
+}
 .artifact-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  border: 1px solid #d3d0c7;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px 14px;
-  background: #faf9f5;
+  background: var(--surface-subtle);
 }
 .artifact-row__summary {
   display: grid;
@@ -327,11 +368,16 @@ main {
   gap: 8px;
 }
 .artifact-inspection {
+  grid-column: 1 / -1;
+  width: 100%;
   overflow: auto;
   border: 1px solid #d3d0c7;
   border-radius: 8px;
   padding: 14px;
   background: #f7f6f1;
+}
+.artifact-inspection[hidden] {
+  display: none;
 }
 .artifact-inspection pre {
   margin: 0;
@@ -461,11 +507,61 @@ main {
   box-sizing: border-box;
   width: min(660px, calc(100% - 20px));
   max-height: calc(100% - 48px);
-  border: 1px solid #9ca89f;
-  border-radius: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
   padding: 20px;
   color: inherit;
-  background: #fff;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(23 26 31 / 20%);
+}
+.settings-vault {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  background: var(--surface-subtle);
+}
+
+.settings-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface-subtle);
+}
+
+.settings-tab {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
+}
+
+.settings-tab[aria-selected="true"] {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.settings-panel[hidden] {
+  display: none;
+}
+.settings-vault__name {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 720;
+}
+.settings-actions {
+  margin-bottom: 26px;
 }
 .warning-confirmation {
   display: grid;
@@ -517,13 +613,18 @@ main {
 button,
 .download,
 .external {
-  border: 1px solid #18533a;
-  border-radius: 7px;
+  min-height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   padding: 10px 14px;
-  background: #fff;
-  color: #18533a;
+  background: var(--surface);
+  color: #252a32;
   font: 650 14px / 1.2 inherit;
   cursor: pointer;
+}
+button:hover:not(:disabled) {
+  border-color: #aeb6c1;
+  background: var(--surface-subtle);
 }
 button:disabled,
 input:disabled {
@@ -533,7 +634,7 @@ input:disabled {
 @media (max-width: 620px) {
   .artifact-row {
     align-items: stretch;
-    flex-direction: column;
+    grid-template-columns: 1fr;
   }
   .artifact-row__actions button {
     flex: 1 1 auto;
@@ -545,7 +646,8 @@ input:disabled {
 }
 .download,
 .external {
-  background: #18533a;
+  border-color: var(--primary);
+  background: var(--primary);
   color: #fff;
   text-decoration: none;
 }
@@ -560,7 +662,10 @@ label {
   font-weight: 650;
 }
 input {
-  padding: 9px;
+  min-height: 44px;
+  border: 1px solid #aeb6c1;
+  border-radius: 8px;
+  padding: 9px 11px;
   font: inherit;
 }
 .warning-confirmation input {
@@ -597,8 +702,15 @@ input {
   padding: 8px 10px;
 }
 :focus-visible {
-  outline: 3px solid #e29c35;
+  outline: 3px solid var(--primary);
   outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms;
+  }
 }
 .sr-only {
   position: absolute;

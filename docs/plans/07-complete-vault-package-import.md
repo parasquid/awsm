@@ -470,7 +470,7 @@ readwrite storage transaction that can mutate Workspace or Vault state SHALL als
 
 At minimum, update the storage boundaries for:
 
-- Vault Create, Select, Rename, manual Lock, and device Unlock state;
+- Vault Create, Select, Rename, automatic locked state, and device Unlock state;
 - Capture Job acquisition and atomic registration;
 - Library lifecycle and Collection operations;
 - Vault Vacuum acquisition and commit;
@@ -479,7 +479,7 @@ At minimum, update the storage boundaries for:
 
 Do not rely on a one-time Runtime check because a request can race lease acquisition.
 
-Refactor manual Lock and device Unlock ordering so the lease-protected metadata transaction commits
+Refactor automatic Lock and device Unlock ordering so the lease-protected metadata transaction commits
 before changing the in-memory Root Key reference. If Import wins the transaction race, Lock/Unlock
 returns `VAULT_BUSY` without changing either persistent or in-memory lock state. If Lock/Unlock wins,
 its local Root Key change completes as the already-ordered operation before Import proceeds.

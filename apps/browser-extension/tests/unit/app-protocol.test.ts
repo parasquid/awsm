@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { isAppRequest } from "../../src/app/protocol";
 
 describe("application request routing", () => {
+  it("removes manual locking and accepts the MHTML download command", () => {
+    expect(isAppRequest({ type: "LockVault", expectedVaultId: "vault-id" })).toBe(false);
+    expect(
+      isAppRequest({
+        type: "DownloadMhtml",
+        expectedVaultId: "vault-id",
+        bundleId: "bundle-id",
+      }),
+    ).toBe(true);
+  });
+
   it("does not claim offscreen operations or application-state notifications", () => {
     expect(isAppRequest({ type: "awsm:stitch-screenshot" })).toBe(false);
     expect(isAppRequest({ type: "AppStateChanged" })).toBe(false);

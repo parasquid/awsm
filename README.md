@@ -151,13 +151,13 @@ without requiring network connectivity.
 
 Synchronization occurs opportunistically.
 
-For a connected Account, users may explicitly free browser storage by removing locally stored
+For a connected Account, users may explicitly reduce device storage by removing locally stored
 `PRIMARY` and full-screenshot wrappers only after AWSM proves byte-identical encrypted copies belong
-to the active Coordination Server Generation. Compact Library data remains local. Opening or
-downloading a remote-only Artifact retrieves and verifies it through the trusted Runtime, normally
-restoring it locally; offline or signed-out access explains that Account access is required rather
-than reporting corruption. Complete Export still includes every Artifact without rehydrating these
-wrappers.
+to the active Coordination Server Generation. Compact Library data remains local. Opening a
+remote-only screenshot or inspected text Artifact, or downloading remote-only MHTML, retrieves and
+verifies it through the trusted Runtime, normally restoring it locally; offline or signed-out access
+explains that Account access is required rather than reporting corruption. Complete Export still
+includes every Artifact without rehydrating these wrappers.
 
 ---
 

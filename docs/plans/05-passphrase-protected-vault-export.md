@@ -103,7 +103,7 @@ Rules:
 
 - A local Vault has one mandatory device slot using its non-exportable AES-KW device key.
 - Remove local passphrase slots completely from creation, storage, Runtime state, unlock, and UI.
-- Manual lock remains. Unlocking a manually locked Vault uses `Unlock on this device` only.
+- Automatic locked states remain. The interface exposes device unlock but no manual Lock action.
 - The generic Argon2id implementation remains solely because Export uses it.
 - Losing the device key makes the local Vault unavailable unless the user has a valid Export or a
   future separately implemented recovery mechanism.
@@ -648,7 +648,7 @@ state transition. Update at least:
 - Delete/Restore and Collection mutation commits;
 - Vault Rename and Create commits;
 - active Vault Select;
-- manual Lock;
+- automatic locked-state handling;
 - Vacuum acquisition and activation; and
 - any future authoritative mutation encountered during implementation.
 

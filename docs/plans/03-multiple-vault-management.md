@@ -612,7 +612,7 @@ Both popup and Library must show:
 - label `Vault`;
 - active name;
 - `Locked` or `Unlocked` text;
-- a `Switch Vault` control;
+- secondary Vault management inside the Library Settings dialog;
 - busy text when management actions are unavailable.
 
 Only the Library exposes Rename. The popup remains focused on Capture.
@@ -632,7 +632,7 @@ Each Vault option shows:
 
 The picker explains: `Switching locks the current Vault.`
 
-On open, focus the current option. Escape closes without changes. After close, restore focus to `Switch Vault`.
+On open, the active Vault is identified in the Vault Settings tab. Escape closes without changes. After close, restore focus to `Settings`.
 
 ## 12.3 Inline rename
 
@@ -745,7 +745,7 @@ Workspace, Active Vault, encrypted naming, or explicit Vault-context contracts i
 
 ## Task 8: Atomic Select and Runtime context manager
 
-**RED:** tests cover successful selection, same-target no-op, missing target, stale expected Vault, busy rejection, previous/target manual locks, Root Key release, transaction failure, restart, and notification behavior.
+**RED:** tests cover successful selection, same-target no-op, missing target, stale expected Vault, busy rejection, automatic previous/target locking, Root Key release, transaction failure, restart, and notification behavior.
 
 **GREEN:** replace background globals with the active context manager and implement Select.
 
@@ -792,7 +792,7 @@ Run the packaged extension through this exact workflow:
 8. rename Vault A and verify popup and open Library update;
 9. give Vault B the same name and verify both picker entries are disambiguated;
 10. attempt a switch during Capture and verify UI disablement plus Runtime `VAULT_BUSY` enforcement;
-11. restart the extension and verify active selection, manual lock, and visible cached names;
+11. restart the extension and verify active selection, automatic locked state, and visible cached names;
 12. Vacuum one Vault and verify the other Vault and both names remain unchanged; and
 13. use a mismatched deep link and verify an explicit switch prompt rather than cross-Vault lookup.
 

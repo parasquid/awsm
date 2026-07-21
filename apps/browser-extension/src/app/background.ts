@@ -17,6 +17,7 @@ import {
 } from "../drivers/indexeddb";
 import { ChromeAccountServerHost } from "../hosts/chrome/account-server";
 import { ChromeCaptureHost, ChromeScreenshotHost } from "../hosts/chrome/api";
+import { ChromeMhtmlDownloadHost, mhtmlDownloadFilename } from "../hosts/chrome/artifact-download";
 import { ChromeArtifactStore } from "../hosts/chrome/artifact-store";
 import { acquireMandatoryMhtml, preflightCapture } from "../hosts/chrome/capture";
 import { ChromeVaultExportHost } from "../hosts/chrome/export";
@@ -105,6 +106,7 @@ const accountRepository = new IndexedDbAccountRepository();
 const serverSwitchRepository = new IndexedDbServerSwitchRepository();
 const storageReliefRepository = new IndexedDbStorageReliefRepository();
 const storageReliefControllers = new Map<string, AbortController>();
+const mhtmlDownloadHost = new ChromeMhtmlDownloadHost();
 const liveStorageReliefRepository = {
   latestStorageReliefJob: (vaultId: string) =>
     storageReliefRepository.latestStorageReliefJob(vaultId),
@@ -1506,6 +1508,8 @@ interface ArtifactSession {
   readonly vaultId: string;
   readonly bundleId: string;
   readonly role: import("../domain/artifact-graph").ArtifactRole;
+  readonly artifactObjectId: string;
+  readonly wasRemote: boolean;
   readonly reader: ReadableStreamDefaultReader<Uint8Array>;
   pending?: Uint8Array;
 }
@@ -1658,6 +1662,7 @@ async function reconcileServerSwitchOnStartup(
 }
 
 const startup = contexts.initialize().then(async () => {
+  await mhtmlDownloadHost.cleanupOrphans();
   await browser.alarms.create("awsm:synchronization-poll", {
     periodInMinutes: 1,
   });
@@ -1745,6 +1750,7 @@ function safeError(error: unknown): AppResponse {
     PERMISSION_DENIED: "Chrome did not grant capture permission.",
     MHTML_UNAVAILABLE: "This Chrome installation cannot capture MHTML.",
     MHTML_CAPTURE_FAILED: "Chrome could not archive this page as MHTML.",
+    MHTML_DOWNLOAD_FAILED: "The MHTML archive could not be downloaded.",
     CAPTURE_INTERRUPTED: "Capture was interrupted. Retry it manually.",
     BUNDLE_INVALID: "The archived capture is missing or corrupt.",
     CRYPTO_AUTHENTICATION_FAILED: "Local Vault encryption could not be initialized.",
@@ -2779,25 +2785,6 @@ async function handle(request: AppRequest): Promise<AppResponse> {
         await notifyAppStateChanged();
         return { ok: true, value: await state() };
       }
-      case "LockVault": {
-        await cancelArtifactSessions();
-        const context = contexts.snapshot(request.expectedVaultId);
-        storageReliefControllers
-          .get(context.vaultId)
-          ?.abort(Object.assign(new Error("The Vault is locked."), { id: "VAULT_LOCKED" }));
-        serverSwitchController?.abort();
-        serverSwitchController = undefined;
-        await context.vault.lock();
-        const switchJob = await serverSwitchRepository.loadJob();
-        if (switchJob?.state === "Running" && switchJob.vaultId === context.vaultId)
-          await liveServerSwitchRepository.saveJob({
-            ...switchJob,
-            state: "WaitingForUnlock",
-            updatedAt: new Date().toISOString(),
-          });
-        await notifyAppStateChanged();
-        return { ok: true, value: await state() };
-      }
       case "DismissRecentCapture": {
         const context = contexts.snapshot(request.expectedVaultId);
         await context.driver.dismissCaptureNotice(request.jobId);
@@ -3136,11 +3123,17 @@ async function handle(request: AppRequest): Promise<AppResponse> {
       case "OpenArtifact": {
         const service = await library(request.expectedVaultId);
         const opened = await service.openArtifact(request.bundleId, request.role);
+        const wasRemote = await storageReliefRepository.isArtifactRemoteOnly(
+          request.expectedVaultId,
+          opened.reference.artifactObjectId,
+        );
         const sessionId = crypto.randomUUID();
         artifactSessions.set(sessionId, {
           vaultId: request.expectedVaultId,
           bundleId: request.bundleId,
           role: request.role,
+          artifactObjectId: opened.reference.artifactObjectId,
+          wasRemote,
           reader: opened.stream.getReader(),
         });
         return {
@@ -3153,6 +3146,32 @@ async function handle(request: AppRequest): Promise<AppResponse> {
             filename: artifactFilename(request.bundleId, request.role),
           },
         };
+      }
+      case "DownloadMhtml": {
+        const service = await library(request.expectedVaultId);
+        const opened = await service.openArtifact(request.bundleId, "PRIMARY");
+        const wasRemote = await storageReliefRepository.isArtifactRemoteOnly(
+          request.expectedVaultId,
+          opened.reference.artifactObjectId,
+        );
+        const filename = mhtmlDownloadFilename(request.bundleId);
+        await mhtmlDownloadHost.download(
+          {
+            temporaryName: `${crypto.randomUUID()}.mhtml.tmp`,
+            filename,
+            stream: opened.stream,
+          },
+          new AbortController().signal,
+        );
+        if (
+          wasRemote &&
+          !(await storageReliefRepository.isArtifactRemoteOnly(
+            request.expectedVaultId,
+            opened.reference.artifactObjectId,
+          ))
+        )
+          await notifyAppStateChanged();
+        return { ok: true, value: { filename } };
       }
       case "ReadArtifactChunk": {
         contexts.snapshot(request.expectedVaultId);
@@ -3167,6 +3186,14 @@ async function handle(request: AppRequest): Promise<AppResponse> {
           if (next.done) {
             artifactSessions.delete(request.sessionId);
             session.reader.releaseLock();
+            if (
+              session.wasRemote &&
+              !(await storageReliefRepository.isArtifactRemoteOnly(
+                session.vaultId,
+                session.artifactObjectId,
+              ))
+            )
+              await notifyAppStateChanged();
             return { ok: true, value: { done: true } };
           }
           chunk = next.value;

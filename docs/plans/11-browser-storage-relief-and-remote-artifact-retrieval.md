@@ -183,7 +183,7 @@ retention decision.
   the ensuing synchronization are not added; they remain local unless the user confirms a later
   run.
 - The control requires the synchronized Vault to be active and unlocked. A local-only Vault shows
-  `Connect this Vault to an Account to free browser storage`; it does not offer a destructive local
+  `Connect this Vault to an Account to reduce device storage`; it does not offer a destructive local
   substitute.
 
 ## 3.3 Synchronize, prove, then evict
@@ -854,7 +854,7 @@ journeys.
 7. Trigger another ordinary synchronization pass and prove the remote-only wrappers remain absent.
 8. Open Capture detail, observe remote retrieval, verify screenshot pixels/landmarks, and prove the
    full screenshot becomes local on both surfaces.
-9. Download `PRIMARY` and compare exact plaintext bytes to the original capture; prove it becomes
+9. Download the Artifact labeled `MHTML` and compare exact plaintext bytes to the original capture; prove it becomes
    local.
 10. Run storage relief again and prove both restored wrappers can be evicted again.
 

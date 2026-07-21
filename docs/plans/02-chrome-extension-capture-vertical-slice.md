@@ -344,7 +344,7 @@ The Vault Root Key is never stored unwrapped.
 
 AES-KW has no AAD input. After every device-slot unwrap, derive a `vault:verifier:v1` key and authenticate a fixed Vault verifier whose AAD contains the canonical Vault ID, Device ID, slot ID, algorithm identifier, and slot version. Do not expose the Vault as unlocked until verifier authentication succeeds.
 
-Normal service-worker activation may automatically unlock the Vault through the device slot. A user-requested manual lock persists an operational lock flag; while set, automatic unlock is forbidden until the user explicitly selects device unlock.
+Normal service-worker activation may automatically unlock the Vault through the device slot. Vault selection and security transitions may persist an operational locked state; while set, automatic unlock is forbidden until the user explicitly selects device unlock. The interface does not expose a manual Lock action.
 
 ## 6.3 Local unlock boundary
 
@@ -666,7 +666,7 @@ Verify:
 
 RED:
 
-- Tests cover create/unlock/lock, automatic activation unlock, persistent manual lock, corrupt device slots, tampered device-slot metadata, Vault verifier failure, slot version rejection, and atomic onboarding failure.
+- Tests cover create/unlock, automatic activation unlock, persistent automatic locked states, corrupt device slots, tampered device-slot metadata, Vault verifier failure, slot version rejection, and atomic onboarding failure.
 
 GREEN:
 

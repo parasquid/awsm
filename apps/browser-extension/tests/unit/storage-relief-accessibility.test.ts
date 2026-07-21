@@ -33,7 +33,7 @@ describe("storage-relief accessibility transitions", () => {
       "Storage cleanup: Checking server copies.",
     );
     expect(storageReliefAnnouncement(started, job({ verifiedArtifacts: 2 }))).toBe(
-      "Storage cleanup progress: 2 of 4 Artifacts checked; 0 freed.",
+      "Device storage progress: 2 of 4 files checked; 0 removed.",
     );
     expect(storageReliefAnnouncement(started, job({ cancellationRequested: true }))).toBe(
       "Cancelling storage cleanup.",
@@ -47,7 +47,7 @@ describe("storage-relief accessibility transitions", () => {
   it("reports successful and safe failed completion", () => {
     const running = job({ stage: "Freeing browser storage" });
     expect(storageReliefAnnouncement(running, job({ state: "Succeeded", freedArtifacts: 4 }))).toBe(
-      "Storage cleanup completed. 4 Artifacts were freed.",
+      "Device storage reduction completed. 4 files were removed.",
     );
     expect(
       storageReliefAnnouncement(

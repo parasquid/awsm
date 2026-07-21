@@ -16,7 +16,7 @@ export function storageReliefAnnouncement(
   if (!terminal(previous) && terminal(current)) {
     if (current.state === "Cancelled") return "Storage cleanup cancelled.";
     if (current.state === "Succeeded")
-      return `Storage cleanup completed. ${String(current.freedArtifacts)} Artifacts were freed.`;
+      return `Device storage reduction completed. ${String(current.freedArtifacts)} files were removed.`;
     return `Storage cleanup stopped safely. Nothing unverified was removed (${current.errorId ?? "unexpected failure"}).`;
   }
   if (previous.stage !== current.stage) return `Storage cleanup: ${current.stage}.`;
@@ -25,7 +25,7 @@ export function storageReliefAnnouncement(
     previous.freedArtifacts !== current.freedArtifacts ||
     previous.skippedArtifacts !== current.skippedArtifacts
   )
-    return `Storage cleanup progress: ${String(current.verifiedArtifacts)} of ${String(current.candidateArtifacts)} Artifacts checked; ${String(current.freedArtifacts)} freed.`;
+    return `Device storage progress: ${String(current.verifiedArtifacts)} of ${String(current.candidateArtifacts)} files checked; ${String(current.freedArtifacts)} removed.`;
   return undefined;
 }
 
