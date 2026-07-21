@@ -37,7 +37,9 @@ prompts.
 
 **GREEN:** the setup tab owns exact optional-origin permission, strict origin validation, redirect
 rejection, compatible-server probing, signup, recovery acknowledgement, and existing/new Vault
-choice. The popup retains login and capture actions.
+choice. The popup makes local-only operation primary and synchronization setup secondary. A signup
+whose address is unavailable offers an in-tab sign-in recovery without losing the selected server
+or entered email. The popup retains login and capture actions.
 
 **Browser RED discovered during black-box integration:** the packaged extension remained on
 “Choose synchronization” with `STORAGE_TRANSACTION_FAILED`. Chrome had rejected
@@ -153,7 +155,8 @@ adapter once Redis is an approved dependency.
 The packaged-Chromium visual scenarios captured and the image-inspection tool viewed these Account
 states:
 
-- server choice at 420×760 and 340×700;
+- local-first server choice at 420×760 and 340×700;
+- unavailable-Account recovery and in-tab sign-in at 720×900 and 360×760;
 - login with visible Email focus at 420×760;
 - signup resting/focused at 720×900 and narrow at 360×760;
 - password-confirmation validation alert;

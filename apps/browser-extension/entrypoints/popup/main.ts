@@ -170,7 +170,7 @@ function render(state: AppState, transientError?: string): void {
   content.append(
     heading(
       view.screen === "server-choice"
-        ? "Choose synchronization"
+        ? "Choose how AWSM starts"
         : view.screen === "login"
           ? "Sign in"
           : view.screen === "account-setup"
@@ -191,17 +191,10 @@ function render(state: AppState, transientError?: string): void {
     content.append(
       element(
         "p",
-        "Choose where encrypted Vault data may synchronize. You can keep everything only on this device.",
+        "Start with a local archive on this device. You can add encrypted synchronization later.",
       ),
     );
-    const setup = element("a", "Set up synchronization", "primary");
-    setup.href = browser.runtime.getURL("/signup.html");
-    setup.target = "_blank";
-    setup.addEventListener("click", (event) => {
-      event.preventDefault();
-      void browser.tabs.create({ url: setup.href });
-    });
-    const localOnly = element("button", "Continue without sync");
+    const localOnly = element("button", "Continue without sync", "primary");
     localOnly.type = "button";
     localOnly.addEventListener("click", () => {
       localOnly.disabled = true;
@@ -209,10 +202,17 @@ function render(state: AppState, transientError?: string): void {
         refresh(errorText(cause)),
       );
     });
+    const setup = element("a", "Set up synchronization");
+    setup.href = browser.runtime.getURL("/signup.html");
+    setup.target = "_blank";
+    setup.addEventListener("click", (event) => {
+      event.preventDefault();
+      void browser.tabs.create({ url: setup.href });
+    });
     content.append(
+      localOnly,
       setup,
       element("p", `Hosted service · ${view.hostedOrigin}`, "muted"),
-      localOnly,
     );
   } else if (view.screen === "login") {
     content.append(element("p", `Sign in to synchronize through ${view.serverOrigin}.`));

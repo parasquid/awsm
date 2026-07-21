@@ -1822,7 +1822,8 @@ function safeError(error: unknown): AppResponse {
       "Import was interrupted before the Vault was added. Select the package and try again.",
     STORAGE_QUOTA_EXCEEDED: "There is not enough local storage to import this Vault.",
     ACCOUNT_INPUT_INVALID: "Review the Account details and try again.",
-    ACCOUNT_UNAVAILABLE: "The Account service is unavailable. Try again later.",
+    ACCOUNT_UNAVAILABLE:
+      "This Account cannot be created. It may already exist; try signing in instead or use a different email.",
     AUTHENTICATION_FAILED: "The email or password was not accepted.",
     SESSION_EXPIRED: "Your session expired. Sign in again.",
     SERVER_INCOMPATIBLE:

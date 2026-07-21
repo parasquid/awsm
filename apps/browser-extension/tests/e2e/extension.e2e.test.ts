@@ -2156,8 +2156,21 @@ test("renders Account onboarding, signup, progress, success, and settings states
   try {
     await client.popup.setViewportSize({ width: 420, height: 760 });
     await expect(
-      client.popup.getByRole("heading", { name: "Choose synchronization" }),
+      client.popup.getByRole("heading", { name: "Choose how AWSM starts" }),
     ).toBeVisible();
+    const localOnly = client.popup.getByRole("button", { name: "Continue without sync" });
+    const synchronization = client.popup.getByRole("link", { name: "Set up synchronization" });
+    await expect(localOnly).toHaveClass(/\bprimary\b/u);
+    await expect(synchronization).not.toHaveClass(/\bprimary\b/u);
+    expect(
+      await localOnly.evaluate(
+        (primary, secondary) =>
+          Boolean(
+            primary.compareDocumentPosition(secondary as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+          ),
+        await synchronization.elementHandle(),
+      ),
+    ).toBe(true);
     await client.popup.screenshot({
       path: testInfo.outputPath("account-server-choice-desktop.png"),
     });
@@ -2281,6 +2294,74 @@ test("renders Account onboarding, signup, progress, success, and settings states
       .toEqual({ databases: [], files: [] });
   } finally {
     await client.context.close();
+  }
+});
+
+test("offers in-tab sign in when signup cannot create the Account", async ({
+  browserName,
+}, testInfo) => {
+  test.setTimeout(180_000);
+  expect(browserName).toBe("chromium");
+  const email = `existing-${crypto.randomUUID()}@example.test`;
+  const password = "x";
+  const first = await packagedAccountContext(testInfo, "existing-account-first");
+  let second: Awaited<ReturnType<typeof packagedAccountContext>> | undefined;
+  try {
+    const firstOpened = first.context.waitForEvent("page");
+    await first.popup.getByRole("link", { name: "Set up synchronization" }).click();
+    const firstSignup = await firstOpened;
+    await firstSignup.getByText("Use a self-hosted server", { exact: true }).click();
+    await firstSignup
+      .getByRole("textbox", { name: "Self-hosted server origin" })
+      .fill("http://127.0.0.1:3300");
+    await firstSignup.getByRole("button", { name: "Use self-hosted server" }).click();
+    await firstSignup.getByRole("textbox", { name: "Email" }).fill(email);
+    await firstSignup.getByLabel("Password", { exact: true }).fill(password);
+    await firstSignup.getByLabel("Confirm password").fill(password);
+    await firstSignup.getByLabel(/no password recovery/u).check();
+    await firstSignup.getByLabel("Vault name").fill("Existing Account Archive");
+    await firstSignup.getByRole("button", { name: "Create Account" }).click();
+    await expect.poll(() => firstSignup.isClosed()).toBe(true);
+
+    second = await packagedAccountContext(testInfo, "existing-account-second");
+    const secondOpened = second.context.waitForEvent("page");
+    await second.popup.getByRole("link", { name: "Set up synchronization" }).click();
+    const signup = await secondOpened;
+    await signup.getByText("Use a self-hosted server", { exact: true }).click();
+    await signup
+      .getByRole("textbox", { name: "Self-hosted server origin" })
+      .fill("http://127.0.0.1:3300");
+    await signup.getByRole("button", { name: "Use self-hosted server" }).click();
+    await signup.getByRole("textbox", { name: "Email" }).fill(email);
+    await signup.getByLabel("Password", { exact: true }).fill(password);
+    await signup.getByLabel("Confirm password").fill(password);
+    await signup.getByLabel(/no password recovery/u).check();
+    await signup.getByRole("button", { name: "Create Account" }).click();
+    await expect(signup.getByRole("alert")).toContainText("may already exist");
+    await expect(signup.getByRole("button", { name: "Create Account" })).toBeHidden();
+    await expect(signup.getByRole("button", { name: "Sign in instead" })).toBeVisible();
+    await signup.setViewportSize({ width: 720, height: 900 });
+    await signup.screenshot({ path: testInfo.outputPath("existing-account-wide.png") });
+    await signup.setViewportSize({ width: 360, height: 760 });
+    await signup.screenshot({ path: testInfo.outputPath("existing-account-narrow.png") });
+
+    await signup.getByRole("button", { name: "Sign in instead" }).click();
+    await expect(signup.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await expect(signup.getByRole("textbox", { name: "Email" })).toHaveValue(email);
+    await expect(signup.getByLabel("Confirm password")).toBeHidden();
+    await signup.setViewportSize({ width: 720, height: 900 });
+    await signup.screenshot({ path: testInfo.outputPath("existing-account-signin-wide.png") });
+    await signup.setViewportSize({ width: 360, height: 760 });
+    await signup.screenshot({ path: testInfo.outputPath("existing-account-signin-narrow.png") });
+    await signup.getByLabel("Password", { exact: true }).fill(password);
+    await signup.getByRole("button", { name: "Sign in", exact: true }).click();
+    await expect.poll(() => signup.isClosed()).toBe(true);
+    await expect(second.popup.getByRole("button", { name: "Archive this page" })).toBeVisible({
+      timeout: 60_000,
+    });
+  } finally {
+    await second?.context.close();
+    await first.context.close();
   }
 });
 

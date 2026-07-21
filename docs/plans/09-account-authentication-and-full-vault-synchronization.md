@@ -137,8 +137,12 @@ gates.
 
 ## 3.2 First launch and server choice
 
-- The first popup state is Account/server onboarding, before local Vault onboarding.
-- Show three paths: `Log in`, `Create account`, and `Continue without sync`.
+- The first popup state is the local-versus-synchronized onboarding decision, before local Vault
+  onboarding.
+- Make `Continue without sync` the first and primary action. Present `Set up synchronization` as a
+  secondary action and allow synchronization to be configured later from Account settings.
+- The synchronization setup tab offers hosted or self-hosted server selection and Account creation;
+  an already configured server continues to expose login in the popup.
 - Show `Syncing with awsm.foo` or equivalent visible server context near login/signup actions.
 - A server selector offers `AWSM`, `Self-hosted`, and `No sync`.
 - `AWSM` resolves to the build-configurable hosted origin whose checked-in default is
@@ -149,6 +153,9 @@ gates.
   Vault flow. Account settings allow connecting later; do not periodically prompt.
 - Login remains in the popup. `Create account` opens an extension-owned full tab because signup,
   unrecoverability acknowledgement, Vault selection, and initial transfer may outlive the popup.
+- `ACCOUNT_UNAVAILABLE` does not confirm Account existence. Explain that the Account may already
+  exist or the address may be unavailable, and offer an in-tab `Sign in instead` mode that retains
+  the selected server and normalized email.
 - Do not automatically open a tab on extension installation. The flow begins when the user opens
   the popup.
 

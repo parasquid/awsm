@@ -151,6 +151,13 @@ a.primary {
   text-decoration: none;
 }
 
+.muted {
+  margin-top: -4px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
 .self-hosted {
   margin-top: 10px;
   border: 1px solid var(--border);
