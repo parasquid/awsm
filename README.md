@@ -12,6 +12,34 @@ plaintext content.
 The implementation is pre-release software. It is not currently available from the Chrome Web
 Store, and the hosted service is not advertised as a public service.
 
+## Judge quick start
+
+### Download AWSM for Chrome
+
+> **[Download the ready-to-install Chrome ZIP (v0.1.5)](https://github.com/parasquid/awsm/releases/download/v0.1.5/awsm-chrome-v0.1.5.zip)**
+>
+> [Download its SHA-256 checksum](https://github.com/parasquid/awsm/releases/download/v0.1.5/awsm-chrome-v0.1.5.zip.sha256) ·
+> [View the latest Release](https://github.com/parasquid/awsm/releases/latest) ·
+> [Installation guide](docs/guides/install-chrome-extension.md)
+
+The latest Release contains a ready-to-install Chrome ZIP and its SHA-256 checksum. No source build,
+Account, server, test credentials, or seeded sample data is required to evaluate the core local
+archive.
+
+1. Download the Chrome ZIP and matching `.sha256` file using the links above.
+2. Verify and install the ZIP using the
+   [Chrome extension installation guide](docs/guides/install-chrome-extension.md).
+3. Open AWSM, select **Continue without sync**, and create a local Vault.
+4. Open any HTTP or HTTPS page and select **Archive this page**.
+
+For a guided evaluation, continue with [Try a Capture](#try-a-capture) and
+[Verify offline behavior](#verify-offline-behavior). To review the hackathon development process,
+see [How OpenAI tools were used](#how-openai-tools-were-used).
+
+**Supported evaluation platform:** Chrome 116 or newer on a desktop operating system supported by
+Chrome. AWSM is not currently packaged or tested as a Firefox, Safari, mobile, or standalone web
+application.
+
 ## What works today
 
 The Chrome extension currently supports:
