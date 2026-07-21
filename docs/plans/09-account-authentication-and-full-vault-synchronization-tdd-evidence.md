@@ -31,21 +31,22 @@ authority.
 
 ## Server choice, login, and signup
 
-**RED:** popup view/protocol and packaged-browser tests failed until first launch required an
-explicit hosted, self-hosted, or local-only choice and signup existed as an extension-owned tab.
+**RED:** popup view/protocol and packaged-browser tests failed until first launch linked to a stable
+extension-owned setup tab that retained hosted, self-hosted, or local-only choice across permission
+prompts.
 
-**GREEN:** exact optional origin permission, strict origin validation, redirect rejection,
-compatible-server probing, popup login, full-tab signup, recovery acknowledgement, and existing/new
-Vault choice were implemented.
+**GREEN:** the setup tab owns exact optional-origin permission, strict origin validation, redirect
+rejection, compatible-server probing, signup, recovery acknowledgement, and existing/new Vault
+choice. The popup retains login and capture actions.
 
 **Browser RED discovered during black-box integration:** the packaged extension remained on
 “Choose synchronization” with `STORAGE_TRANSACTION_FAILED`. Chrome had rejected
 `permissions.request()` because the request crossed into the service worker after user activation
 was lost.
 
-**Browser GREEN:** popup and Library settings now request the exact validated origin during their
-user gesture. The background Host independently confirms permission, probes with redirects and
-credentials disabled, and commits only a compatible origin.
+**Browser GREEN:** the stable setup tab and Library settings request the exact validated origin
+during their user gesture. The background Host independently confirms permission, probes with
+redirects and credentials disabled, and commits only a compatible origin.
 
 ## Full Replica synchronization
 
@@ -159,6 +160,8 @@ states:
 - disabled signup with visible synchronization progress;
 - successful signup with credential form removed;
 - Account/settings dialog at 1280×720 and 360×760; and
+- typed local-device reset at wide and narrow widths, including disabled and enabled destructive
+  action states and proof that IndexedDB and private filesystem storage are empty; and
 - stale-Replica export-first dialog at desktop and narrow widths, confirmed overwrite, busy, and
   failure states.
 
@@ -171,7 +174,7 @@ Inspection findings:
 - the success form originally remained visible because author `display: grid` overrode `hidden`;
   `[hidden]` now removes it and the rerendered success state was inspected;
 - the narrow settings dialog keeps viewport margins, wraps the synthetic email, and keeps checkbox
-  and action geometry usable; and
+  and action geometry usable, with routine server controls preceding local reset; and
 - stale-discard confirmation geometry, progress movement, error prominence, and modal margins were
   inspected after the viewport-width and checkbox-alignment corrections.
 

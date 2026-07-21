@@ -193,7 +193,9 @@ The profile requests a lossy full-page WebP as a best-effort Artifact with Kind 
 
 The profile also requests a 640×360 WebP `THUMBNAIL`, canonical-CBOR-sequence
 `CONTENT_STRUCTURED`, and normalized UTF-8 `TEXT_EXTRACTED`. These are best effort. Structured and
-text outputs SHALL derive from the same acknowledged bounded live-DOM block stream.
+text outputs SHALL derive from the same size-bounded live-DOM block sequence. A browser Host that
+collects the sequence through an injected page function SHALL return it in one acknowledged script
+result so page lifecycle changes cannot interrupt a multi-message producer handshake.
 
 Failure to produce the WebP SHALL record a typed warning but SHALL NOT invalidate otherwise valid required MHTML.
 

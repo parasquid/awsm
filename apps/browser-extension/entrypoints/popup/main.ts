@@ -1,7 +1,6 @@
 import { browser } from "wxt/browser";
 import { AppClientError, sendRequest } from "../../src/app/client";
 import type { AppState } from "../../src/app/protocol";
-import { serverPermissionPattern } from "../../src/runtime/account/server";
 import { popupView } from "../../src/ui/popup-view";
 import {
   RECENT_CAPTURE_DURATION_MS,
@@ -68,17 +67,6 @@ function request(type: "GetState" | "WakeSynchronization" | "UnlockDevice"): Pro
 
 function errorText(error: unknown): string {
   return error instanceof AppClientError ? error.message : "The operation could not be completed.";
-}
-
-async function configureServerFromGesture(serverOrigin: string): Promise<AppState> {
-  const pattern = serverPermissionPattern(serverOrigin);
-  if (!(await browser.permissions.request({ origins: [pattern] }))) {
-    throw new AppClientError(
-      "SERVER_PERMISSION_DENIED",
-      "Chrome did not grant access to that synchronization server.",
-    );
-  }
-  return sendRequest<AppState>({ type: "ConfigureSyncServer", serverOrigin });
 }
 
 function heading(subtitle: string): DocumentFragment {
@@ -206,33 +194,12 @@ function render(state: AppState, transientError?: string): void {
         "Choose where encrypted Vault data may synchronize. You can keep everything only on this device.",
       ),
     );
-    const hosted = element("button", `Use hosted AWSM · ${view.hostedOrigin}`, "primary");
-    hosted.type = "button";
-    hosted.addEventListener("click", () => {
-      hosted.disabled = true;
-      void configureServerFromGesture(view.hostedOrigin).then(render, (cause) =>
-        refresh(errorText(cause)),
-      );
-    });
-    const selfHosted = element("details", undefined, "self-hosted");
-    selfHosted.append(element("summary", "Use a self-hosted server"));
-    const customForm = element("form");
-    const customLabel = element("label", "Self-hosted server origin");
-    const custom = element("input");
-    custom.name = "server-origin";
-    custom.type = "url";
-    custom.placeholder = "https://sync.example.com";
-    custom.required = true;
-    customLabel.append(custom);
-    const connect = element("button", "Use self-hosted server");
-    connect.type = "submit";
-    customForm.append(customLabel, connect);
-    customForm.addEventListener("submit", (event) => {
+    const setup = element("a", "Set up synchronization", "primary");
+    setup.href = browser.runtime.getURL("/signup.html");
+    setup.target = "_blank";
+    setup.addEventListener("click", (event) => {
       event.preventDefault();
-      connect.disabled = true;
-      void configureServerFromGesture(custom.value).then(render, (cause) =>
-        refresh(errorText(cause)),
-      );
+      void browser.tabs.create({ url: setup.href });
     });
     const localOnly = element("button", "Continue without sync");
     localOnly.type = "button";
@@ -242,8 +209,11 @@ function render(state: AppState, transientError?: string): void {
         refresh(errorText(cause)),
       );
     });
-    selfHosted.append(customForm);
-    content.append(hosted, selfHosted, localOnly);
+    content.append(
+      setup,
+      element("p", `Hosted service · ${view.hostedOrigin}`, "muted"),
+      localOnly,
+    );
   } else if (view.screen === "login") {
     content.append(element("p", `Sign in to synchronize through ${view.serverOrigin}.`));
     const login = element("form");

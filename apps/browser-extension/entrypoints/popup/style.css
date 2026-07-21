@@ -126,13 +126,15 @@ button:disabled {
   opacity: 0.55;
 }
 
-button.primary {
+button.primary,
+a.primary {
   border-color: var(--primary);
   color: #fff;
   background: var(--primary);
 }
 
-button.primary:hover:not(:disabled) {
+button.primary:hover:not(:disabled),
+a.primary:hover {
   border-color: var(--primary-hover);
   background: var(--primary-hover);
 }
@@ -142,6 +144,11 @@ a {
   place-items: center;
   color: var(--primary-hover);
   text-align: center;
+}
+
+a.primary {
+  padding: 10px 14px;
+  text-decoration: none;
 }
 
 .self-hosted {

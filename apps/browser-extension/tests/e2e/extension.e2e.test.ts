@@ -218,7 +218,9 @@ async function artifactStorageSnapshot(
     const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
       const request = indexedDB.open("awsm-vault");
       request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
-      request.addEventListener("error", () => reject(request.error), { once: true });
+      request.addEventListener("error", () => reject(request.error), {
+        once: true,
+      });
     });
     const transaction = database.transaction("artifact_availability", "readonly");
     const availability = await new Promise<
@@ -236,7 +238,9 @@ async function artifactStorageSnapshot(
           ),
         { once: true },
       );
-      request.addEventListener("error", () => reject(request.error), { once: true });
+      request.addEventListener("error", () => reject(request.error), {
+        once: true,
+      });
     });
     database.close();
     const root = await navigator.storage.getDirectory();
@@ -399,9 +403,13 @@ async function setCoordinationServerUnavailable(
       }
       const scope = globalThis as typeof globalThis & {
         __awsmOfflineKeepalive?: { port: KeepalivePort; timer: number };
-        chrome: { runtime: { connect(input: { name: string }): KeepalivePort } };
+        chrome: {
+          runtime: { connect(input: { name: string }): KeepalivePort };
+        };
       };
-      const port = scope.chrome.runtime.connect({ name: "awsm:popup-lifetime" });
+      const port = scope.chrome.runtime.connect({
+        name: "awsm:popup-lifetime",
+      });
       port.postMessage({ keepalive: true });
       const timer = window.setInterval(() => port.postMessage({ keepalive: true }), 5_000);
       scope.__awsmOfflineKeepalive = { port, timer };
@@ -476,7 +484,9 @@ async function corruptRemoteArtifactObjects(artifactObjectIds: readonly string[]
         if (error === null) resolveValue();
         else
           reject(
-            new Error(`Failed to corrupt proof-server Artifacts: ${stderr}`, { cause: error }),
+            new Error(`Failed to corrupt proof-server Artifacts: ${stderr}`, {
+              cause: error,
+            }),
           );
       },
     );
@@ -911,7 +921,7 @@ async function vacuumDeleted(page: Page, vaultId: string): Promise<void> {
 }
 
 async function sharedDeletedBase(testInfo: TestInfo, name: string) {
-  const password = "correct horse archive battery";
+  const password = "x";
   const sourceEmail = `${name}-source-${crypto.randomUUID()}@example.test`;
   const candidateEmail = `${name}-candidate-${crypto.randomUUID()}@example.test`;
   const client = await createSynchronizedClient(
@@ -989,16 +999,33 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       await first.popup.close();
       const setupTab = await first.context.newPage();
       const setupPopup = await toolbarPopup(first);
-      await setupPopup
-        .getByRole("textbox", { name: "Self-hosted server origin" })
-        .fill("http://127.0.0.1:3300");
-      await setupPopup.getByRole("button", { name: "Use self-hosted server" }).click();
-      await expect(setupPopup.getByRole("heading", { name: "Sign in" })).toBeVisible();
-
       const signupOpened = first.context.waitForEvent("page");
-      await setupPopup.getByRole("link", { name: "Create an Account" }).click();
+      await setupPopup.getByRole("link", { name: "Set up synchronization" }).click();
       const signup = await signupOpened;
       await signup.waitForLoadState("domcontentloaded");
+      await expect(signup.getByRole("heading", { name: "Choose synchronization" })).toBeVisible();
+      await signup.setViewportSize({ width: 1280, height: 900 });
+      await signup.screenshot({
+        path: testInfo.outputPath("signup-server-choice-wide.png"),
+      });
+      await signup.setViewportSize({ width: 390, height: 844 });
+      await signup.screenshot({
+        path: testInfo.outputPath("signup-server-choice-narrow.png"),
+      });
+      await signup.getByText("Use a self-hosted server", { exact: true }).click();
+      await signup
+        .getByRole("textbox", { name: "Self-hosted server origin" })
+        .fill("http://127.0.0.1:3300");
+      await signup.getByRole("button", { name: "Use self-hosted server" }).click();
+      await expect(signup.getByRole("heading", { name: "Create your Account" })).toBeVisible();
+      await signup.setViewportSize({ width: 1280, height: 900 });
+      await signup.screenshot({
+        path: testInfo.outputPath("signup-account-wide.png"),
+      });
+      await signup.setViewportSize({ width: 390, height: 844 });
+      await signup.screenshot({
+        path: testInfo.outputPath("signup-account-narrow.png"),
+      });
       await signup.getByRole("textbox", { name: "Email" }).fill(email);
       await signup.getByLabel("Password", { exact: true }).fill(password);
       await signup.getByLabel("Confirm password").fill(password);
@@ -1006,9 +1033,11 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       await signup.getByLabel("Vault name").fill("First Journey Archive");
       await signup.getByRole("button", { name: "Create Account" }).click();
       await expect(signup.getByRole("status")).toHaveText(
-        "Account created. You may close this tab.",
+        "Account created. Returning to your page…",
         { timeout: 120_000 },
       );
+      await signup.waitForEvent("close");
+      await setupTab.goto(`chrome-extension://${first.extensionId}/library.html`);
       const state = await appRequest<{
         account: {
           accountState: string;
@@ -1016,7 +1045,7 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
           configuration: { mode: string; serverOrigin?: string };
         };
         workspace: { activeVaultId?: string };
-      }>(signup, { type: "GetState" });
+      }>(setupTab, { type: "GetState" });
       expect(state.account).toMatchObject({
         accountState: "Authenticated",
         configuration: {
@@ -1030,14 +1059,13 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         .poll(
           async () =>
             (
-              await appRequest<{ account: { vaultSyncState: string } }>(signup, {
+              await appRequest<{ account: { vaultSyncState: string } }>(setupTab, {
                 type: "GetState",
               })
             ).account.vaultSyncState,
           { timeout: 120_000 },
         )
         .toBe("UpToDate");
-      await signup.close();
       await setupTab.close();
     });
 
@@ -1076,10 +1104,11 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       await second.popup.close();
       const setupTab = await second.context.newPage();
       const setupPopup = await toolbarPopup(second);
-      await setupPopup
-        .getByRole("textbox", { name: "Self-hosted server origin" })
-        .fill("http://127.0.0.1:3300");
-      await setupPopup.getByRole("button", { name: "Use self-hosted server" }).click();
+      await appRequest(setupPopup, {
+        type: "ConfigureSyncServer",
+        serverOrigin: "http://127.0.0.1:3300",
+      });
+      await setupPopup.reload();
       await setupPopup.getByRole("textbox", { name: "Email" }).fill(email);
       await setupPopup.getByLabel("Password").fill(password);
       await setupPopup.getByRole("button", { name: "Sign in" }).click();
@@ -1310,10 +1339,9 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
           .poll(
             async () =>
               (
-                await appRequest<{ account: { vaultSyncState: string; errorId?: string } }>(
-                  staleLibrary,
-                  { type: "GetState" },
-                )
+                await appRequest<{
+                  account: { vaultSyncState: string; errorId?: string };
+                }>(staleLibrary, { type: "GetState" })
               ).account.vaultSyncState,
             { timeout: 120_000 },
           )
@@ -1448,7 +1476,9 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         .toBe("UpToDate");
       await staleLibrary.setViewportSize({ width: 1280, height: 900 });
       await expect(staleLibrary.getByText("1 capture", { exact: false })).toBeVisible();
-      const state = await appRequest<{ workspace: { vaults: readonly unknown[] } }>(staleLibrary, {
+      const state = await appRequest<{
+        workspace: { vaults: readonly unknown[] };
+      }>(staleLibrary, {
         type: "GetState",
       });
       expect(state.workspace.vaults).toHaveLength(1);
@@ -1584,7 +1614,9 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
       });
       await firstLibrary.keyboard.press("Escape");
       const groups = await appRequest<
-        readonly { readonly captures: readonly { readonly bundleId: string }[] }[]
+        readonly {
+          readonly captures: readonly { readonly bundleId: string }[];
+        }[]
       >(firstLibrary, { type: "ListLibrary", expectedVaultId: vaultId });
       const bundleId = groups.flatMap((group) => group.captures).at(0)?.bundleId;
       if (bundleId === undefined) throw new Error("The switched Capture is unavailable.");
@@ -1605,9 +1637,9 @@ test("takes a first-time self-hosted user through capture, sync, Vacuum, and sta
         )
         .toBe(reliefEstimate.candidateArtifacts - 1);
       await installSavedArtifactProbe(firstLibrary);
-      const primary = firstLibrary
-        .locator(".artifact-row")
-        .filter({ has: firstLibrary.locator("strong", { hasText: /^MHTML$/u }) });
+      const primary = firstLibrary.locator(".artifact-row").filter({
+        has: firstLibrary.locator("strong", { hasText: /^MHTML$/u }),
+      });
       await primary.getByRole("button", { name: "Download" }).click();
       await expect.poll(async () => (await savedArtifactProbe(firstLibrary)).closed).toBe(true);
       await expect
@@ -1726,7 +1758,9 @@ test("fast-forwards a stale local Replica from a candidate successor", async ({
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open("awsm-vault");
         request.addEventListener("success", () => resolveDatabase(request.result), { once: true });
-        request.addEventListener("error", () => reject(request.error), { once: true });
+        request.addEventListener("error", () => reject(request.error), {
+          once: true,
+        });
       });
       const transaction = database.transaction("objects", "readonly");
       const values = await new Promise<readonly { objectId?: string; objectType?: string }[]>(
@@ -1736,11 +1770,16 @@ test("fast-forwards a stale local Replica from a candidate successor", async ({
             "success",
             () =>
               resolveValues(
-                request.result as readonly { objectId?: string; objectType?: string }[],
+                request.result as readonly {
+                  objectId?: string;
+                  objectType?: string;
+                }[],
               ),
             { once: true },
           );
-          request.addEventListener("error", () => reject(request.error), { once: true });
+          request.addEventListener("error", () => reject(request.error), {
+            once: true,
+          });
         },
       );
       database.close();
@@ -2127,18 +2166,21 @@ test("renders Account onboarding, signup, progress, success, and settings states
       path: testInfo.outputPath("account-server-choice-narrow.png"),
     });
     await client.popup.setViewportSize({ width: 420, height: 760 });
-    await client.popup
+    const signupOpened = client.context.waitForEvent("page");
+    await client.popup.getByRole("link", { name: "Set up synchronization" }).click();
+    const signup = await signupOpened;
+    await signup.waitForLoadState("domcontentloaded");
+    await signup.getByText("Use a self-hosted server", { exact: true }).click();
+    await signup
       .getByRole("textbox", { name: "Self-hosted server origin" })
       .fill("http://127.0.0.1:3300");
-    await client.popup.getByRole("button", { name: "Use self-hosted server" }).click();
+    await signup.getByRole("button", { name: "Use self-hosted server" }).click();
     await expect(client.popup.getByRole("heading", { name: "Sign in" })).toBeVisible();
     await client.popup.getByRole("textbox", { name: "Email" }).focus();
     await client.popup.screenshot({
       path: testInfo.outputPath("account-login-focus.png"),
     });
 
-    const signup = await client.context.newPage();
-    await signup.goto(`chrome-extension://${client.extensionId}/signup.html`);
     await signup.setViewportSize({ width: 720, height: 900 });
     await expect(signup.getByRole("heading", { name: "Create your Account" })).toBeVisible();
     await signup.getByRole("textbox", { name: "Email" }).focus();
@@ -2169,7 +2211,7 @@ test("renders Account onboarding, signup, progress, success, and settings states
       path: testInfo.outputPath("account-signup-progress.png"),
     });
     await expect(signup.getByRole("status")).toHaveText(
-      "Account created. You may close this tab.",
+      "Account created. Returning to your page…",
       {
         timeout: 90_000,
       },
@@ -2191,6 +2233,52 @@ test("renders Account onboarding, signup, progress, success, and settings states
     await library.screenshot({
       path: testInfo.outputPath("account-settings-narrow.png"),
     });
+    await library
+      .getByRole("textbox", { name: "Change synchronization server" })
+      .fill("http://127.0.0.1:3300");
+    await library.getByLabel(/verify and reconcile the candidate/u).check();
+    await library.getByRole("button", { name: "Change server" }).click();
+    await expect(
+      library.getByText("Enter a different synchronization server. This server is already active."),
+    ).toBeVisible();
+    await library.getByRole("button", { name: "Reset this device" }).click();
+    const resetDialog = library.getByRole("dialog", {
+      name: "Reset this device?",
+    });
+    await expect(resetDialog).toBeVisible();
+    await library.screenshot({
+      path: testInfo.outputPath("account-reset-narrow.png"),
+    });
+    await library.setViewportSize({ width: 900, height: 760 });
+    await library.screenshot({
+      path: testInfo.outputPath("account-reset-wide.png"),
+    });
+    const resetConfirmation = resetDialog.getByRole("textbox", {
+      name: 'Type "RESET" to continue',
+    });
+    const resetButton = resetDialog.getByRole("button", {
+      name: "Permanently reset this device",
+    });
+    await expect(resetButton).toBeDisabled();
+    await resetConfirmation.fill("RESET");
+    await expect(resetButton).toBeEnabled();
+    await resetButton.click();
+    await expect(resetDialog.getByRole("status")).toContainText("Local data deleted", {
+      timeout: 60_000,
+    });
+    await expect
+      .poll(() =>
+        library.evaluate(async () => ({
+          databases: (await indexedDB.databases()).map((database) => database.name),
+          files: await (async () => {
+            const names: string[] = [];
+            for await (const [name] of (await navigator.storage.getDirectory()).entries())
+              names.push(name);
+            return names;
+          })(),
+        })),
+      )
+      .toEqual({ databases: [], files: [] });
   } finally {
     await client.context.close();
   }
@@ -2416,7 +2504,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     const popup = await extensionPopup(context, extensionId);
     await popup.setViewportSize({ width: 360, height: 600 });
     await chooseLocalOnlyOnFirstLaunch(popup);
-    await popup.screenshot({ path: testInfo.outputPath("popup-onboarding.png") });
+    await popup.screenshot({
+      path: testInfo.outputPath("popup-onboarding.png"),
+    });
     await popup.locator("body").press("Tab");
     await expect(popup.getByRole("textbox", { name: "Vault name" })).toBeFocused();
     await popup.keyboard.press("Tab");
@@ -2501,7 +2591,9 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     });
     await expect(previewTimer).toBeVisible();
     await expect(previewTimer).toHaveAttribute("aria-valuemax", "8000");
-    await completedPopup.screenshot({ path: testInfo.outputPath("popup-recent-capture.png") });
+    await completedPopup.screenshot({
+      path: testInfo.outputPath("popup-recent-capture.png"),
+    });
     await completedPopup.close();
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
     const reopenedPopup = await extensionPopup(context, extensionId);
@@ -2663,7 +2755,7 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     await library.locator(".version").first().click();
     await expect(library.getByRole("heading", { name: "AWSM tall fixture" })).toBeVisible();
     const image = library.getByRole("img", { name: /Full-page screenshot/u });
-    await expect(image).toBeVisible();
+    await expect(image).toBeVisible({ timeout: 60_000 });
     await expect
       .poll(() => image.evaluate((node) => (node as HTMLImageElement).naturalWidth))
       .toBeGreaterThan(0);
@@ -2673,6 +2765,39 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
     });
     expect(dimensions.height).toBeGreaterThan(1_800);
     expect(dimensions.width).toBeGreaterThan(500);
+    const imageSourceBeforeSelection = await image.getAttribute("src");
+    const selectedTitle = await library
+      .getByRole("heading", { name: "AWSM tall fixture" })
+      .evaluate((heading) => {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(heading);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        return selection?.toString();
+      });
+    expect(selectedTitle).toBe("AWSM tall fixture");
+    await worker.evaluate(async () => {
+      await (
+        globalThis as unknown as {
+          chrome: {
+            runtime: { sendMessage(message: unknown): Promise<unknown> };
+          };
+        }
+      ).chrome.runtime.sendMessage({ type: "AppStateChanged" });
+    });
+    await library.waitForTimeout(1_000);
+    await expect
+      .poll(() => library.evaluate(() => window.getSelection()?.toString()))
+      .toBe("AWSM tall fixture");
+    await expect(image).toHaveAttribute("src", imageSourceBeforeSelection ?? "");
+    await expect(library.getByText("Loading screenshot…", { exact: true })).toHaveCount(0);
+    await library.evaluate(() => window.getSelection()?.removeAllRanges());
+    await library.waitForTimeout(1_000);
+    await expect(image).toBeVisible({ timeout: 60_000 });
+    await expect(library.getByText("Loading screenshot…", { exact: true })).toHaveCount(0, {
+      timeout: 60_000,
+    });
     const colors = await image.evaluate(async (node) => {
       const imageNode = node as HTMLImageElement;
       const bitmap = await createImageBitmap(await (await fetch(imageNode.src)).blob());
@@ -2841,7 +2966,11 @@ test("captures MHTML and a full-page screenshot, then opens and downloads them o
         library.evaluate(async () => {
           const extensionApi = (
             globalThis as unknown as {
-              chrome: { downloads: { search(query: unknown): Promise<readonly unknown[]> } };
+              chrome: {
+                downloads: {
+                  search(query: unknown): Promise<readonly unknown[]>;
+                };
+              };
             }
           ).chrome;
           const downloads = await extensionApi.downloads.search({
@@ -3059,7 +3188,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     await desktop.goto(
       `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
     );
-    const localScreenshot = desktop.getByRole("img", { name: /Full-page screenshot/u });
+    const localScreenshot = desktop.getByRole("img", {
+      name: /Full-page screenshot/u,
+    });
     await expect(localScreenshot).toBeVisible();
     const originalScreenshotPixels = await localScreenshot.evaluate(async (node) => {
       const image = node as HTMLImageElement;
@@ -3090,7 +3221,10 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     const estimate = await appRequest<{
       readonly candidateArtifacts: number;
       readonly candidateBytes: number;
-    }>(desktop, { type: "GetStorageReliefEstimate", expectedVaultId: client.vaultId });
+    }>(desktop, {
+      type: "GetStorageReliefEstimate",
+      expectedVaultId: client.vaultId,
+    });
     expect(estimate.candidateArtifacts).toBeGreaterThanOrEqual(2);
     expect(estimate.candidateBytes).toBeGreaterThan(0);
     await expect(desktop.getByRole("heading", { name: "Device storage" })).toBeVisible();
@@ -3115,7 +3249,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     expect(confirmation).toContain("verify each encrypted server copy first");
     expect(confirmation).toContain("only copy");
     await expect
-      .poll(async () => (await faultControl(desktop, "status")).reached, { timeout: 120_000 })
+      .poll(async () => (await faultControl(desktop, "status")).reached, {
+        timeout: 120_000,
+      })
       .toBe(true);
     await expect(
       desktop.getByRole("progressbar", { name: "Storage cleanup progress" }),
@@ -3161,7 +3297,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     await expect(narrow.getByRole("heading", { name: "Device storage" })).toBeFocused();
     await expect(desktop.getByRole("status")).toContainText("Storage cleanup completed");
     await expect(narrow.getByRole("status")).toContainText("Storage cleanup completed");
-    const remoteState = await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(desktop, {
+    const remoteState = await appRequest<{
+      readonly remoteOnlyArtifactCount?: number;
+    }>(desktop, {
       type: "GetState",
     });
     expect(remoteState.remoteOnlyArtifactCount).toBe(estimate.candidateArtifacts);
@@ -3198,7 +3336,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     ).toBe(estimate.candidateArtifacts);
 
     await desktop.getByRole("button", { name: "Export Vault" }).click();
-    const exportDialog = desktop.getByRole("dialog", { name: "Export encrypted Vault" });
+    const exportDialog = desktop.getByRole("dialog", {
+      name: "Export encrypted Vault",
+    });
     await exportDialog.getByLabel("Export passphrase", { exact: true }).fill(password);
     await exportDialog.getByLabel("Confirm export passphrase").fill(password);
     await exportDialog.getByRole("button", { name: "Export Vault" }).click();
@@ -3235,7 +3375,12 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
                 readonly limit: 1;
                 readonly orderBy: readonly ["-startTime"];
                 readonly state: "complete";
-              }): Promise<readonly { readonly filename?: string; readonly mime?: string }[]>;
+              }): Promise<
+                readonly {
+                  readonly filename?: string;
+                  readonly mime?: string;
+                }[]
+              >;
             };
           };
         }
@@ -3361,10 +3506,15 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
     const repeatEstimate = await appRequest<{
       readonly candidateArtifacts: number;
       readonly candidateBytes: number;
-    }>(desktop, { type: "GetStorageReliefEstimate", expectedVaultId: client.vaultId });
+    }>(desktop, {
+      type: "GetStorageReliefEstimate",
+      expectedVaultId: client.vaultId,
+    });
     expect(repeatEstimate).toEqual(estimate);
     const priorReliefJobId = (
-      await appRequest<{ readonly latestStorageReliefJob?: { readonly jobId: string } }>(desktop, {
+      await appRequest<{
+        readonly latestStorageReliefJob?: { readonly jobId: string };
+      }>(desktop, {
         type: "GetState",
       })
     ).latestStorageReliefJob?.jobId;
@@ -3403,7 +3553,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
       .poll(
         async () =>
           (
-            await appRequest<{ readonly account: { readonly accountState: string } }>(narrow, {
+            await appRequest<{
+              readonly account: { readonly accountState: string };
+            }>(narrow, {
               type: "GetState",
             })
           ).account.accountState,
@@ -3414,9 +3566,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
       `chrome-extension://${client.extensionId}/library.html?bundleId=${bundleId}`,
     );
     await expect(desktop.getByText("Sign in to retrieve this screenshot.")).toBeVisible();
-    const compactArtifact = desktop
-      .locator(".artifact-row")
-      .filter({ has: desktop.locator("strong", { hasText: /^TEXT EXTRACTED$/u }) });
+    const compactArtifact = desktop.locator(".artifact-row").filter({
+      has: desktop.locator("strong", { hasText: /^TEXT EXTRACTED$/u }),
+    });
     await compactArtifact.getByRole("button", { name: "Inspect" }).click();
     await expect(desktop.locator(".artifact-inspection")).toBeVisible();
 
@@ -3468,7 +3620,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
       await importedLibrary.goto(
         `chrome-extension://${imported.extensionId}/library.html?import=1`,
       );
-      const importDialog = importedLibrary.getByRole("dialog", { name: "Import encrypted Vault" });
+      const importDialog = importedLibrary.getByRole("dialog", {
+        name: "Import encrypted Vault",
+      });
       await importDialog.getByLabel("Vault Package").setInputFiles(exportedPackagePath);
       await importDialog.getByRole("button", { name: "Continue" }).click();
       await importDialog.getByLabel("Export passphrase").fill(password);
@@ -3492,9 +3646,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
         `chrome-extension://${imported.extensionId}/library.html?bundleId=${bundleId}`,
       );
       await installSavedArtifactProbe(importedLibrary);
-      const importedPrimary = importedLibrary
-        .locator(".artifact-row")
-        .filter({ has: importedLibrary.locator("strong", { hasText: /^MHTML$/u }) });
+      const importedPrimary = importedLibrary.locator(".artifact-row").filter({
+        has: importedLibrary.locator("strong", { hasText: /^MHTML$/u }),
+      });
       await importedPrimary.getByRole("button", { name: "Download" }).click();
       await expect.poll(async () => (await savedArtifactProbe(importedLibrary)).closed).toBe(true);
       expect(Uint8Array.from((await savedArtifactProbe(importedLibrary)).chunks.flat())).toEqual(
@@ -3531,14 +3685,22 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
           expectedVaultId,
           bundleId: expectedBundleId,
           role: "SCREENSHOT_FULL",
-        })) as { ok: boolean; value?: { sessionId: string }; error?: { id: string } };
+        })) as {
+          ok: boolean;
+          value?: { sessionId: string };
+          error?: { id: string };
+        };
         if (!opened.ok || opened.value === undefined) return { stage: "open", response: opened };
         for (;;) {
           const next = (await send({
             type: "ReadArtifactChunk",
             expectedVaultId,
             sessionId: opened.value.sessionId,
-          })) as { ok: boolean; value?: { done: boolean }; error?: { id: string } };
+          })) as {
+            ok: boolean;
+            value?: { done: boolean };
+            error?: { id: string };
+          };
           if (!next.ok) return { stage: "read", response: next };
           if (next.value?.done === true) return { stage: "done", response: next };
         }
@@ -3549,7 +3711,9 @@ test("frees synchronized browser storage and restores remote Artifacts on demand
       stage: "open",
       response: {
         ok: false,
-        error: expect.objectContaining({ id: "REMOTE_ARTIFACT_INTEGRITY_FAILED" }),
+        error: expect.objectContaining({
+          id: "REMOTE_ARTIFACT_INTEGRITY_FAILED",
+        }),
       },
     });
     await desktop.goto(
@@ -3733,11 +3897,17 @@ test("resumes every packaged storage-relief removal boundary and preserves parti
         async () =>
           (
             await appRequest<{
-              readonly latestStorageReliefJob?: { readonly jobId: string; readonly state: string };
+              readonly latestStorageReliefJob?: {
+                readonly jobId: string;
+                readonly state: string;
+              };
             }>(library, { type: "GetState" })
           ).latestStorageReliefJob,
       )
-      .toMatchObject({ jobId: running.latestStorageReliefJob.jobId, state: "Cancelled" });
+      .toMatchObject({
+        jobId: running.latestStorageReliefJob.jobId,
+        state: "Cancelled",
+      });
     expect(
       (
         await appRequest<{ readonly remoteOnlyArtifactCount?: number }>(library, {
@@ -3858,7 +4028,9 @@ test("renders export-first stale Replica discard at desktop and narrow widths", 
       });
     }, state.workspace.activeVaultId);
     await dialog
-      .getByRole("button", { name: "Discard stale local Replica and use server data" })
+      .getByRole("button", {
+        name: "Discard stale local Replica and use server data",
+      })
       .click();
     await expect(dialog.getByText(/active Vault changed|context changed/iu)).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Cancel" })).toBeEnabled();
@@ -3878,7 +4050,9 @@ test("renders export-first stale Replica discard at desktop and narrow widths", 
     await busyDialog.getByLabel(/declining the recommended encrypted Export/u).check();
     await busyDialog.getByLabel(/completely overwritten by server data/u).check();
     await busyDialog
-      .getByRole("button", { name: "Discard stale local Replica and use server data" })
+      .getByRole("button", {
+        name: "Discard stale local Replica and use server data",
+      })
       .click();
     await expect(busyDialog.getByText(/Keep this page open/u)).toBeVisible();
     await busyLibrary.screenshot({
@@ -4172,7 +4346,9 @@ test("exports a Vault and imports it into a fresh Workspace", async ({ browserNa
       });
     await faultControl(library, "release");
     await library.getByRole("button", { name: "Export Vault" }).click();
-    const retryDialog = library.getByRole("dialog", { name: "Export encrypted Vault" });
+    const retryDialog = library.getByRole("dialog", {
+      name: "Export encrypted Vault",
+    });
     await retryDialog
       .getByLabel("Export passphrase", { exact: true })
       .fill("re-exported package passphrase");

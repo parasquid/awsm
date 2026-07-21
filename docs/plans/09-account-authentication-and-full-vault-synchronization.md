@@ -199,6 +199,10 @@ gates.
   token.
 - Signing out never locks or deletes locally available Vault content. If heavy wrappers are
   remote-only, warn that access to them requires signing in again.
+- `Reset this device` is a separate typed-confirmation action. It revokes the reachable active
+  session, stops local Jobs and transport, releases in-memory keys, and deletes every extension-local
+  database, Vault, key, Artifact wrapper, setting, and temporary file before restarting onboarding.
+  It never deletes or mutates the server-side Account or Vault.
 
 ## 3.6 Offline behavior
 
@@ -278,7 +282,8 @@ Preserve these invariants:
 
 ## 5.1 Password input
 
-- Accept at least 12 Unicode code points and at most 1,024 UTF-8 bytes.
+- Require a non-empty password in the signup UI. The Account cryptographic boundary applies no
+  minimum, maximum, or complexity policy before Argon2id derivation.
 - Do not trim, normalize, case-fold, or otherwise transform the password.
 - Confirm equality in the signup UI before derivation.
 - Clear DOM fields immediately after dispatch and release all Runtime string references in
@@ -304,7 +309,8 @@ For the sole canonical Account password scheme:
 - salt: random 16 bytes chosen by the extension during signup;
 - operations: `3`;
 - memory: `67_108_864` bytes (64 MiB);
-- maximum password input: 1,024 UTF-8 bytes.
+- password input: the exact non-empty string accepted by the signup UI, without an additional
+  length or complexity transformation;
 
 The server stores and returns the public salt and parameters but cannot choose alternate values.
 Clients reject any other algorithm, output size, operations count, or memory size in this slice.
@@ -1053,7 +1059,7 @@ signup/login/refresh through public APIs.
 
 ## Task 5: Extension Account cryptography and persistence
 
-**RED:** cover password bounds, KDF vectors, domain separation, envelope/slot substitution, local
+**RED:** cover non-empty Account passwords, KDF vectors, domain separation, envelope/slot substitution, local
 non-exportable key validation, restart unlock, logout erasure, and decoder strictness.
 
 **GREEN:** implement Account crypto/services and sole canonical IndexedDB records.

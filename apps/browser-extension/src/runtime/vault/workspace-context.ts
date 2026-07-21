@@ -106,6 +106,13 @@ export class WorkspaceContextManager {
     await this.dependencies.notify({ type: "AppStateChanged" });
   }
 
+  async shutdown(): Promise<void> {
+    const previous = this.context;
+    this.context = undefined;
+    previous?.vault.releaseRootKey();
+    await previous?.driver.close().catch(() => undefined);
+  }
+
   active(): ActiveVaultContext | undefined {
     return this.context;
   }

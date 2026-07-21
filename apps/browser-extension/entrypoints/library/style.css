@@ -563,6 +563,16 @@ main {
 .settings-actions {
   margin-bottom: 26px;
 }
+.reset-device {
+  margin-top: 12px;
+  border: 1px solid #d7b7b3;
+  border-radius: 10px;
+  padding: 16px;
+  background: #fff8f6;
+}
+.reset-device h3 {
+  margin-top: 0;
+}
 .warning-confirmation {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

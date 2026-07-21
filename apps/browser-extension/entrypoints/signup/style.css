@@ -60,6 +60,31 @@ fieldset {
   gap: 14px;
 }
 
+#server-choice {
+  display: grid;
+  gap: 16px;
+}
+
+#server-choice[hidden] {
+  display: none;
+}
+
+details {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: var(--surface-subtle);
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+#server-form {
+  margin-top: 14px;
+}
+
 fieldset {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -74,7 +99,8 @@ label {
 }
 input[type="email"],
 input[type="password"],
-input[type="text"] {
+input[type="text"],
+input[type="url"] {
   min-height: 44px;
   border: 1px solid #aeb6c1;
   border-radius: 8px;

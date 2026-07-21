@@ -35,6 +35,11 @@ describe("application request routing", () => {
     expect(isAppRequest({ type: "WakeSynchronization", reason: "poll" })).toBe(false);
   });
 
+  it("accepts only the fieldless local-device reset", () => {
+    expect(isAppRequest({ type: "ResetLocalDevice" })).toBe(true);
+    expect(isAppRequest({ type: "ResetLocalDevice", deleteServerData: true })).toBe(false);
+  });
+
   it("routes only canonical Server Switch Commands and rejects the superseded change Command", () => {
     expect(
       isAppRequest({
@@ -60,7 +65,10 @@ describe("application request routing", () => {
     expect(isAppRequest({ type: "CancelServerSwitch", jobId: "job" })).toBe(true);
     expect(isAppRequest({ type: "RetryServerSwitch", jobId: "job" })).toBe(true);
     expect(
-      isAppRequest({ type: "ChangeSyncServer", serverOrigin: "https://candidate.example.test" }),
+      isAppRequest({
+        type: "ChangeSyncServer",
+        serverOrigin: "https://candidate.example.test",
+      }),
     ).toBe(false);
     expect(
       isAppRequest({
@@ -69,17 +77,29 @@ describe("application request routing", () => {
       }),
     ).toBe(false);
     expect(
-      isAppRequest({ type: "CancelServerSwitch", jobId: "job", candidateOrigin: "leak" }),
+      isAppRequest({
+        type: "CancelServerSwitch",
+        jobId: "job",
+        candidateOrigin: "leak",
+      }),
     ).toBe(false);
   });
 
   it("routes scoped Export and cancellation requests", () => {
     expect(
-      isAppRequest({ type: "ExportVault", expectedVaultId: "vault", passphrase: "secret" }),
+      isAppRequest({
+        type: "ExportVault",
+        expectedVaultId: "vault",
+        passphrase: "secret",
+      }),
     ).toBe(true);
     expect(isAppRequest({ type: "ExportVault", expectedVaultId: "vault" })).toBe(false);
     expect(
-      isAppRequest({ type: "CancelVaultExport", expectedVaultId: "vault", jobId: "job" }),
+      isAppRequest({
+        type: "CancelVaultExport",
+        expectedVaultId: "vault",
+        jobId: "job",
+      }),
     ).toBe(true);
   });
 
@@ -105,7 +125,11 @@ describe("application request routing", () => {
     expect(isAppRequest({ type: "BeginVaultImport", sourceByteLength: 42 })).toBe(true);
     expect(isAppRequest({ type: "BeginVaultImport", sourceByteLength: -1 })).toBe(false);
     expect(
-      isAppRequest({ type: "ReportVaultImportProgress", jobId: "job", acquiredBytes: 21 }),
+      isAppRequest({
+        type: "ReportVaultImportProgress",
+        jobId: "job",
+        acquiredBytes: 21,
+      }),
     ).toBe(true);
     expect(isAppRequest({ type: "CompleteVaultImportStaging", jobId: "job" })).toBe(true);
     expect(isAppRequest({ type: "ImportVault", jobId: "job", passphrase: "secret" })).toBe(true);
@@ -138,7 +162,11 @@ describe("application request routing", () => {
       }),
     ).toBe(false);
     expect(
-      isAppRequest({ type: "ReadArtifactChunk", expectedVaultId: "vault", sessionId: "session" }),
+      isAppRequest({
+        type: "ReadArtifactChunk",
+        expectedVaultId: "vault",
+        sessionId: "session",
+      }),
     ).toBe(true);
     expect(isAppRequest({ type: "ReadArtifactChunk", expectedVaultId: "vault" })).toBe(false);
   });

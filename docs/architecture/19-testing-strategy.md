@@ -379,6 +379,9 @@ Examples:
 - Firefox
 
 Tests should account for browser-specific API differences.
+Capture Adapter coverage should include a script-heavy page that remains loading while extraction
+runs and prove structured content and normalized text complete without a producer-disconnect
+warning.
 
 ---
 
@@ -403,7 +406,9 @@ Vault Package coverage SHALL independently recover Complete packages, validate p
 omissions, reject compact-Artifact omission and false coverage, force ZIP64 on small fixtures, and
 exercise counters beyond 4 GiB without proportional memory use. Browser tests SHALL keep at least
 two surfaces open for invalidation and visually inspect Artifact resting, loading, success, failure,
-focus, and narrow states.
+focus, and narrow states. Library-detail coverage SHALL prove that the current `bundleId` route,
+loaded screenshot, and non-collapsed text selection survive a state invalidation; after selection
+collapses, the deferred reconciliation SHALL complete from the same detail route.
 
 The packaged-Chrome Account proof SHALL include one cold first-use journey through the real
 self-hosted Coordination Server. Through visible extension controls it SHALL choose the server,

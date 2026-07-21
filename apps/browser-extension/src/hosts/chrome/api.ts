@@ -35,7 +35,10 @@ function firstResult<T>(results: readonly Browser.scripting.InjectionResult<T>[]
 
 export class ChromeCaptureHost implements CaptureHost {
   async getActiveTab(): Promise<{ readonly id?: number; readonly url?: string } | undefined> {
-    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await browser.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
     return tab === undefined
       ? undefined
       : {
@@ -122,104 +125,39 @@ export class ChromeCaptureHost implements CaptureHost {
   }
 
   async collectStructuredContent(tabId: number): Promise<readonly StructuredBlockV1[]> {
-    const token = crypto.randomUUID();
-    const name = `awsm:content:${token}`;
-    const blocks: StructuredBlockV1[] = [];
-    let approximateBytes = 0;
-    const completed = new Promise<void>((resolve, reject) => {
-      const listener = (port: Browser.runtime.Port): void => {
-        if (port.name !== name) return;
-        browser.runtime.onConnect.removeListener(listener);
-        let done = false;
-        port.onMessage.addListener((message: unknown) => {
-          if (typeof message !== "object" || message === null) {
-            port.disconnect();
-            return;
-          }
-          if ("blocks" in message && Array.isArray(message.blocks)) {
-            approximateBytes += JSON.stringify(message.blocks).length * 2;
-            if (approximateBytes > 8 * 1024 * 1024) {
-              port.disconnect();
-              reject(new Error("Structured content exceeds its capture bound."));
-              return;
-            }
-            blocks.push(...(message.blocks as StructuredBlockV1[]));
-            port.postMessage({ acknowledged: true });
-          } else if ("done" in message && message.done === true) {
-            done = true;
-            port.postMessage({ acknowledged: true });
-            resolve();
-          } else port.disconnect();
-        });
-        port.onDisconnect.addListener(() => {
-          if (!done) reject(new Error("Structured content producer disconnected."));
-        });
-      };
-      browser.runtime.onConnect.addListener(listener);
-    });
-    await browser.scripting.executeScript({
+    const results = await browser.scripting.executeScript({
       target: { tabId },
-      args: [name],
-      func: async (portName: string): Promise<void> => {
-        interface InjectedPort {
-          postMessage(value: unknown): void;
-          disconnect(): void;
-          readonly onMessage: {
-            addListener(listener: (message: unknown) => void): void;
-            removeListener(listener: (message: unknown) => void): void;
-          };
-          readonly onDisconnect: {
-            addListener(listener: () => void): void;
-            removeListener(listener: () => void): void;
-          };
-        }
-        const extensionApi = (
-          globalThis as unknown as {
-            chrome: { runtime: { connect(value: { name: string }): InjectedPort } };
-          }
-        ).chrome;
-        const port = extensionApi.runtime.connect({ name: portName });
-        const send = (value: unknown): Promise<void> =>
-          new Promise((resolve, reject) => {
-            const disconnected = (): void => reject(new Error("content collector disconnected"));
-            const acknowledged = (message: unknown): void => {
-              if (
-                typeof message === "object" &&
-                message !== null &&
-                "acknowledged" in message &&
-                message.acknowledged === true
-              ) {
-                port.onDisconnect.removeListener(disconnected);
-                port.onMessage.removeListener(acknowledged);
-                resolve();
-              }
-            };
-            port.onDisconnect.addListener(disconnected);
-            port.onMessage.addListener(acknowledged);
-            port.postMessage(value);
-          });
-        let batch: StructuredBlockV1[] = [];
+      func: (): StructuredBlockV1[] => {
+        const blocks: StructuredBlockV1[] = [];
+        let approximateBytes = 0;
         let blockIndex = 0;
         const links = (candidate: HTMLElement) =>
           [...candidate.querySelectorAll<HTMLAnchorElement>("a[href]")].flatMap((anchor) => {
             const url = new URL(anchor.href);
             return url.protocol === "http:" || url.protocol === "https:"
-              ? [{ text: (anchor.innerText || anchor.textContent || "").trim(), href: url.href }]
+              ? [
+                  {
+                    text: (anchor.innerText || anchor.textContent || "").trim(),
+                    href: url.href,
+                  },
+                ]
               : [];
           });
-        const append = async (block: StructuredBlockV1): Promise<void> => {
-          batch.push(block);
-          if (batch.length === 64) {
-            await send({ blocks: batch });
-            batch = [];
-          }
+        const append = (block: StructuredBlockV1): void => {
+          approximateBytes += JSON.stringify(block).length * 2;
+          if (approximateBytes > 8 * 1024 * 1024)
+            throw new Error("Structured content exceeds its capture bound.");
+          blocks.push(block);
         };
         const candidates = document.querySelectorAll("h1,h2,h3,h4,h5,h6,p,blockquote,li,pre,table");
         for (const candidate of candidates) {
           if (!(candidate instanceof HTMLElement)) continue;
           if (
             candidate.closest("[hidden],[aria-hidden='true']") !== null ||
-            !candidate.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+            !candidate.checkVisibility({
+              checkOpacity: true,
+              checkVisibilityCSS: true,
+            })
           )
             continue;
           const text = (candidate.innerText || candidate.textContent || "").trim();
@@ -228,7 +166,7 @@ export class ChromeCaptureHost implements CaptureHost {
           const blockId = `B${String(blockIndex).padStart(6, "0")}`;
           const tag = candidate.tagName.toLowerCase();
           if (/^h[1-6]$/u.test(tag)) {
-            await append({
+            append({
               blockVersion: 1,
               blockId,
               kind: "Heading",
@@ -237,7 +175,7 @@ export class ChromeCaptureHost implements CaptureHost {
               links: links(candidate),
             });
           } else if (tag === "blockquote") {
-            await append({
+            append({
               blockVersion: 1,
               blockId,
               kind: "Quote",
@@ -252,7 +190,7 @@ export class ChromeCaptureHost implements CaptureHost {
               parent = parent.parentElement?.closest("li")
             )
               depth += 1;
-            await append({
+            append({
               blockVersion: 1,
               blockId,
               kind: "ListItem",
@@ -262,16 +200,16 @@ export class ChromeCaptureHost implements CaptureHost {
               links: links(candidate),
             });
           } else if (tag === "pre") {
-            await append({ blockVersion: 1, blockId, kind: "Preformatted", text });
+            append({ blockVersion: 1, blockId, kind: "Preformatted", text });
           } else if (tag === "table") {
             const rows = [...candidate.querySelectorAll("tr")]
               .map((row) =>
                 [...row.querySelectorAll("th,td")].map((cell) => (cell.textContent ?? "").trim()),
               )
               .filter((row) => row.length > 0);
-            if (rows.length > 0) await append({ blockVersion: 1, blockId, kind: "Table", rows });
+            if (rows.length > 0) append({ blockVersion: 1, blockId, kind: "Table", rows });
           } else {
-            await append({
+            append({
               blockVersion: 1,
               blockId,
               kind: "Paragraph",
@@ -280,13 +218,10 @@ export class ChromeCaptureHost implements CaptureHost {
             });
           }
         }
-        if (batch.length > 0) await send({ blocks: batch });
-        await send({ done: true });
-        port.disconnect();
+        return blocks;
       },
     });
-    await completed;
-    return blocks;
+    return firstResult(results);
   }
 }
 
@@ -360,7 +295,9 @@ export class ChromeScreenshotHost implements ScreenshotHost {
   }
 
   async captureVisible(): Promise<Uint8Array> {
-    const dataUrl = await browser.tabs.captureVisibleTab(this.windowId, { format: "png" });
+    const dataUrl = await browser.tabs.captureVisibleTab(this.windowId, {
+      format: "png",
+    });
     return new Uint8Array(await (await fetch(dataUrl)).arrayBuffer());
   }
 
@@ -368,7 +305,9 @@ export class ChromeScreenshotHost implements ScreenshotHost {
     plan: ScreenshotPlan,
     tiles: readonly CapturedTile[],
   ): Promise<import("./screenshot").StitchedScreenshot> {
-    const contexts = await browser.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
+    const contexts = await browser.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+    });
     if (contexts.length === 0) {
       await browser.offscreen.createDocument({
         url: "offscreen.html",
@@ -376,7 +315,9 @@ export class ChromeScreenshotHost implements ScreenshotHost {
         justification: "Stitch screenshot tiles and encode lossy WebP previews.",
       });
     }
-    const port = browser.runtime.connect({ name: `awsm:screenshot:${crypto.randomUUID()}` });
+    const port = browser.runtime.connect({
+      name: `awsm:screenshot:${crypto.randomUUID()}`,
+    });
     let requestSequence = 0;
     const send = (message: Record<string, unknown>): Promise<void> => {
       requestSequence += 1;
@@ -447,7 +388,9 @@ export class ChromeScreenshotHost implements ScreenshotHost {
       await completed;
       return {
         webpBlob: new Blob(outputParts.get("Full"), { type: "image/webp" }),
-        thumbnailWebpBlob: new Blob(outputParts.get("Thumbnail"), { type: "image/webp" }),
+        thumbnailWebpBlob: new Blob(outputParts.get("Thumbnail"), {
+          type: "image/webp",
+        }),
       };
     } finally {
       port.disconnect();

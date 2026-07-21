@@ -13,6 +13,12 @@ export class ExportAuthenticationError extends Error {
   }
 }
 
+function validateExportPassphrase(passphrase: string): void {
+  const codePoints = Array.from(passphrase).length;
+  const utf8Length = new TextEncoder().encode(passphrase).byteLength;
+  if (codePoints < 12 || utf8Length > 1024) throw new ExportAuthenticationError();
+}
+
 function aad(envelope: Omit<ExportKeyEnvelopeV1, "ciphertext">): Uint8Array {
   return encodeCanonicalCbor([
     envelope.exportKeyEnvelopeVersion,
@@ -40,6 +46,7 @@ export async function createExportKeyEnvelope(input: {
   readonly nonce: Uint8Array;
 }): Promise<ExportKeyEnvelopeV1> {
   if (input.rootKey.byteLength !== 32) throw new ExportAuthenticationError();
+  validateExportPassphrase(input.passphrase);
   const manifestChecksum = await sha256(input.manifestBytes);
   const fields = {
     exportKeyEnvelopeVersion: 1,
@@ -81,6 +88,7 @@ export async function openExportKeyEnvelope(
   manifestBytes: Uint8Array,
   passphrase: string,
 ): Promise<Uint8Array> {
+  validateExportPassphrase(passphrase);
   const actualManifestChecksum = await sha256(manifestBytes);
   if (!bytesEqual(actualManifestChecksum, envelope.manifestChecksum)) {
     throw new ExportAuthenticationError();

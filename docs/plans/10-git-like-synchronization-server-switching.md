@@ -108,11 +108,14 @@ The last three items remain Roadmap work and SHALL NOT be pulled into this imple
   synchronized Vault. If it is locked, use the existing unlock flow.
 - The first form collects only the candidate origin and the existing acknowledgement that changing
   servers changes Account context while retaining local Vault data.
+- The candidate field starts empty rather than repeating the active origin. Submitting the active
+  origin keeps the form open and explains that a different server is required.
 - The Chrome Host requests candidate-origin permission before sending the begin Command.
 - The Runtime canonicalizes and probes `/api/server-information` before persisting candidate state.
 - Invalid origin, denied permission, redirect, network failure, incompatible information, or probe
   timeout leaves the source configuration, credentials, Cable, Job, and synchronization state
-  untouched. Keep the Settings dialog open and show the existing server-selection error.
+  untouched. Keep the Settings dialog open and show the specific server-selection or permission error;
+  never replace these failures with a generic safety message.
 
 ## 3.2 Candidate authentication
 

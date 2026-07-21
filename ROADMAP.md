@@ -94,7 +94,7 @@ Future web scope remains limited to:
 Capture remains extension-only for the first web-client scope. A web Host must never bridge into
 extension-local storage or transfer plaintext outside the encrypted synchronization protocol.
 
-Before promotion, resolve browser support, storage-clear recovery, retention defaults, final-copy
+Before promotion, resolve browser support, web-Host storage-clear recovery, retention defaults, final-copy
 deletion policy, selective Import semantics, quota accounting, and the production threat model.
 Required evidence includes independent cryptographic review, multi-client fault injection,
 bounded-memory transfers beyond 4 GiB, authenticated omission versus corruption tests, lifecycle and

@@ -133,8 +133,13 @@ The Runtime SHALL support:
 - suspend
 - resume
 - recovery
+- an explicit Host-authorized local-device reset
 
 Unexpected termination MUST NOT corrupt persistent state.
+
+Local-device reset SHALL stop background work, release plaintext key material, close storage
+Drivers, and delete all Runtime-owned local authoritative, derived, operational, and temporary
+storage before restart. It SHALL NOT imply or request deletion of synchronized server-side state.
 
 ---
 

@@ -13,7 +13,7 @@ import type {
 import type { ArtifactRole } from "../../src/domain/artifact-graph";
 import { decodeStructuredContentSequence } from "../../src/domain/structured-content";
 import { ChromeVaultImportHost } from "../../src/hosts/chrome/import";
-import { serverPermissionPattern } from "../../src/runtime/account/server";
+import { serverPermissionPattern, validateServerOrigin } from "../../src/runtime/account/server";
 import {
   artifactPresentation,
   captureDropRequest,
@@ -62,6 +62,9 @@ let pageOwnedImportJobId: string | undefined;
 let abortPageOwnedImport: (() => void) | undefined;
 let closePageOwnedImport: (() => void) | undefined;
 let renderedState: AppState | undefined;
+let renderedDetailBundleId: string | undefined;
+let renderedDetailSignature: string | undefined;
+let detailRefreshDeferred = false;
 let staleDiscardDialogOpened = false;
 let libraryOperationError: string | undefined;
 let pendingStorageReliefFocus: "action" | "heading" | undefined;
@@ -283,7 +286,11 @@ function showAccountSettings(): void {
       const authenticate = (type: "LoginServerSwitchCandidate" | "SignupServerSwitchCandidate") => {
         login.disabled = true;
         signup.disabled = true;
-        void sendRequest<AppState>({ type, email: email.value, password: password.value }).then(
+        void sendRequest<AppState>({
+          type,
+          email: email.value,
+          password: password.value,
+        }).then(
           (next) => {
             dialog.close();
             renderVaultBar(next);
@@ -314,7 +321,10 @@ function showAccountSettings(): void {
       retrySwitch.type = "button";
       retrySwitch.addEventListener("click", () => {
         retrySwitch.disabled = true;
-        void sendRequest<AppState>({ type: "RetryServerSwitch", jobId: serverSwitch.jobId }).then(
+        void sendRequest<AppState>({
+          type: "RetryServerSwitch",
+          jobId: serverSwitch.jobId,
+        }).then(
           (next) => {
             dialog.close();
             renderVaultBar(next);
@@ -336,7 +346,10 @@ function showAccountSettings(): void {
       keepSource.type = "button";
       keepSource.addEventListener("click", () => {
         keepSource.disabled = true;
-        void sendRequest<AppState>({ type: "CancelServerSwitch", jobId: serverSwitch.jobId }).then(
+        void sendRequest<AppState>({
+          type: "CancelServerSwitch",
+          jobId: serverSwitch.jobId,
+        }).then(
           (next) => {
             dialog.close();
             renderVaultBar(next);
@@ -352,7 +365,9 @@ function showAccountSettings(): void {
     (form.lastElementChild as HTMLButtonElement).type = "button";
     form.lastElementChild?.addEventListener("click", () => dialog.close());
     installSettingsTabs(form);
-    dialog.addEventListener("close", () => accountSettings.focus(), { once: true });
+    dialog.addEventListener("close", () => accountSettings.focus(), {
+      once: true,
+    });
     dialog.showModal();
     return;
   }
@@ -398,6 +413,22 @@ function showAccountSettings(): void {
     actions.append(logout);
   }
   form.append(actions);
+  const resetSection = element("section", undefined, "reset-device");
+  resetSection.append(
+    element("h3", "Reset this device"),
+    element(
+      "p",
+      "Delete every local Vault, key, capture, setting, and cached file from this browser. Server-side Account and Vault data will not be deleted.",
+      "muted",
+    ),
+  );
+  const reset = element("button", "Reset this device", "danger-action");
+  reset.type = "button";
+  reset.addEventListener("click", () => {
+    dialog.close();
+    showResetDeviceDialog(reset);
+  });
+  resetSection.append(reset);
   const serverLabel = element(
     "label",
     account.configuration.mode === "Configured"
@@ -408,10 +439,7 @@ function showAccountSettings(): void {
   origin.type = "url";
   origin.required = true;
   origin.placeholder = "https://sync.example.com";
-  origin.value =
-    account.configuration.mode === "Configured"
-      ? account.configuration.serverOrigin
-      : "https://awsm.foo";
+  origin.value = account.configuration.mode === "Configured" ? "" : "https://awsm.foo";
   serverLabel.append(origin);
   form.append(serverLabel);
   if (account.configuration.mode === "Configured") {
@@ -440,9 +468,38 @@ function showAccountSettings(): void {
   form.append(controls);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    form.querySelector(".error")?.remove();
+    let candidateOrigin: string;
+    try {
+      candidateOrigin = validateServerOrigin(origin.value);
+    } catch {
+      form.append(
+        element(
+          "p",
+          "Enter an HTTPS AWSM server origin without a path, query, or fragment.",
+          "notice error",
+        ),
+      );
+      origin.focus();
+      return;
+    }
+    if (
+      account.configuration.mode === "Configured" &&
+      candidateOrigin === account.configuration.serverOrigin
+    ) {
+      form.append(
+        element(
+          "p",
+          "Enter a different synchronization server. This server is already active.",
+          "notice error",
+        ),
+      );
+      origin.focus();
+      return;
+    }
     save.disabled = true;
     void browser.permissions
-      .request({ origins: [serverPermissionPattern(origin.value)] })
+      .request({ origins: [serverPermissionPattern(candidateOrigin)] })
       .then((granted) => {
         if (!granted)
           throw new AppClientError(
@@ -452,12 +509,12 @@ function showAccountSettings(): void {
         return account.configuration.mode === "Configured"
           ? sendRequest<AppState>({
               type: "BeginServerSwitch",
-              candidateOrigin: origin.value,
+              candidateOrigin,
               expectedVaultId: expectedVaultId(),
             })
           : sendRequest<AppState>({
               type: "ConfigureSyncServer",
-              serverOrigin: origin.value,
+              serverOrigin: candidateOrigin,
             });
       })
       .then(
@@ -478,9 +535,73 @@ function showAccountSettings(): void {
         },
       );
   });
+  form.append(resetSection);
   installSettingsTabs(form);
-  dialog.addEventListener("close", () => accountSettings.focus(), { once: true });
+  dialog.addEventListener("close", () => accountSettings.focus(), {
+    once: true,
+  });
   dialog.showModal();
+}
+
+function showResetDeviceDialog(returnFocus: HTMLElement): void {
+  const { dialog, form } = dialogShell("Reset this device?");
+  form.append(
+    element(
+      "p",
+      "This permanently deletes all AWSM data stored in this browser, including local Vaults and captures.",
+      "notice error",
+    ),
+    element(
+      "p",
+      "Your synchronization server Account and encrypted server-side Vault are not deleted.",
+    ),
+  );
+  const label = element("label", 'Type "RESET" to continue');
+  const confirmation = element("input");
+  confirmation.autocomplete = "off";
+  confirmation.spellcheck = false;
+  label.append(confirmation);
+  const status = element("p");
+  status.setAttribute("role", "status");
+  const controls = element("div", undefined, "actions");
+  const reset = element("button", "Permanently reset this device", "danger-action");
+  reset.type = "submit";
+  reset.disabled = true;
+  confirmation.addEventListener("input", () => {
+    reset.disabled = confirmation.value !== "RESET";
+  });
+  const cancel = element("button", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => dialog.close());
+  controls.append(reset, cancel);
+  form.append(label, status, controls);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (confirmation.value !== "RESET") return;
+    confirmation.disabled = true;
+    reset.disabled = true;
+    cancel.disabled = true;
+    status.textContent = "Deleting local AWSM data…";
+    void sendRequest<null>({ type: "ResetLocalDevice" }).then(
+      () => {
+        status.textContent = "Local data deleted. Server-side data was not deleted. Restarting…";
+        window.setTimeout(() => browser.runtime.reload(), 1_500);
+      },
+      (error) => {
+        confirmation.disabled = false;
+        cancel.disabled = false;
+        reset.disabled = confirmation.value !== "RESET";
+        status.setAttribute("role", "alert");
+        status.textContent =
+          error instanceof AppClientError
+            ? error.message
+            : "Local AWSM data could not be deleted safely.";
+      },
+    );
+  });
+  dialog.addEventListener("close", () => returnFocus.focus(), { once: true });
+  dialog.showModal();
+  confirmation.focus();
 }
 
 accountSettings.addEventListener("click", showAccountSettings);
@@ -982,7 +1103,10 @@ function showStaleReplicaDiscardDialog(restoreFocus: HTMLElement): void {
     }
     exportButton.disabled = true;
     exportButton.textContent = "Preparing encrypted Export…";
-    const request = sendRequest<{ readonly jobId: string; readonly filename: string }>({
+    const request = sendRequest<{
+      readonly jobId: string;
+      readonly filename: string;
+    }>({
       type: "ExportVault",
       expectedVaultId: active.vaultId,
       passphrase: passphrase.value,
@@ -1730,7 +1854,10 @@ function storageReliefJobPanel(state: AppState): HTMLElement | undefined {
 function storageMaintenance(
   state: AppState,
   estimate: StorageReliefEstimateMessage | undefined,
-  vacuum: { readonly deletedCaptureCount: number; readonly reclaimableBytes: number },
+  vacuum: {
+    readonly deletedCaptureCount: number;
+    readonly reclaimableBytes: number;
+  },
 ): HTMLElement {
   const section = element("section", undefined, "storage-maintenance");
   section.setAttribute("aria-labelledby", "storage-maintenance-title");
@@ -1822,8 +1949,18 @@ function restoreStorageReliefFocus(): void {
   target.focus();
 }
 
+function updateLibraryRoute(bundleId?: string): void {
+  const url = new URL(window.location.href);
+  if (bundleId === undefined) url.searchParams.delete("bundleId");
+  else url.searchParams.set("bundleId", bundleId);
+  window.history.replaceState(null, "", url);
+}
+
 async function loadList(expandedSection?: "Active" | "Deleted"): Promise<void> {
+  updateLibraryRoute();
   if (expandedSection !== undefined) expandedLibrarySection = expandedSection;
+  renderedDetailBundleId = undefined;
+  renderedDetailSignature = undefined;
   releaseScreenshot();
   app.setAttribute("aria-busy", "true");
   try {
@@ -2135,10 +2272,9 @@ async function showUnlock(): Promise<void> {
 }
 
 async function loadDetail(bundleId: string, abortArtifactActions = true): Promise<void> {
-  releaseScreenshot(abortArtifactActions);
-  const controller = new AbortController();
-  detailController = controller;
-  app.setAttribute("aria-busy", "true");
+  updateLibraryRoute(bundleId);
+  const replacingDetail = renderedDetailBundleId !== bundleId;
+  if (replacingDetail) app.setAttribute("aria-busy", "true");
   try {
     const [detail, activeGroups, deletedGroups] = await Promise.all([
       sendRequest<LibraryDetailMessage>({
@@ -2160,6 +2296,22 @@ async function loadDetail(bundleId: string, abortArtifactActions = true): Promis
       candidate.captures.some((capture) => capture.bundleId === bundleId),
     );
     if (group === undefined) throw new Error("The capture has no Library collection.");
+    const signature = JSON.stringify({ detail, group });
+    if (renderedDetailBundleId === bundleId && window.getSelection()?.isCollapsed === false) {
+      detailRefreshDeferred = true;
+      app.setAttribute("aria-busy", "false");
+      return;
+    }
+    if (renderedDetailBundleId === bundleId && renderedDetailSignature === signature) {
+      app.setAttribute("aria-busy", "false");
+      return;
+    }
+    releaseScreenshot(abortArtifactActions);
+    const controller = new AbortController();
+    detailController = controller;
+    renderedDetailBundleId = bundleId;
+    renderedDetailSignature = signature;
+    app.setAttribute("aria-busy", "true");
     const section = element("article", undefined, "detail");
     const breadcrumb = element("nav", undefined, "breadcrumb");
     breadcrumb.setAttribute("aria-label", "Breadcrumb");
@@ -2502,9 +2654,6 @@ async function loadDetail(bundleId: string, abortArtifactActions = true): Promis
 
 window.addEventListener("pagehide", () => releaseScreenshot());
 window.addEventListener("pagehide", () => cancelPageOwnedImport?.());
-const requestedBundleId = new URLSearchParams(window.location.search).get("bundleId");
-const requestedVaultId = new URLSearchParams(window.location.search).get("vaultId");
-
 async function initialize(): Promise<void> {
   try {
     const state = await sendRequest<AppState>({ type: "GetState" });
@@ -2552,6 +2701,8 @@ async function initialize(): Promise<void> {
       const trigger = document.querySelector<HTMLElement>("[data-import-vault='true']");
       if (trigger !== null) showImportVaultDialog(trigger);
     }
+    const routeParameters = new URLSearchParams(window.location.search);
+    const requestedVaultId = routeParameters.get("vaultId");
     if (requestedVaultId !== null) {
       const route = deepLinkVaultRoute(state.workspace.activeVaultId, requestedVaultId);
       if (route.route === "switch-prompt") {
@@ -2600,6 +2751,7 @@ async function initialize(): Promise<void> {
       );
       if (trigger !== undefined) showStaleReplicaDiscardDialog(trigger);
     }
+    const requestedBundleId = routeParameters.get("bundleId");
     if (requestedBundleId === null) await loadList();
     else await loadDetail(requestedBundleId, false);
     if (libraryOperationError !== undefined) announcer.textContent = libraryOperationError;
@@ -2639,11 +2791,10 @@ browser.runtime.onMessage.addListener((message: unknown) => {
     "type" in message &&
     message.type === "AppStateChanged"
   ) {
-    releaseScreenshot(false);
-    activeGroups = [];
-    deletedGroups = [];
-    app.replaceChildren(element("p", "Refreshing Vault state…", "muted"));
-    app.setAttribute("aria-busy", "true");
+    if (renderedDetailBundleId !== undefined && window.getSelection()?.isCollapsed === false) {
+      detailRefreshDeferred = true;
+      return undefined;
+    }
     reconcile();
   }
   return undefined;
@@ -2654,6 +2805,11 @@ document.addEventListener("visibilitychange", () => {
     wakeSynchronization();
     reconcile();
   }
+});
+document.addEventListener("selectionchange", () => {
+  if (!detailRefreshDeferred || window.getSelection()?.isCollapsed === false) return;
+  detailRefreshDeferred = false;
+  reconcile();
 });
 window.addEventListener("focus", () => {
   wakeSynchronization();

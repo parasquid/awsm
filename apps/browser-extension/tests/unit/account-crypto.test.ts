@@ -40,6 +40,15 @@ describe("Account cryptographic contracts", () => {
     expect(keys.authenticationDerivative).not.toEqual(keys.passwordWrappingKey);
   });
 
+  it("accepts a one-character Account password", async () => {
+    await expect(
+      deriveAccountPasswordKeys({ password: "x", accountKeyId, salt }),
+    ).resolves.toMatchObject({
+      authenticationDerivative: expect.any(Uint8Array),
+      passwordWrappingKey: expect.any(Uint8Array),
+    });
+  });
+
   it("matches fixed Account envelope and Vault-slot AAD/ciphertext vectors", async () => {
     const keys = await deriveAccountPasswordKeys({
       password: "correct horse battery staple",

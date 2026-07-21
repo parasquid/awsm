@@ -22,7 +22,10 @@ export type AppRequest =
   | { readonly type: "WakeSynchronization" }
   | { readonly type: "ChooseLocalOnly" }
   | { readonly type: "ConfigureSyncServer"; readonly serverOrigin: string }
-  | ({ readonly type: "BeginServerSwitch"; readonly candidateOrigin: string } & ExpectedVault)
+  | ({
+      readonly type: "BeginServerSwitch";
+      readonly candidateOrigin: string;
+    } & ExpectedVault)
   | {
       readonly type: "LoginServerSwitchCandidate";
       readonly email: string;
@@ -40,7 +43,11 @@ export type AppRequest =
       readonly type: "DiscardStaleReplica";
       readonly exportDecision: "Exported" | "SkipConfirmed";
     } & ExpectedVault)
-  | { readonly type: "LoginAccount"; readonly email: string; readonly password: string }
+  | {
+      readonly type: "LoginAccount";
+      readonly email: string;
+      readonly password: string;
+    }
   | {
       readonly type: "SignupAccount";
       readonly email: string;
@@ -50,6 +57,7 @@ export type AppRequest =
       readonly newVaultName?: string;
     }
   | { readonly type: "LogoutAccount" }
+  | { readonly type: "ResetLocalDevice" }
   | {
       readonly type: "CompleteAccountVault";
       readonly existingVaultId?: string;
@@ -73,12 +81,24 @@ export type AppRequest =
       readonly name: string;
     }
   | ({ readonly type: "UnlockDevice" } & ExpectedVault)
-  | ({ readonly type: "DismissRecentCapture"; readonly jobId: string } & ExpectedVault)
-  | ({ readonly type: "CaptureActivePage"; readonly tabId?: number } & ExpectedVault)
+  | ({
+      readonly type: "DismissRecentCapture";
+      readonly jobId: string;
+    } & ExpectedVault)
+  | ({
+      readonly type: "CaptureActivePage";
+      readonly tabId?: number;
+    } & ExpectedVault)
   | ({ readonly type: "ListLibrary" } & ExpectedVault)
   | ({ readonly type: "ListDeleted" } & ExpectedVault)
-  | ({ readonly type: "DeleteCaptures"; readonly bundleIds: readonly string[] } & ExpectedVault)
-  | ({ readonly type: "RestoreCaptures"; readonly bundleIds: readonly string[] } & ExpectedVault)
+  | ({
+      readonly type: "DeleteCaptures";
+      readonly bundleIds: readonly string[];
+    } & ExpectedVault)
+  | ({
+      readonly type: "RestoreCaptures";
+      readonly bundleIds: readonly string[];
+    } & ExpectedVault)
   | ({
       readonly type: "MergeCollections";
       readonly destinationCollectionId: string;
@@ -89,12 +109,24 @@ export type AppRequest =
       readonly bundleIds: readonly string[];
       readonly destinationCollectionId: string;
     } & ExpectedVault)
-  | ({ readonly type: "ExtractCaptures"; readonly bundleIds: readonly string[] } & ExpectedVault)
-  | ({ readonly type: "UndoLibraryOperation"; readonly operationEventId: string } & ExpectedVault)
+  | ({
+      readonly type: "ExtractCaptures";
+      readonly bundleIds: readonly string[];
+    } & ExpectedVault)
+  | ({
+      readonly type: "UndoLibraryOperation";
+      readonly operationEventId: string;
+    } & ExpectedVault)
   | ({ readonly type: "VacuumVault" } & ExpectedVault)
   | ({ readonly type: "GetVacuumEstimate" } & ExpectedVault)
-  | ({ readonly type: "ExportVault"; readonly passphrase: string } & ExpectedVault)
-  | ({ readonly type: "CancelVaultExport"; readonly jobId: string } & ExpectedVault)
+  | ({
+      readonly type: "ExportVault";
+      readonly passphrase: string;
+    } & ExpectedVault)
+  | ({
+      readonly type: "CancelVaultExport";
+      readonly jobId: string;
+    } & ExpectedVault)
   | { readonly type: "BeginVaultImport"; readonly sourceByteLength: number }
   | {
       readonly type: "ReportVaultImportProgress";
@@ -102,17 +134,33 @@ export type AppRequest =
       readonly acquiredBytes: number;
     }
   | { readonly type: "CompleteVaultImportStaging"; readonly jobId: string }
-  | { readonly type: "ImportVault"; readonly jobId: string; readonly passphrase: string }
+  | {
+      readonly type: "ImportVault";
+      readonly jobId: string;
+      readonly passphrase: string;
+    }
   | { readonly type: "CancelVaultImport"; readonly jobId: string }
-  | ({ readonly type: "GetLibraryDetail"; readonly bundleId: string } & ExpectedVault)
+  | ({
+      readonly type: "GetLibraryDetail";
+      readonly bundleId: string;
+    } & ExpectedVault)
   | ({
       readonly type: "OpenArtifact";
       readonly bundleId: string;
       readonly role: ArtifactRole;
     } & ExpectedVault)
-  | ({ readonly type: "DownloadMhtml"; readonly bundleId: string } & ExpectedVault)
-  | ({ readonly type: "ReadArtifactChunk"; readonly sessionId: string } & ExpectedVault)
-  | ({ readonly type: "CancelArtifactSession"; readonly sessionId: string } & ExpectedVault);
+  | ({
+      readonly type: "DownloadMhtml";
+      readonly bundleId: string;
+    } & ExpectedVault)
+  | ({
+      readonly type: "ReadArtifactChunk";
+      readonly sessionId: string;
+    } & ExpectedVault)
+  | ({
+      readonly type: "CancelArtifactSession";
+      readonly sessionId: string;
+    } & ExpectedVault);
 
 const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "GetState",
@@ -129,6 +177,7 @@ const APP_REQUEST_TYPES: ReadonlySet<AppRequest["type"]> = new Set([
   "LoginAccount",
   "SignupAccount",
   "LogoutAccount",
+  "ResetLocalDevice",
   "CompleteAccountVault",
   "SuggestVaultName",
   "CreateVault",
@@ -216,6 +265,8 @@ export function isAppRequest(value: unknown): value is AppRequest {
       return false;
   }
   if (value.type === "LogoutAccount" && Object.keys(value).some((key) => key !== "type"))
+    return false;
+  if (value.type === "ResetLocalDevice" && Object.keys(value).some((key) => key !== "type"))
     return false;
   if (
     value.type === "ConfigureSyncServer" &&
