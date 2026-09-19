@@ -26,7 +26,7 @@
     "@biomejs/biome": "2.5.4",
     "@playwright/test": "1.61.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.10",
+    "vitest": "5.0.1",
     "wxt": "0.20.27"
   }
 }
