@@ -1,3 +1,6 @@
+# pnpm owns the generated lockfile format.
+pnpm-lock.yaml
+
 # The browser-extension package is formatted and linted by Biome.
 apps/browser-extension/**/*.css
 apps/browser-extension/**/*.js
