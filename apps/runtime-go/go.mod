@@ -1,6 +1,6 @@
 module github.com/mashuproject/awsm_bak/apps/runtime-go
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/fxamacker/cbor/v2 v2.7.0
@@ -8,8 +8,9 @@ require (
 	github.com/pocketbase/pocketbase v0.39.10
 	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/wailsapp/wails/v2 v2.13.0
-	golang.org/x/crypto v0.54.0
-	golang.org/x/text v0.40.0
+	github.com/zalando/go-keyring v0.2.6
+	golang.org/x/crypto v0.57.0
+	golang.org/x/text v0.42.0
 )
 
 require (
@@ -31,8 +32,8 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20210711035445-715c2860da7e // indirect
-	github.com/labstack/echo/v4 v4.13.3 // indirect
-	github.com/labstack/gommon v0.4.2 // indirect
+	github.com/labstack/echo/v4 v4.16.1 // indirect
+	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/leaanthony/go-ansi-parser v1.6.1 // indirect
 	github.com/leaanthony/gosod v1.0.4 // indirect
 	github.com/leaanthony/slicer v1.6.0 // indirect
@@ -56,12 +57,11 @@ require (
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/zalando/go-keyring v0.2.6 // indirect
 	golang.org/x/image v0.44.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
